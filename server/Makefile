@@ -13,7 +13,7 @@ LDFLAGS := -s -w \
 
 export CGO_ENABLED := 0
 
-.PHONY: all build gen test cover vet tidy docker clean
+.PHONY: all build gen test cover vet tidy docker snapshot release clean
 
 all: build
 
@@ -27,9 +27,10 @@ build: ## Build the binpassd binary.
 test: ## Run unit tests.
 	$(GO) test ./...
 
-cover: ## Report business-logic coverage.
-	$(GO) test -coverprofile=coverage.out ./...
-	$(GO) tool cover -func=coverage.out | tail -1
+cover: ## Report business-logic coverage (excludes generated code).
+	$(GO) test -short -coverpkg=./internal/...,./pkg/... -coverprofile=coverage.out ./...
+	@grep -v -E '/gen/|_mock\.go' coverage.out > coverage.filtered || cp coverage.out coverage.filtered
+	@$(GO) tool cover -func=coverage.filtered | awk '/^total:/ {print "total: "$$3}'
 
 vet: ## Run go vet.
 	$(GO) vet ./...
@@ -40,5 +41,11 @@ tidy: ## Tidy the module.
 docker: ## Build the Docker image.
 	docker build -t binpassd:$(VERSION) .
 
+snapshot: ## Build a local release snapshot with goreleaser (no publish).
+	goreleaser release --snapshot --clean
+
+release: ## Cut a release with goreleaser (requires a tag + tokens).
+	goreleaser release --clean
+
 clean: ## Remove build artefacts.
-	rm -rf $(BIN_DIR) coverage.out
+	rm -rf $(BIN_DIR) dist coverage.out coverage.filtered

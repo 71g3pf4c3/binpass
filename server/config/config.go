@@ -118,9 +118,10 @@ type Log struct {
 	Format string `mapstructure:"format"`
 }
 
-// Load reads config from path (optional), overlays ENV (prefix BINPASSD), and
-// validates the result.
-func Load(path string) (*Config, error) {
+// NewViper builds a viper instance wired with binpassd defaults, the ENV
+// overlay (prefix BINPASSD), and ENV-only secret bindings. It does not read the
+// config file yet, so callers may bind command-line flags before calling Load.
+func NewViper(path string) *viper.Viper {
 	v := viper.New()
 	v.SetConfigType("yaml")
 	if path != "" {
@@ -140,6 +141,13 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("pg.url", "BINPASSD_PG_URL")
 	_ = v.BindEnv("auth.jwt_private_key", "BINPASSD_JWT_PRIVATE_KEY")
 
+	return v
+}
+
+// LoadFromViper reads the config file (if present), unmarshals, and validates
+// the config from an already-configured viper instance. Precedence is
+// flags > ENV > config file > defaults.
+func LoadFromViper(v *viper.Viper) (*Config, error) {
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, err
@@ -154,6 +162,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: validation: %w", err)
 	}
 	return &cfg, nil
+}
+
+// Load reads config from path (optional), overlays ENV (prefix BINPASSD), and
+// validates the result.
+func Load(path string) (*Config, error) {
+	return LoadFromViper(NewViper(path))
 }
 
 // setDefaults populates non-secret defaults.

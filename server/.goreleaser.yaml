@@ -1,0 +1,97 @@
+# GoReleaser configuration for the binpassd server.
+# Builds a CGO-free binary for Linux (amd64/arm64), archives, checksums, an
+# SBOM, and a multi-arch Docker image.
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: binpassd
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: binpassd
+    main: ./cmd/binpassd
+    binary: binpassd
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.buildDate={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: binpassd
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - config/config.yaml
+      - migrations/*
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: archive
+    artifacts: archive
+
+dockers:
+  - id: binpassd-amd64
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/71g3pf4c3/binpassd:{{ .Version }}-amd64"
+      - "ghcr.io/71g3pf4c3/binpassd:latest-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .Commit }}"
+      - "--build-arg=BUILD_DATE={{ .CommitDate }}"
+  - id: binpassd-arm64
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/71g3pf4c3/binpassd:{{ .Version }}-arm64"
+      - "ghcr.io/71g3pf4c3/binpassd:latest-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .Commit }}"
+      - "--build-arg=BUILD_DATE={{ .CommitDate }}"
+
+docker_manifests:
+  - name_template: "ghcr.io/71g3pf4c3/binpassd:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/71g3pf4c3/binpassd:{{ .Version }}-amd64"
+      - "ghcr.io/71g3pf4c3/binpassd:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/71g3pf4c3/binpassd:latest"
+    image_templates:
+      - "ghcr.io/71g3pf4c3/binpassd:latest-amd64"
+      - "ghcr.io/71g3pf4c3/binpassd:latest-arm64"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "binpassd {{ .Version }}"

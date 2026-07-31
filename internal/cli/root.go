@@ -30,6 +30,8 @@ func NewRootCmd() *cobra.Command {
 		Short:         "binpass — age-based password manager, drop-in for pass/gopass",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Accept arbitrary args so a bare name behaves like `pass name`.
+		Args: cobra.ArbitraryArgs,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load(cmd)
 			if err != nil {
@@ -38,6 +40,18 @@ func NewRootCmd() *cobra.Command {
 			ctx := context.WithValue(cmd.Context(), stateKey{}, &appState{cfg: cfg})
 			cmd.SetContext(ctx)
 			return nil
+		},
+		// Default command, matching pass: no args → list the tree; a single
+		// argument → show that secret.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			st, err := openStore(cmd)
+			if err != nil {
+				return err
+			}
+			if len(args) == 0 {
+				return listTree(cmd, st, "")
+			}
+			return listTree(cmd, st, args[0])
 		},
 	}
 
@@ -64,6 +78,7 @@ func NewRootCmd() *cobra.Command {
 		newCardCmd(),
 		newRecipientsCmd(),
 		newReencryptCmd(),
+		newSyncCmd(),
 		newCompletionCmd(root),
 	)
 	return root

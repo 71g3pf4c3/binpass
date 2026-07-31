@@ -10,20 +10,29 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newInitCmd builds the "init" command.
+// newInitCmd builds the "init" command, matching `pass init [-p subfolder]
+// id...`. Recipients (age/ssh) are given as positional arguments in place of
+// pass's gpg-ids.
 func newInitCmd() *cobra.Command {
-	var recipients []string
+	var recipientFlags []string
 	var genIdentity bool
+	var subPath string
 
 	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Initialise a new password store",
-		Long: "Initialise a new password store by writing the root .age-recipients " +
-			"file. With --generate-identity a new age key is created and its " +
-			"recipient added automatically.",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "init [--path=subfolder,-p] [--generate-identity] recipient...",
+		Short: "Initialise a store or a subfolder with the given recipients",
+		Long: "Initialise a new password store (or a subfolder with --path) by " +
+			"writing an .age-recipients file. Recipients are age or ssh public " +
+			"keys, given as arguments. With --generate-identity a new age key is " +
+			"created and its recipient added automatically. Providing recipients " +
+			"for an existing store re-encrypts every secret to the new set.",
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := stateOf(cmd).cfg
 			out := cmd.OutOrStdout()
+
+			recipients := append([]string{}, args...)
+			recipients = append(recipients, recipientFlags...)
 
 			if genIdentity {
 				rec, err := ensureIdentity(cfg.Crypto.Identity)
@@ -34,21 +43,39 @@ func newInitCmd() *cobra.Command {
 				fmt.Fprintf(out, "generated identity: %s\nrecipient: %s\n", cfg.Crypto.Identity, rec)
 			}
 			if len(recipients) == 0 {
-				return fmt.Errorf("init: provide --recipient or --generate-identity")
+				return fmt.Errorf("init: provide at least one recipient or --generate-identity")
 			}
 
 			st, err := openStore(cmd)
 			if err != nil {
 				return err
 			}
-			if err := st.Init(recipients); err != nil {
-				return err
+
+			alreadyInit := st.Initialised()
+			if subPath != "" {
+				if err := st.InitSub(subPath, recipients); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "initialised subfolder %s\n", subPath)
+			} else {
+				if err := st.Init(recipients); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "initialised store at %s\n", st.Dir())
 			}
-			fmt.Fprintf(out, "initialised store at %s\n", st.Dir())
+
+			// Re-encrypt existing secrets to the new recipient set, like pass.
+			if alreadyInit {
+				if err := st.Reencrypt(); err != nil {
+					return err
+				}
+				fmt.Fprintln(out, "re-encrypted existing secrets to new recipients")
+			}
 			return nil
 		},
 	}
-	cmd.Flags().StringArrayVarP(&recipients, "recipient", "r", nil, "age/ssh recipient (repeatable)")
+	cmd.Flags().StringArrayVarP(&recipientFlags, "recipient", "r", nil, "additional age/ssh recipient (repeatable)")
+	cmd.Flags().StringVarP(&subPath, "path", "p", "", "initialise only the given subfolder")
 	cmd.Flags().BoolVar(&genIdentity, "generate-identity", false, "generate a new age identity")
 	return cmd
 }

@@ -26,8 +26,17 @@ type Config struct {
 	Clip ClipConfig `mapstructure:"clip"`
 	// Generate holds default password-generation settings.
 	Generate GenerateConfig `mapstructure:"generate"`
+	// Sync holds synchronisation settings.
+	Sync SyncConfig `mapstructure:"sync"`
 	// Log holds logging settings.
 	Log LogConfig `mapstructure:"log"`
+}
+
+// SyncConfig configures synchronisation backends.
+type SyncConfig struct {
+	// FSPath is a directory-backed remote path (shared folder / USB / cloud
+	// mount). When set, "binpass sync" uses it by default.
+	FSPath string `mapstructure:"fs_path"`
 }
 
 // StoreConfig configures the store location.
@@ -172,7 +181,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("crypto.agent.ttl", 10*time.Minute)
 	v.SetDefault("clip.timeout", 45*time.Second)
 	v.SetDefault("clip.restore_previous", true)
-	v.SetDefault("generate.length", 24)
+	v.SetDefault("generate.length", 25) // matches pass PASSWORD_STORE_GENERATED_LENGTH
 	v.SetDefault("generate.symbols", true)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")

@@ -1,0 +1,44 @@
+# Basic pass-compatible lifecycle: init, insert, list, show, generate, rm.
+
+# Initialise a store with a generated identity.
+exec binpass init --generate-identity
+stdout 'initialised store'
+
+# Insert a single-line secret from stdin (echoed via -e is not used; feed stdin).
+stdin pw.txt
+exec binpass insert -e github.com/alice
+stdout 'stored github.com/alice'
+
+# A bare invocation lists the tree.
+exec binpass
+stdout 'Password Store'
+stdout 'github.com'
+stdout 'alice'
+
+# A bare name shows the secret.
+exec binpass github.com/alice
+stdout 'hunter2'
+
+# show also works explicitly.
+exec binpass show github.com/alice
+stdout 'hunter2'
+
+# generate creates a password of the requested length.
+exec binpass generate work/wifi 20
+stdout '.{20}'
+
+# The tree now contains both entries.
+exec binpass ls
+stdout 'github.com'
+stdout 'work'
+
+# Remove a secret.
+exec binpass rm github.com/alice
+stdout 'removed github.com/alice'
+
+# It is gone.
+! exec binpass show github.com/alice
+stderr 'not found'
+
+-- pw.txt --
+hunter2

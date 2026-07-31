@@ -139,6 +139,17 @@ func (f *FS) SetRootRecipients(recipients []string) error {
 	return atomicWrite(filepath.Join(f.Dir, recipientsFile), []byte(data), 0o600)
 }
 
+// SetSubRecipients writes a recipients file inside the given subfolder,
+// overriding the inherited set for that subtree.
+func (f *FS) SetSubRecipients(sub string, recipients []string) error {
+	dir := filepath.Join(f.Dir, filepath.FromSlash(strings.Trim(sub, "/")))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("storage: mkdir sub: %w", err)
+	}
+	data := strings.Join(recipients, "\n") + "\n"
+	return atomicWrite(filepath.Join(dir, recipientsFile), []byte(data), 0o600)
+}
+
 // readLines reads non-empty, non-comment lines from a file.
 func readLines(path string) ([]string, error) {
 	fh, err := os.Open(path)

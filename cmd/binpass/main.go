@@ -25,6 +25,7 @@ func main() {
 	versionpkg.BuildDate = buildDate
 
 	root := cli.NewRootCmd()
+	root.SetArgs(cli.NormalizeArgs(os.Args[1:]))
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "binpass:", err)
 		os.Exit(1)

@@ -50,8 +50,47 @@ func (s *Store) Init(recipients []string) error {
 	return s.fs.SetRootRecipients(recipients)
 }
 
+// InitSub writes a recipients override for the given subfolder.
+func (s *Store) InitSub(sub string, recipients []string) error {
+	return s.fs.SetSubRecipients(sub, recipients)
+}
+
 // Exists reports whether name exists in the store.
 func (s *Store) Exists(name string) bool { return s.fs.Exists(name) }
+
+// ReadCiphertext returns the raw (still-encrypted) bytes stored under name.
+func (s *Store) ReadCiphertext(name string) ([]byte, error) { return s.fs.Read(name) }
+
+// WriteCiphertext stores already-encrypted bytes verbatim under name.
+func (s *Store) WriteCiphertext(name string, ciphertext []byte) error {
+	return s.fs.Write(name, ciphertext)
+}
+
+// RemoveByName deletes name without decrypting it (used by sync).
+func (s *Store) RemoveByName(name string) error { return s.fs.Remove(name) }
+
+// RemoveDir recursively removes every secret under the given prefix. It
+// returns the removed names and ErrNotFound if the prefix matches nothing.
+func (s *Store) RemoveDir(prefix string) ([]string, error) {
+	names, err := s.fs.List()
+	if err != nil {
+		return nil, err
+	}
+	trimmed := strings.Trim(prefix, "/")
+	var removed []string
+	for _, n := range names {
+		if n == trimmed || strings.HasPrefix(n, trimmed+"/") {
+			if err := s.fs.Remove(n); err != nil {
+				return removed, err
+			}
+			removed = append(removed, n)
+		}
+	}
+	if len(removed) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, prefix)
+	}
+	return removed, nil
+}
 
 // List returns all secret names, sorted.
 func (s *Store) List() ([]string, error) { return s.fs.List() }

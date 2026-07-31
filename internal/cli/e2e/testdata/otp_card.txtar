@@ -1,0 +1,31 @@
+# OTP and typed card secrets.
+
+exec binpass init --generate-identity
+
+# Insert a login secret, then attach an otpauth URI.
+stdin login.txt
+exec binpass insert -m github.com/alice
+exec binpass otp append github.com/alice otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&period=30
+
+# otp prints a 6-digit code.
+exec binpass otp github.com/alice
+stdout '\d{6}'
+
+# A typed card via stdin prompts.
+stdin card.txt
+exec binpass card add bank/tinkoff
+stdout 'stored card bank/tinkoff'
+
+exec binpass card show bank/tinkoff
+stdout 'Bank: Tinkoff'
+stdout 'Number: 5536'
+
+-- login.txt --
+hunter2
+url: https://github.com
+-- card.txt --
+Tinkoff
+5536 9138 0000 0000
+ALICE IVANOVA
+09/29
+123

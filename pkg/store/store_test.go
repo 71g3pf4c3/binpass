@@ -83,6 +83,41 @@ func TestReencrypt(t *testing.T) {
 	assert.Equal(t, "pw", sec.Password)
 }
 
+func TestRemoveDir(t *testing.T) {
+	st := newTestStore(t)
+	require.NoError(t, st.SetRaw("work/vpn", []byte("a\n")))
+	require.NoError(t, st.SetRaw("work/wifi", []byte("b\n")))
+	require.NoError(t, st.SetRaw("personal/mail", []byte("c\n")))
+
+	removed, err := st.RemoveDir("work")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"work/vpn", "work/wifi"}, removed)
+	assert.False(t, st.Exists("work/vpn"))
+	assert.True(t, st.Exists("personal/mail"))
+
+	_, err = st.RemoveDir("nonexistent")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestCiphertextRoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	require.NoError(t, st.SetRaw("a", []byte("pw\n")))
+	ct, err := st.ReadCiphertext("a")
+	require.NoError(t, err)
+	assert.NotEmpty(t, ct)
+
+	require.NoError(t, st.WriteCiphertext("b", ct))
+	require.NoError(t, st.RemoveByName("b"))
+	assert.False(t, st.Exists("b"))
+}
+
+func TestInitSubAndDir(t *testing.T) {
+	st := newTestStore(t)
+	assert.True(t, st.Initialised())
+	assert.NotEmpty(t, st.Dir())
+	require.NoError(t, st.InitSub("bank", []string{"age1testrecipient"}))
+}
+
 func TestSetTypedSecret(t *testing.T) {
 	st := newTestStore(t)
 	sec := &secret.Secret{Kind: secret.KindCard}

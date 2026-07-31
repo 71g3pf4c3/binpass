@@ -15,7 +15,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("PASSWORD_STORE_GENERATED_LENGTH", "")
 	cfg, err := Load(nil)
 	require.NoError(t, err)
-	assert.Equal(t, 24, cfg.Generate.Length)
+	assert.Equal(t, 25, cfg.Generate.Length)
 	assert.Equal(t, "info", cfg.Log.Level)
 	assert.Equal(t, 45*time.Second, cfg.Clip.Timeout)
 }

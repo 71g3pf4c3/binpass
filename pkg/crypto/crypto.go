@@ -8,6 +8,8 @@ package crypto
 
 import "io"
 
+//go:generate mockgen -source=crypto.go -destination=mocks/crypto_mock.go -package=mocks
+
 // Crypto encrypts and decrypts secret payloads.
 type Crypto interface {
 	// Encrypt writes ciphertext for plaintext to w, for the given recipients.

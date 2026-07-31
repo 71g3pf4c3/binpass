@@ -1,0 +1,33 @@
+# golangci-lint configuration for binpass.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - revive        # style + exported-symbol docs
+    - godot         # comments end with a period
+    - misspell
+    - unconvert
+    - gosec
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+    gosec:
+      excludes:
+        - G104   # errcheck overlap; handled elsewhere
+
+  exclusions:
+    rules:
+      # Test files and generated mocks are exempt from doc/style nits.
+      - path: _test\.go
+        linters: [revive, godot, gosec]
+      - path: mocks/
+        linters: [revive, godot]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

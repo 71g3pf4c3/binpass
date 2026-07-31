@@ -1,0 +1,83 @@
+# Continuous integration for the binpass client: lint, unit + race tests,
+# a coverage gate, and a cross-platform build matrix.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: Unit tests with race detector
+        run: go test -race ./...
+      - name: Coverage gate (>=70%)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go test -coverpkg=./pkg/...,./internal/... -coverprofile=coverage.out ./...
+          grep -v -E '/mocks/|_mock\.go|/gen/' coverage.out > coverage.filtered
+          total=$(go tool cover -func=coverage.filtered | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+          echo "business-logic coverage: ${total}%"
+          awk -v c="$total" 'BEGIN { exit (c+0 >= 70.0) ? 0 : 1 }' \
+            || { echo "coverage ${total}% below 70% threshold"; exit 1; }
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o /dev/null ./cmd/binpass
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

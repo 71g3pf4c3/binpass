@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package binpass.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/71g3pf4c3/binpass/server/gen/binpassv1;binpassv1";
+
+// Vault stores the end-to-end-encrypted manifest and content-addressed
+// ciphertext objects for a single owner, and synchronises them across the
+// owner's devices. The server only ever handles ciphertext.
+service Vault {
+  // GetManifest returns the current signed manifest.
+  rpc GetManifest(GetManifestRequest) returns (SignedManifest) {
+    option (google.api.http) = {get: "/api/v1/vault/manifest"};
+  }
+
+  // CommitManifest atomically commits a new manifest using compare-and-swap
+  // on the expected generation. A mismatch returns FAILED_PRECONDITION.
+  rpc CommitManifest(CommitManifestRequest) returns (CommitManifestResponse) {
+    option (google.api.http) = {
+      put: "/api/v1/vault/manifest"
+      body: "*"
+    };
+  }
+
+  // HasObjects reports which of the given object IDs already exist.
+  rpc HasObjects(ObjectIDs) returns (ObjectPresence) {
+    option (google.api.http) = {
+      post: "/api/v1/vault/objects:check"
+      body: "*"
+    };
+  }
+
+  // PutObject uploads a single ciphertext object as a chunk stream.
+  rpc PutObject(stream PutObjectChunk) returns (PutObjectResponse);
+
+  // GetObject downloads a ciphertext object as a chunk stream.
+  rpc GetObject(GetObjectRequest) returns (stream ObjectChunk);
+
+  // Watch streams change events so devices sync in near real time.
+  rpc Watch(WatchRequest) returns (stream ChangeEvent);
+}
+
+// GetManifestRequest requests the current manifest.
+message GetManifestRequest {}
+
+// SignedManifest is a manifest plus its store-key Ed25519 signature.
+message SignedManifest {
+  // manifest is the canonical JSON manifest bytes.
+  bytes manifest = 1;
+  // signature is Ed25519 over (generation || store_id || sha256(manifest)).
+  bytes signature = 2;
+  // public_key is the store signing public key.
+  bytes public_key = 3;
+  // generation is the monotonic commit counter for CAS and ETag mapping.
+  uint64 generation = 4;
+}
+
+// CommitManifestRequest commits a manifest under compare-and-swap.
+message CommitManifestRequest {
+  // manifest is the signed manifest to commit.
+  SignedManifest manifest = 1;
+  // expect_generation is the generation the client believes is current.
+  uint64 expect_generation = 2;
+}
+
+// CommitManifestResponse reports the committed generation.
+message CommitManifestResponse {
+  // generation is the newly committed generation.
+  uint64 generation = 1;
+}
+
+// ObjectIDs is a set of content-addressed object identifiers.
+message ObjectIDs {
+  // ids are the object IDs (e.g. "b3:<hex>").
+  repeated string ids = 1;
+}
+
+// ObjectPresence reports per-object existence.
+message ObjectPresence {
+  // present maps object ID to whether it exists on the server.
+  map<string, bool> present = 1;
+}
+
+// ObjectHeader is the first message of a PutObject stream.
+message ObjectHeader {
+  // oid is the object identifier.
+  string oid = 1;
+  // total_size is the expected ciphertext byte length.
+  int64 total_size = 2;
+}
+
+// PutObjectChunk is one framed message of an upload stream.
+message PutObjectChunk {
+  // payload is either the header (first) or a data chunk.
+  oneof payload {
+    // header must be the first message.
+    ObjectHeader header = 1;
+    // data is a ciphertext chunk (<= 1 MiB).
+    bytes data = 2;
+  }
+}
+
+// PutObjectResponse confirms a stored object.
+message PutObjectResponse {
+  // oid is the stored object identifier.
+  string oid = 1;
+  // size is the stored byte length.
+  int64 size = 2;
+}
+
+// GetObjectRequest requests a download by object ID.
+message GetObjectRequest {
+  // oid is the object identifier to download.
+  string oid = 1;
+}
+
+// ObjectChunk is one framed message of a download stream.
+message ObjectChunk {
+  // data is a ciphertext chunk (<= 1 MiB).
+  bytes data = 1;
+}
+
+// WatchRequest starts a change-event stream.
+message WatchRequest {
+  // since_generation streams events after this generation.
+  uint64 since_generation = 1;
+}
+
+// ChangeEvent notifies a device that the vault advanced.
+message ChangeEvent {
+  // generation is the new manifest generation.
+  uint64 generation = 1;
+  // device_id is the device that produced the change.
+  string device_id = 2;
+  // at is when the change was committed.
+  google.protobuf.Timestamp at = 3;
+}

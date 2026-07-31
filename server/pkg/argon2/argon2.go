@@ -1,0 +1,84 @@
+// Package argon2 provides password/secret hashing and verification using
+// Argon2id with an encoded, self-describing PHC-style output.
+package argon2
+
+import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
+	"fmt"
+	"strings"
+
+	"golang.org/x/crypto/argon2"
+)
+
+// Params configures Argon2id hashing.
+type Params struct {
+	// MemoryMiB is the memory cost in mebibytes.
+	MemoryMiB uint32
+	// Time is the number of iterations.
+	Time uint32
+	// Threads is the degree of parallelism.
+	Threads uint8
+	// KeyLen is the derived key length in bytes.
+	KeyLen uint32
+	// SaltLen is the random salt length in bytes.
+	SaltLen uint32
+}
+
+// Default returns sensible Argon2id parameters (256 MiB, t=3, p=4).
+func Default() Params {
+	return Params{MemoryMiB: 256, Time: 3, Threads: 4, KeyLen: 32, SaltLen: 16}
+}
+
+// Hasher hashes and verifies secrets with fixed parameters.
+type Hasher struct {
+	// params are the Argon2id cost parameters.
+	params Params
+}
+
+// New returns a Hasher with the given parameters.
+func New(p Params) *Hasher { return &Hasher{params: p} }
+
+// Hash returns an encoded Argon2id hash of secret.
+func (h *Hasher) Hash(secret string) (string, error) {
+	salt := make([]byte, h.params.SaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("argon2: salt: %w", err)
+	}
+	key := argon2.IDKey([]byte(secret), salt,
+		h.params.Time, h.params.MemoryMiB*1024, h.params.Threads, h.params.KeyLen)
+
+	b64 := base64.RawStdEncoding
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, h.params.MemoryMiB*1024, h.params.Time, h.params.Threads,
+		b64.EncodeToString(salt), b64.EncodeToString(key)), nil
+}
+
+// Verify reports whether secret matches the encoded hash.
+func Verify(secret, encoded string) (bool, error) {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[1] != "argon2id" {
+		return false, fmt.Errorf("argon2: malformed hash")
+	}
+	var version int
+	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil {
+		return false, fmt.Errorf("argon2: version: %w", err)
+	}
+	var memory, time uint32
+	var threads uint8
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &time, &threads); err != nil {
+		return false, fmt.Errorf("argon2: params: %w", err)
+	}
+	b64 := base64.RawStdEncoding
+	salt, err := b64.DecodeString(parts[4])
+	if err != nil {
+		return false, fmt.Errorf("argon2: salt decode: %w", err)
+	}
+	want, err := b64.DecodeString(parts[5])
+	if err != nil {
+		return false, fmt.Errorf("argon2: key decode: %w", err)
+	}
+	got := argon2.IDKey([]byte(secret), salt, time, memory, threads, uint32(len(want)))
+	return subtle.ConstantTimeCompare(got, want) == 1, nil
+}

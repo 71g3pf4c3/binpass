@@ -1,0 +1,539 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "v1/auth.proto",
+    "description": "Package binpass.v1 is the binpassd wire contract: authentication and\nend-to-end-encrypted vault synchronisation. The server never sees\nplaintext or encryption keys.",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "Auth"
+    },
+    {
+      "name": "Vault"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "summary": "Login authenticates an existing user for a device.",
+        "operationId": "Auth_Login",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TokenPair"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "LoginRequest authenticates an existing user.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1LoginRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "summary": "Logout revokes the given refresh token.",
+        "operationId": "Auth_Logout",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "LogoutRequest revokes a refresh token.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1LogoutRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "summary": "Refresh rotates a refresh token, returning a fresh token pair.",
+        "operationId": "Auth_Refresh",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TokenPair"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "RefreshRequest rotates an existing refresh token.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1RefreshRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/auth/register": {
+      "post": {
+        "summary": "Register creates a new account and returns tokens plus the user salt.",
+        "operationId": "Auth_Register",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TokenPair"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "RegisterRequest carries the credentials for a new account.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1RegisterRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "summary": "ListDevices returns the caller's enrolled devices.",
+        "operationId": "Auth_ListDevices",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeviceList"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/devices/{deviceId}": {
+      "delete": {
+        "summary": "RevokeDevice revokes a device and its refresh-token chain.",
+        "operationId": "Auth_RevokeDevice",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "deviceId",
+            "description": "device_id is the device to revoke.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/vault/manifest": {
+      "get": {
+        "summary": "GetManifest returns the current signed manifest.",
+        "operationId": "Vault_GetManifest",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SignedManifest"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Vault"
+        ]
+      },
+      "put": {
+        "summary": "CommitManifest atomically commits a new manifest using compare-and-swap\non the expected generation. A mismatch returns FAILED_PRECONDITION.",
+        "operationId": "Vault_CommitManifest",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CommitManifestResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "CommitManifestRequest commits a manifest under compare-and-swap.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CommitManifestRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Vault"
+        ]
+      }
+    },
+    "/api/v1/vault/objects:check": {
+      "post": {
+        "summary": "HasObjects reports which of the given object IDs already exist.",
+        "operationId": "Vault_HasObjects",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ObjectPresence"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ObjectIDs is a set of content-addressed object identifiers.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ObjectIDs"
+            }
+          }
+        ],
+        "tags": [
+          "Vault"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1CommitManifestRequest": {
+      "type": "object",
+      "properties": {
+        "manifest": {
+          "$ref": "#/definitions/v1SignedManifest",
+          "description": "manifest is the signed manifest to commit."
+        },
+        "expectGeneration": {
+          "type": "string",
+          "format": "uint64",
+          "description": "expect_generation is the generation the client believes is current."
+        }
+      },
+      "description": "CommitManifestRequest commits a manifest under compare-and-swap."
+    },
+    "v1CommitManifestResponse": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": "string",
+          "format": "uint64",
+          "description": "generation is the newly committed generation."
+        }
+      },
+      "description": "CommitManifestResponse reports the committed generation."
+    },
+    "v1Device": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "id is the device identifier."
+        },
+        "name": {
+          "type": "string",
+          "description": "name is the human label."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "created_at is when the device enrolled."
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "last_seen_at is the last authenticated activity."
+        },
+        "revoked": {
+          "type": "boolean",
+          "description": "revoked reports whether the device is revoked."
+        }
+      },
+      "description": "Device describes an enrolled client device."
+    },
+    "v1DeviceList": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Device"
+          },
+          "description": "devices is the enrolled device set."
+        }
+      },
+      "description": "DeviceList wraps a set of devices."
+    },
+    "v1LoginRequest": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "type": "string",
+          "description": "login is the account identifier."
+        },
+        "authSecret": {
+          "type": "string",
+          "description": "auth_secret is the HKDF-derived authentication secret (base64)."
+        },
+        "deviceName": {
+          "type": "string",
+          "description": "device_name labels the device requesting access."
+        }
+      },
+      "description": "LoginRequest authenticates an existing user."
+    },
+    "v1LogoutRequest": {
+      "type": "object",
+      "properties": {
+        "refreshToken": {
+          "type": "string",
+          "description": "refresh_token is the token to revoke."
+        }
+      },
+      "description": "LogoutRequest revokes a refresh token."
+    },
+    "v1ObjectIDs": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "ids are the object IDs (e.g. \"b3:\u003chex\u003e\")."
+        }
+      },
+      "description": "ObjectIDs is a set of content-addressed object identifiers."
+    },
+    "v1ObjectPresence": {
+      "type": "object",
+      "properties": {
+        "present": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "present maps object ID to whether it exists on the server."
+        }
+      },
+      "description": "ObjectPresence reports per-object existence."
+    },
+    "v1RefreshRequest": {
+      "type": "object",
+      "properties": {
+        "refreshToken": {
+          "type": "string",
+          "description": "refresh_token is the opaque refresh token to rotate."
+        }
+      },
+      "description": "RefreshRequest rotates an existing refresh token."
+    },
+    "v1RegisterRequest": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "type": "string",
+          "description": "login is the unique account identifier."
+        },
+        "authSecret": {
+          "type": "string",
+          "description": "auth_secret is the HKDF-derived authentication secret (base64)."
+        },
+        "deviceName": {
+          "type": "string",
+          "description": "device_name is a human label for the enrolling device."
+        }
+      },
+      "description": "RegisterRequest carries the credentials for a new account."
+    },
+    "v1SignedManifest": {
+      "type": "object",
+      "properties": {
+        "manifest": {
+          "type": "string",
+          "format": "byte",
+          "description": "manifest is the canonical JSON manifest bytes."
+        },
+        "signature": {
+          "type": "string",
+          "format": "byte",
+          "description": "signature is Ed25519 over (generation || store_id || sha256(manifest))."
+        },
+        "publicKey": {
+          "type": "string",
+          "format": "byte",
+          "description": "public_key is the store signing public key."
+        },
+        "generation": {
+          "type": "string",
+          "format": "uint64",
+          "description": "generation is the monotonic commit counter for CAS and ETag mapping."
+        }
+      },
+      "description": "SignedManifest is a manifest plus its store-key Ed25519 signature."
+    },
+    "v1TokenPair": {
+      "type": "object",
+      "properties": {
+        "accessToken": {
+          "type": "string",
+          "description": "access_token is a short-lived JWT for API calls."
+        },
+        "refreshToken": {
+          "type": "string",
+          "description": "refresh_token is a long-lived opaque token for rotation."
+        },
+        "userSalt": {
+          "type": "string",
+          "description": "user_salt is the per-user salt for client-side key derivation (base64)."
+        },
+        "deviceId": {
+          "type": "string",
+          "description": "device_id identifies the authenticated device."
+        },
+        "accessExpiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "access_expires_at is the access-token expiry."
+        }
+      },
+      "description": "TokenPair is the result of a successful auth operation."
+    }
+  }
+}

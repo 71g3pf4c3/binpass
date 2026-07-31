@@ -3,6 +3,7 @@ module github.com/71g3pf4c3/binpass/server
 go 1.26.5
 
 require (
+	github.com/71g3pf4c3/binpass/api v0.0.0
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
@@ -15,7 +16,6 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.43.0
 	golang.org/x/crypto v0.54.0
-	google.golang.org/genproto/googleapis/api v0.0.0-20260729162451-8efbd57d26e0
 	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.11
 )
@@ -93,6 +93,10 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260729162451-8efbd57d26e0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260727163830-6c54dddc4772 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// The shared wire contract lives alongside this module in the repository.
+replace github.com/71g3pf4c3/binpass/api => ../api

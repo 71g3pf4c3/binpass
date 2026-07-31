@@ -8,7 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 
-	binpassv1 "github.com/71g3pf4c3/binpass/server/gen/v1"
+	binpassv1 "github.com/71g3pf4c3/binpass/api/gen/v1"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"

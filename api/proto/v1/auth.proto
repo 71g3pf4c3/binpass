@@ -9,7 +9,7 @@ import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/71g3pf4c3/binpass/server/gen/binpassv1;binpassv1";
+option go_package = "github.com/71g3pf4c3/binpass/api/gen/v1;binpassv1";
 
 // Auth handles user registration, login, token rotation, and device
 // enrolment. Clients send an auth_secret derived from the master phrase; the

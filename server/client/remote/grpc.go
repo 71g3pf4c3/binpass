@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	binpassv1 "github.com/71g3pf4c3/binpass/server/gen/v1"
+	binpassv1 "github.com/71g3pf4c3/binpass/api/gen/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"

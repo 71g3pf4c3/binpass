@@ -5,7 +5,7 @@ package binpass.v1;
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/71g3pf4c3/binpass/server/gen/binpassv1;binpassv1";
+option go_package = "github.com/71g3pf4c3/binpass/api/gen/v1;binpassv1";
 
 // Vault stores the end-to-end-encrypted manifest and content-addressed
 // ciphertext objects for a single owner, and synchronises them across the

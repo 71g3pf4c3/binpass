@@ -551,8 +551,8 @@ const file_v1_auth_proto_rawDesc = "" +
 	"\aRefresh\x12\x1a.binpass.v1.RefreshRequest\x1a\x15.binpass.v1.TokenPair\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/api/v1/auth/refresh\x12[\n" +
 	"\x06Logout\x12\x19.binpass.v1.LogoutRequest\x1a\x16.google.protobuf.Empty\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*\"\x13/api/v1/auth/logout\x12V\n" +
 	"\vListDevices\x12\x16.google.protobuf.Empty\x1a\x16.binpass.v1.DeviceList\"\x17\x82\xd3\xe4\x93\x02\x11\x12\x0f/api/v1/devices\x12l\n" +
-	"\fRevokeDevice\x12\x1f.binpass.v1.RevokeDeviceRequest\x1a\x16.google.protobuf.Empty\"#\x82\xd3\xe4\x93\x02\x1d*\x1b/api/v1/devices/{device_id}B\x9a\x01\n" +
-	"\x0ecom.binpass.v1B\tAuthProtoP\x01Z4github.com/71g3pf4c3/binpass/server/gen/v1;binpassv1\xa2\x02\x03BXX\xaa\x02\n" +
+	"\fRevokeDevice\x12\x1f.binpass.v1.RevokeDeviceRequest\x1a\x16.google.protobuf.Empty\"#\x82\xd3\xe4\x93\x02\x1d*\x1b/api/v1/devices/{device_id}B\x97\x01\n" +
+	"\x0ecom.binpass.v1B\tAuthProtoP\x01Z1github.com/71g3pf4c3/binpass/api/gen/v1;binpassv1\xa2\x02\x03BXX\xaa\x02\n" +
 	"Binpass.V1\xca\x02\n" +
 	"Binpass\\V1\xe2\x02\x16Binpass\\V1\\GPBMetadata\xea\x02\vBinpass::V1b\x06proto3"
 

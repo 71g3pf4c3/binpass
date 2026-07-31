@@ -784,9 +784,9 @@ const file_v1_vault_proto_rawDesc = "" +
 	"HasObjects\x12\x15.binpass.v1.ObjectIDs\x1a\x1a.binpass.v1.ObjectPresence\"&\x82\xd3\xe4\x93\x02 :\x01*\"\x1b/api/v1/vault/objects:check\x12H\n" +
 	"\tPutObject\x12\x1a.binpass.v1.PutObjectChunk\x1a\x1d.binpass.v1.PutObjectResponse(\x01\x12D\n" +
 	"\tGetObject\x12\x1c.binpass.v1.GetObjectRequest\x1a\x17.binpass.v1.ObjectChunk0\x01\x12<\n" +
-	"\x05Watch\x12\x18.binpass.v1.WatchRequest\x1a\x17.binpass.v1.ChangeEvent0\x01B\x9b\x01\n" +
+	"\x05Watch\x12\x18.binpass.v1.WatchRequest\x1a\x17.binpass.v1.ChangeEvent0\x01B\x98\x01\n" +
 	"\x0ecom.binpass.v1B\n" +
-	"VaultProtoP\x01Z4github.com/71g3pf4c3/binpass/server/gen/v1;binpassv1\xa2\x02\x03BXX\xaa\x02\n" +
+	"VaultProtoP\x01Z1github.com/71g3pf4c3/binpass/api/gen/v1;binpassv1\xa2\x02\x03BXX\xaa\x02\n" +
 	"Binpass.V1\xca\x02\n" +
 	"Binpass\\V1\xe2\x02\x16Binpass\\V1\\GPBMetadata\xea\x02\vBinpass::V1b\x06proto3"
 

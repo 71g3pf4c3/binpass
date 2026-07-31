@@ -17,9 +17,9 @@ export CGO_ENABLED := 0
 
 all: build
 
-gen: ## Regenerate protobuf, gRPC, gateway, and swagger code (buf).
-	buf generate --path api/proto/v1
-	cp gen/openapiv2/binpass.swagger.json internal/controller/http/v1/swagger/binpass.swagger.json
+gen: ## Regenerate the shared wire contract and refresh the bundled swagger.
+	$(MAKE) -C ../api gen
+	cp ../api/gen/openapiv2/binpass.swagger.json internal/controller/http/v1/swagger/binpass.swagger.json
 
 build: ## Build the binpassd binary.
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/binpassd ./cmd/binpassd

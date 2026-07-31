@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	binpassv1 "github.com/71g3pf4c3/binpass/server/gen/v1"
+	binpassv1 "github.com/71g3pf4c3/binpass/api/gen/v1"
 	"github.com/71g3pf4c3/binpass/server/internal/entity"
 	"github.com/71g3pf4c3/binpass/server/internal/usecase"
 	"google.golang.org/grpc/codes"

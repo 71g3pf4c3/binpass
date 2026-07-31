@@ -1,14 +1,14 @@
 version: v2
 modules:
-  - path: api/proto
+  - path: proto
 lint:
   use:
     - STANDARD
   except:
     - PACKAGE_VERSION_SUFFIX
   ignore:
-    - api/proto/google
-    - api/proto/protoc-gen-openapiv2
+    - proto/google
+    - proto/protoc-gen-openapiv2
 breaking:
   use:
     - FILE

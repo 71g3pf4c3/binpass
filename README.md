@@ -26,7 +26,8 @@ but not yet written.
 |---|---|
 | yes | `init` `ls` `show` `find` `grep` `insert` `edit` `generate` `rm` `mv` `cp` `git` `version` |
 | yes | `otp` (pass-otp), `menu` (passmenu / rofi-pass), `generate --words` (diceware) |
-| not yet | `sync` `tomb` `ss` `plugin` `import` `audit` `tui` |
+| yes | `sync` `remote` `conflicts` `fsck` |
+| not yet | `tomb` `ss` `plugin` `import` `audit` `tui` |
 
 ## Install
 
@@ -152,6 +153,234 @@ GPG and age entries coexist in one tree, selected by extension. A new entry
 uses the store's default backend, unless the destination only has recipients
 for the other one: a GPG-only store keeps receiving `.gpg` files even when age
 is configured as the default, so your existing `pass` never stops working.
+
+## Synchronisation
+
+binpass synchronises your password store across devices without a server. The
+sync engine is transport-agnostic: it works identically over git, restic, Google
+Drive, Yandex.Disk, WebDAV, and S3. Conflict resolution is automatic and
+conservative — nothing is ever lost silently.
+
+### Quick start: git
+
+If your store is already a git repository (most pass users' stores are),
+`binpass sync` works out of the box:
+
+```sh
+# First sync: detects the git remote in the store automatically.
+binpass sync
+
+# Dry run: show what would happen without making changes.
+binpass sync --dry-run
+
+# Push and pull are implicit; the engine figures out the direction.
+```
+
+The commit messages are identical to pass (`Add given password for X to
+store.`), so the history is indistinguishable from a native pass repository.
+Your existing `pass git log` output stays clean.
+
+### Adding a git remote
+
+```sh
+# The store directory becomes a git repository with a remote.
+binpass git init
+binpass git remote add origin git@github.com:you/password-store.git
+binpass sync
+```
+
+### Adding a restic remote
+
+Restic provides encrypted, deduplicated, versioned snapshots of the entire
+store. Unlike git, the remote storage sees only opaque encrypted blobs — entry
+names are never exposed.
+
+```sh
+# Local encrypted backup.
+restic init --repo /mnt/backup/binpass
+binpass remote add restic local /mnt/backup/binpass
+binpass sync --remote=local
+
+# S3 (restic speaks S3 directly, no rclone needed).
+restic init --repo s3:s3.amazonaws.com/my-bucket/binpass
+binpass remote add restic s3-backup s3:s3.amazonaws.com/my-bucket/binpass
+binpass sync --remote=s3-backup
+```
+
+For production, store the restic password securely:
+
+```yaml
+# ~/.config/binpass/config.yaml
+sync:
+  remotes:
+    s3-backup:
+      type: restic
+      url: s3:s3.amazonaws.com/my-bucket/binpass
+      password_command: "pass show restic/binpass"
+```
+
+Each `binpass sync` creates a new restic snapshot. Roll back with
+`restic restore` or `binpass sync` from an earlier snapshot.
+
+### Adding a cloud remote
+
+binpass uses [rclone](https://rclone.org/) under the hood for cloud storage.
+Install rclone first, then:
+
+```sh
+# S3 (MinIO, AWS, Garage, etc.)
+binpass remote add s3 mybucket mybucket:password-store
+
+# Google Drive
+binpass remote add gdrive gdrive binpass-store
+
+# Yandex.Disk
+binpass remote add yandex yandex password-store
+
+# WebDAV (Nextcloud, ownCloud, Synology, etc.)
+binpass remote add webdav nextcloud nextcloud:password-store
+
+# Sync with a specific remote.
+binpass sync --remote=mybucket
+```
+
+rclone configuration is shared with `~/.config/rclone/rclone.conf`. If you
+already use rclone, your existing remotes work without any extra setup.
+
+### How conflicts are resolved
+
+When two devices edit the same entry while offline, binpass keeps **both**
+copies — it never silently picks a winner:
+
+```
+github.com/alice.gpg                                     ← remote version
+github.com/alice.conflict-thinkpad-20260808T142233.gpg   ← local version
+```
+
+The original path always receives the remote version; the local version is
+saved with a `.conflict-<device>-<timestamp>` suffix. Both files are encrypted
+with the same recipients as the original entry.
+
+**HOTP counters are auto-merged.** If the only difference between two versions
+is the HOTP counter (which diverges by design), binpass takes the maximum and
+increments both version vectors. This is the only place where the sync engine
+looks inside a secret; everything else operates on ciphertext.
+
+**Delete vs edit: edit wins.** If one device deletes an entry while another
+edits it, the edited version is preserved with a warning. A deleted entry that
+still has a live version on another device is not lost.
+
+### Managing conflicts
+
+```sh
+# List conflict files in the store.
+binpass conflicts list
+
+# Show the diff between a conflict file and the current version.
+# The password line is masked by default.
+binpass conflicts diff github.com/alice.gpg
+
+# Show the full diff including the password.
+binpass conflicts diff github.com/alice.gpg --show-secrets
+
+# Resolve: keep the local version (delete conflict file).
+binpass conflicts resolve github.com/alice.gpg --strategy=local
+
+# Resolve: keep the remote version (overwrite local with conflict file).
+binpass conflicts resolve github.com/alice.gpg --strategy=remote
+
+# Resolve: keep both (the default — conflict file stays).
+binpass conflicts resolve github.com/alice.gpg --strategy=both
+```
+
+### Remotes configuration
+
+Remotes can be configured in the YAML config file at
+`~/.config/binpass/config.yaml`:
+
+```yaml
+sync:
+  auto: off               # off | on-change | interval
+  conflict: keep-both     # keep-both | interactive | prefer-local | prefer-remote
+  default_remote: origin  # used when --remote is not specified
+
+  remotes:
+    origin:
+      type: git
+      url: git@github.com:you/password-store.git
+    s3-backup:
+      type: s3
+      url: mybucket:password-store
+    gdrive:
+      type: gdrive
+      url: gdrive
+      folder: binpass-store
+    yandex:
+      type: yandex
+      url: yandex
+      folder: password-store
+    webdav:
+      type: webdav
+      url: nextcloud:password-store
+```
+
+Environment variable overrides (take priority over the config file):
+
+| Variable | Config key | Example |
+|---|---|---|
+| `BINPASS_SYNC_AUTO` | `sync.auto` | `on-change` |
+| `BINPASS_SYNC_CONFLICT` | `sync.conflict` | `prefer-local` |
+| `BINPASS_SYNC_DEFAULT_REMOTE` | `sync.default_remote` | `s3-backup` |
+
+### State directory
+
+The sync state database lives **outside** the password store, at
+`$XDG_STATE_HOME/binpass/` (default `~/.local/state/binpass/`). This is
+critical: if state.db were inside the store, it would end up in git history
+and on cloud drives, and `pass git status` would show noise.
+
+Override with `BINPASS_STATE_DIR`:
+
+```sh
+export BINPASS_STATE_DIR=~/.binpass-state
+```
+
+### Consistency check
+
+```sh
+# Check the store against the state database.
+binpass fsck
+```
+
+`fsck` reports:
+
+- **Untracked files** — on disk but not in state.db (e.g. created outside binpass).
+- **Orphaned state** — in state.db but not on disk (e.g. deleted outside binpass).
+- **Size drift** — file size differs from what state.db recorded.
+- **State in store** — state.db is inside the password store (critical leak risk).
+- **Missing recipients** — no `.gpg-id` or `.age-recipients` file found.
+
+Errors cause a non-zero exit code; warnings are informational.
+
+### How it works
+
+The sync engine uses **version vectors** (one counter per device) to detect
+divergence without a central clock:
+
+1. **Scan** the local store: `(size, mtime)` for quick detection, blake3 hash
+   of the **ciphertext** for confirmation.
+2. **List** the remote: build a remote snapshot from the transport.
+3. **Load** the base snapshot: the state at the last successful sync, stored
+   in state.db.
+4. **Merge**: compare local, remote, and base. Version vectors determine the
+   action (push, pull, conflict, merge, or nothing).
+5. **Apply**: upload, download, or create conflict files. Each action updates
+   state.db independently, so a failure halfway through is resumable.
+6. **Record**: persist the new base snapshot.
+
+All state mutations go through a write-ahead log (bbolt). If the process is
+killed mid-sync, the WAL is replayed on the next run and the state is
+recovered automatically.
 
 ## Compatibility
 

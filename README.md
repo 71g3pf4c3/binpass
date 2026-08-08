@@ -18,15 +18,35 @@ resulting tree. See [Compatibility](#compatibility).
 ## Status
 
 Implemented so far: the complete pass command surface, age and GPG backends,
-one-time passwords, and the built-in picker. Sync, tomb, the Secret Service
-provider and the plugin system are specified in [ARCHITECTURE.md](ARCHITECTURE.md)
+one-time passwords, the built-in picker, and plugins. Sync, tomb and the
+Secret Service provider are specified in [ARCHITECTURE.md](ARCHITECTURE.md)
 but not yet written.
 
 | Working | Command |
 |---|---|
 | yes | `init` `ls` `show` `find` `grep` `insert` `edit` `generate` `rm` `mv` `cp` `git` `version` |
 | yes | `otp` (pass-otp), `menu` (passmenu / rofi-pass), `generate --words` (diceware) |
-| not yet | `sync` `tomb` `ss` `plugin` `import` `audit` `tui` |
+| yes | `plugin` — any executable named `binpass-*` on `PATH` becomes a subcommand |
+| not yet | `sync` `tomb` `ss` `import` `audit` `tui` |
+
+## Plugins
+
+Drop an executable named `binpass-foo` on your `PATH` and `binpass foo` runs
+it, the same way `kubectl` and `git` work. Arguments and flags pass through
+untouched, and the plugin's exit status becomes binpass's.
+
+```sh
+printf '#!/bin/sh\necho "hello, $*"\n' > ~/.local/bin/binpass-hello
+chmod +x ~/.local/bin/binpass-hello
+binpass hello world          # hello, world
+
+binpass plugin list          # what binpass can see, and what will not run
+```
+
+Plugins call back into binpass through `$BINPASS_BIN` with `--format=json`,
+so they never parse output meant for humans. See [docs/plugins.md](docs/plugins.md),
+which includes an honest account of what the plugin boundary does and does
+not protect.
 
 ## Install
 

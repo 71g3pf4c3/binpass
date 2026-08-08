@@ -249,6 +249,84 @@ grep -q "web/site" <<<"$locked" \
 	|| bad "completion needs a key, so it would prompt at the shell prompt"
 mv /tmp/stashed.key "$XDG_CONFIG_HOME/binpass/identities.age"
 
+# -------------------------------------------------------------------- plugins
+
+section "Plugins"
+
+plugin_dir=/tmp/plugin-bin
+mkdir -p "$plugin_dir"
+export PATH="$plugin_dir:$PATH"
+
+cat >"$plugin_dir/binpass-demo" <<'PLUG'
+#!/usr/bin/env bash
+echo "demo:$BINPASS_API:$*"
+PLUG
+cat >"$plugin_dir/binpass-cloud_sync" <<'PLUG'
+#!/usr/bin/env bash
+echo "cloud-sync:$*"
+PLUG
+cat >"$plugin_dir/binpass-fails" <<'PLUG'
+#!/usr/bin/env bash
+exit 42
+PLUG
+# A plugin that reaches back into binpass, which is the whole point of the
+# stable CLI: extensions must never parse output meant for people.
+cat >"$plugin_dir/binpass-callback" <<'PLUG'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${BINPASS_BIN:?}" "${BINPASS_STORE:?}"
+"$BINPASS_BIN" ls --format=json | tr -d ' \n'
+PLUG
+chmod +x "$plugin_dir"/binpass-*
+# Deliberately left non-executable, to prove it is reported and not run.
+printf '#!/bin/sh\necho nope\n' >"$plugin_dir/binpass-inert"
+
+check "a plugin on PATH becomes a subcommand" "demo:1:hello" "$(binpass demo hello)"
+
+# Flags belong to the plugin: binpass resolves it before parsing anything,
+# so an unknown-to-binpass flag must arrive intact rather than be rejected.
+check "plugin flags pass through untouched" "demo:1:--verbose -n 2" \
+	"$(binpass demo --verbose -n 2)"
+
+# Underscore in the file, dash in the command.
+check "multi-word plugin names resolve" "cloud-sync:now" "$(binpass cloud-sync now)"
+
+binpass fails >/dev/null 2>&1
+check "a plugin's exit status is binpass's exit status" "42" "$?"
+
+# The callback is what makes plugins useful, so it is verified end to end
+# rather than assumed from the environment being set.
+callback=$(binpass callback)
+grep -q "web/site" <<<"$callback" \
+	&& ok "a plugin can query binpass for machine-readable output" \
+	|| bad "the plugin callback returned nothing usable" '["web/site",...]' "$callback"
+
+# A plugin must never be able to take over a command that handles secrets.
+cat >"$plugin_dir/binpass-show" <<'PLUG'
+#!/usr/bin/env bash
+echo "HIJACKED"
+PLUG
+chmod +x "$plugin_dir/binpass-show"
+check "a plugin cannot shadow a builtin" "agesecret" "$(binpass show --field=password web/site)"
+
+listing=$(binpass plugin list 2>&1)
+grep -q "binpass demo" <<<"$listing" && ok "plugin list shows working plugins" \
+	|| bad "plugin list omits a working plugin" "binpass demo" "$listing"
+grep -q "not executable" <<<"$listing" \
+	&& ok "plugin list reports a plugin that cannot run" \
+	|| bad "a non-executable plugin is silently hidden" "not executable" "$listing"
+grep -q "shadowed by the builtin" <<<"$listing" \
+	&& ok "plugin list explains a shadowed builtin name" \
+	|| bad "a plugin shadowed by a builtin is not explained"
+
+rm -f "$plugin_dir/binpass-show"
+
+# The launcher scripts shipped in contrib are named binpass-*, so they are
+# plugins whether or not that was the intent: `binpass fzf` must reach them.
+grep -q "binpass fzf" <<<"$(binpass plugin list 2>&1)" \
+	&& ok "contrib launchers are discoverable as plugins" \
+	|| bad "the contrib launchers are not visible to plugin discovery"
+
 # --------------------------------------------------------------------- report
 
 section "Result"

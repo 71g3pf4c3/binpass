@@ -49,6 +49,12 @@ func (BitwardenImporter) Import(r io.Reader) iter.Seq2[*Entry, error] {
 				Notes:    csvField(row, idx, "notes"),
 			}
 
+			// Bitwarden "group" column is an alternative to "folder" (organization
+			// exports use "group" instead of "folder").
+			if e.Group == "" {
+				e.Group = csvField(row, idx, "group")
+			}
+
 			// Bitwarden TOTP is in login_totp.
 			if totp := csvField(row, idx, "login_totp"); totp != "" {
 				e.TOTPURI = normalizeTOTP(totp)

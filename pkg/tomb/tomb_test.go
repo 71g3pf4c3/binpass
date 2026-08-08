@@ -306,7 +306,7 @@ func TestShredDir(t *testing.T) {
 	preserveFile := "store.coffin.age"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, preserveFile), []byte("encrypted"), 0o600))
 
-	err := shredDir(dir, preserveFile)
+	err := shredDir(dir, true, preserveFile)
 	require.NoError(t, err)
 
 	// The preserved file should still exist.

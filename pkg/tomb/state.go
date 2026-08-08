@@ -1,6 +1,7 @@
 package tomb
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,21 +33,17 @@ func stateDir(storeDir string) string {
 }
 
 // statePath returns the full path to the state file for a given store.
-// The state file is keyed by the store directory's absolute path to support
-// multiple stores.
+// The state file is keyed by a SHA-256 hash of the store's absolute path to
+// avoid collisions when multiple stores share the same directory basename
+// (e.g. ~/work/pass and ~/personal/pass both have basename "pass").
 func statePath(storeDir string) string {
 	dir := stateDir(storeDir)
-	// Use a stable filename derived from the store path to avoid collisions.
 	abs, err := filepath.Abs(storeDir)
 	if err != nil {
 		abs = storeDir
 	}
-	// Simple hash: replace path separators to make a valid filename.
-	safe := filepath.Base(abs)
-	if safe == "." || safe == "/" {
-		safe = "default"
-	}
-	return filepath.Join(dir, safe+"-"+stateFileName)
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(abs)))[:16]
+	return filepath.Join(dir, hash+"-"+stateFileName)
 }
 
 // loadState reads the tomb state for the given store. Returns an error

@@ -78,6 +78,7 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newMenuCmd(app),
 		newOTPCmd(app),
 		newTombCmd(app),
+		newDoctorCmd(app),
 		newCompletionCmd(app),
 		newVersionCmd(app, version, commit, buildDate),
 	)

@@ -113,7 +113,7 @@ func (c *Coffin) Open(dir string, timer time.Duration) error {
 	}
 	if err := saveState(dir, &s); err != nil {
 		// Roll back the unpack on state failure.
-		_ = shredDir(dir, coffinFileName, stateFileName)
+		_ = shredDir(dir, true, coffinFileName, stateFileName)
 		return fmt.Errorf("tomb: writing state: %w", err)
 	}
 
@@ -121,8 +121,9 @@ func (c *Coffin) Open(dir string, timer time.Duration) error {
 }
 
 // Close re-encrypts the plaintext store into the coffin, then shreds the
-// plaintext directory. If force is true, close even if the store appears
-// unchanged.
+// plaintext directory. If force is true, skip the overwrite-random pass and
+// just remove files (faster, but no shred guarantee — appropriate during
+// shutdown or when the operator accepts the SSD caveat explicitly).
 func (c *Coffin) Close(dir string, force bool) error {
 	coffinPath := filepath.Join(dir, coffinFileName)
 
@@ -152,7 +153,8 @@ func (c *Coffin) Close(dir string, force bool) error {
 	}
 
 	// Shred the plaintext, keeping the coffin and state file.
-	if err := shredDir(dir, coffinFileName, stateFileName); err != nil {
+	// When force is true, skip overwrite-random for speed.
+	if err := shredDir(dir, !force, coffinFileName, stateFileName); err != nil {
 		return fmt.Errorf("tomb: close: shred: %w", err)
 	}
 
@@ -324,16 +326,14 @@ func writeTar(w io.Writer, root string) error {
 			return err
 		}
 
-		// Resolve symlink target for tar headers.
-		linkTarget := ""
+		// Skip symlinks: they are not written to the archive because readTar
+		// rejects them on extraction. Password stores should not contain
+		// symlinks; if they do, they are silently dropped.
 		if info.Mode()&os.ModeSymlink != 0 {
-			linkTarget, err = os.Readlink(path)
-			if err != nil {
-				return err
-			}
+			return nil
 		}
 
-		header, err := tar.FileInfoHeader(info, linkTarget)
+		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
 		}
@@ -402,13 +402,11 @@ func readTar(r io.Reader, dir string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-				return err
-			}
-			_ = os.Remove(target)
-			if err := os.Symlink(header.Linkname, target); err != nil {
-				return err
-			}
+			// Reject symlinks: a symlink pointing outside the store allows a
+			// subsequent TypeReg entry to write through it (path traversal).
+			// Coffin never writes symlinks, so this is always malicious or
+			// corrupt input.
+			return fmt.Errorf("tomb: archive contains symlink (%s), which is not allowed", header.Name)
 		}
 	}
 	return nil
@@ -433,10 +431,11 @@ func hasPlaintext(dir string) bool {
 	return false
 }
 
-// shredDir removes all files and directories inside dir, overwriting regular
-// files with random data first. Dotfiles (matching storage.FS behavior) and
-// the preserve names are kept.
-func shredDir(dir string, preserve ...string) error {
+// shredDir removes all files and directories inside dir, optionally
+// overwriting regular files with random data first. Dotfiles (matching
+// storage.FS behavior) and the preserve names are kept. If shred is false,
+// files are simply removed without overwriting (force close).
+func shredDir(dir string, shred bool, preserve ...string) error {
 	preserveSet := make(map[string]bool, len(preserve))
 	for _, p := range preserve {
 		preserveSet[p] = true
@@ -471,12 +470,12 @@ func shredDir(dir string, preserve ...string) error {
 		if len(base) > 0 && base[0] == '.' {
 			continue
 		}
-		// If it's a regular file, overwrite before removing.
+		// If it's a regular file, overwrite before removing (unless forced).
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
 		}
-		if info.Mode().IsRegular() {
+		if shred && info.Mode().IsRegular() {
 			_ = overwriteRandom(path, info.Size())
 		}
 		_ = os.Remove(path)

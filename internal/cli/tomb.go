@@ -93,7 +93,7 @@ func newTombCloseCmd(app *App) *cobra.Command {
 			return app.runTombClose(force)
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "close even if the store appears unchanged")
+	cmd.Flags().BoolVar(&force, "force", false, "skip shred (overwrite-random) for faster close; data is only deleted, not overwritten")
 	return cmd
 }
 

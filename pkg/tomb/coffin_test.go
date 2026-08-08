@@ -16,7 +16,8 @@ import (
 // --- Tar round-trip tests ---
 
 func TestWriteAndReadTar(t *testing.T) {
-	// Create a source directory with files, subdirs, symlinks.
+	// Create a source directory with files, subdirs, and a symlink (which
+	// should be silently skipped by writeTar and rejected by readTar).
 	src := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(src, "sub"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "root.age"), []byte("root-content"), 0o600))
@@ -25,6 +26,23 @@ func TestWriteAndReadTar(t *testing.T) {
 
 	// Write tar.
 	var buf bytes.Buffer
+	require.NoError(t, writeTar(&buf, src))
+
+	// Verify the tar does not contain the symlink.
+	tr := tar.NewReader(&buf)
+	var names []string
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		names = append(names, h.Name)
+		assert.NotEqual(t, tar.TypeSymlink, h.Typeflag, "symlink should not be in tar")
+	}
+	assert.NotContains(t, names, "link", "symlink entry should be skipped by writeTar")
+
+	// Re-create the tar buffer for readTar test.
+	buf.Reset()
 	require.NoError(t, writeTar(&buf, src))
 
 	// Read tar into a new directory.
@@ -39,11 +57,6 @@ func TestWriteAndReadTar(t *testing.T) {
 	data, err = os.ReadFile(filepath.Join(dst, "sub", "nested.age"))
 	require.NoError(t, err)
 	assert.Equal(t, "nested", string(data))
-
-	// Verify symlink target (not the file contents).
-	link, err := os.Readlink(filepath.Join(dst, "link"))
-	require.NoError(t, err)
-	assert.Equal(t, "root.age", link)
 }
 
 func TestWriteTarSkipsDotfiles(t *testing.T) {
@@ -103,6 +116,19 @@ func TestReadTarPathTraversal(t *testing.T) {
 	dst := t.TempDir()
 	err := readTar(&buf, dst)
 	assert.Error(t, err, "path traversal should be rejected")
+}
+
+func TestReadTarRejectsSymlink(t *testing.T) {
+	// Craft a tar with a symlink entry that points outside the store.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "evil", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"}))
+	require.NoError(t, tw.Close())
+
+	dst := t.TempDir()
+	err := readTar(&buf, dst)
+	assert.Error(t, err, "symlink in archive should be rejected")
+	assert.Contains(t, err.Error(), "symlink", "error should mention symlink")
 }
 
 // --- Coffin encrypt/decrypt with age ---

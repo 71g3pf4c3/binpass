@@ -20,6 +20,7 @@
 | `04-import-export-audit.md` | Импорт 9 форматов, HIBP-аудит, binary secrets | M2 | **✅ сделано** | — |
 | `05-tui.md` | bubbletea TUI, history | M7 | — | да |
 | `06-current-wip.md` | Незакоммиченный WIP: фиксы, e2e, completion, GitLab CI | — | частично (баги закоммичены) | **сначала** |
+| `07-import-debt.md` | M2 debt: mock store, coverage gaps, bugs, improvements | M2 post | — | да, в любое время |
 
 ## Порядок
 
@@ -33,6 +34,7 @@
   переписывание, а не доработку. Дай его сильнейшему агенту и не торопи.
 * Остальные аддитивны и хорошо идут параллельно.
 * `04` **закрыт** (import, audit, binary). Документация обновлена.
+* `07` — post-M2 debt. Можно забрать в любой момент.
 
 ## Зависимости между заданиями
 

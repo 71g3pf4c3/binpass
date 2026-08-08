@@ -47,6 +47,9 @@
           go-tools
           golangci-lint
           goreleaser
+          # goreleaser shells out to syft for the SBOM it attaches to each
+          # archive; without it a release fails at the very last step.
+          syft
           gotestsum
           mockgen
           delve
@@ -58,9 +61,9 @@
           version = "0.1.0";
           src = ./.;
 
-          # Updated with `nix build` once dependencies settle; the placeholder
-          # makes the first failure tell you the right hash.
-          vendorHash = null;
+          # Hash of the fetched module set. null would mean "the source
+          # vendors its dependencies", which this repository does not.
+          vendorHash = "sha256-bnv8ffH4/AiLkqQGZmIeLkoUk5wCRI4BIC1rUEl3oOs=";
 
           env.CGO_ENABLED = 0;
           ldflags = [

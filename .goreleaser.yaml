@@ -48,6 +48,42 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
+# Distribution packages. The contrib launchers ship alongside the binary so
+# that `binpass-rofi` and friends are on PATH after a package install.
+nfpms:
+  - id: binpass
+    package_name: binpass
+    vendor: 71g3pf4c3
+    homepage: https://github.com/71g3pf4c3/binpass
+    maintainer: 71g3pf4c3 <71g3pf4c3@gmail.com>
+    description: |-
+      A pass(1)-compatible password manager.
+      Same storage format and command surface as pass, with age alongside GPG,
+      hardware key support, and a built-in picker replacing rofi-pass/passmenu.
+    license: MIT
+    formats: [deb, rpm, apk, archlinux]
+    # gnupg is only needed for .gpg stores, and age entries need nothing at
+    # all, so it stays a recommendation rather than a hard dependency.
+    recommends:
+      - gnupg
+    contents:
+      - src: contrib/binpass-rofi
+        dst: /usr/bin/binpass-rofi
+        file_info:
+          mode: 0755
+      - src: contrib/binpass-fzf
+        dst: /usr/bin/binpass-fzf
+        file_info:
+          mode: 0755
+      - src: contrib/binpass-dmenu
+        dst: /usr/bin/binpass-dmenu
+        file_info:
+          mode: 0755
+      - src: LICENSE
+        dst: /usr/share/doc/binpass/LICENSE
+      - src: README.md
+        dst: /usr/share/doc/binpass/README.md
+
 sboms:
   - id: archive
     artifacts: archive

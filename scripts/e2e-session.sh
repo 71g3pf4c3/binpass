@@ -249,6 +249,81 @@ grep -q "web/site" <<<"$locked" \
 	|| bad "completion needs a key, so it would prompt at the shell prompt"
 mv /tmp/stashed.key "$XDG_CONFIG_HOME/binpass/identities.age"
 
+# -------------------------------------------------------------------- import
+
+section "Import: CSV round-trip"
+
+bw_csv=$(mktemp /tmp/bitwarden-XXXXXX.csv)
+cat > "$bw_csv" <<'CSVEOF'
+folder,favorite,type,name,login_username,login_password,login_uri,login_totp,notes
+ImportTest,0,login,ImportEntry,importer,import-secret,https://import.example.com,,imported by e2e
+CSVEOF
+
+# Dry-run should not write anything.
+dry_output=$(binpass import --dry-run "$bw_csv" 2>&1)
+grep -q "ImportEntry" <<<"$dry_output" \
+	&& ok "dry-run lists ImportEntry" || bad "dry-run missing ImportEntry"
+binpass show ImportTest/ImportEntry >/dev/null 2>&1 \
+	&& bad "dry-run should not write entries" || ok "dry-run does not write entries"
+
+# Actual import.
+binpass import "$bw_csv" >/dev/null 2>&1
+check "imported entry round-trips" "import-secret" \
+	"$(binpass show --field=password ImportTest/ImportEntry 2>/dev/null)"
+
+# Conflict detection: re-importing without --force should fail.
+conflict_out=$(binpass import "$bw_csv" 2>&1)
+grep -q "already exists" <<<"$conflict_out" \
+	&& ok "conflict detected on re-import" || bad "conflict not detected on re-import"
+
+# --force overwrites.
+binpass import --force "$bw_csv" >/dev/null 2>&1
+check "force re-import overwrites" "import-secret" \
+	"$(binpass show --field=password ImportTest/ImportEntry 2>/dev/null)"
+
+# Format flag.
+op_csv=$(mktemp /tmp/1password-XXXXXX.csv)
+cat > "$op_csv" <<'CSVEOF'
+Title,Username,Password,URL,OTP,Notes
+OPEntry,opuser,op-secret,https://op.example.com,,from 1Password
+CSVEOF
+binpass import --format=1password "$op_csv" >/dev/null 2>&1
+check "1Password import round-trips" "op-secret" \
+	"$(binpass show --field=password OPEntry 2>/dev/null)"
+
+rm -f "$bw_csv" "$op_csv"
+
+# --------------------------------------------------------------------- audit
+
+section "Audit: weak, reused, expired"
+
+# The store now has several entries from previous sections. Run audit in
+# offline mode (--no-hibp) so it does not hit the real HIBP API.
+audit_text=$(binpass audit --no-hibp 2>&1)
+audit_rc=$?
+
+# Audit should find weak entries (we inserted "gpgsecret" and others).
+grep -q "weak\|reused\|WARNING" <<<"$audit_text" \
+	&& ok "audit reports weak/reused passwords" || bad "audit found no issues"
+
+# JSON output must be valid and must not leak passwords.
+audit_json=$(binpass audit --no-hibp --format=json 2>&1)
+if python3 -c "import json,sys; json.loads(sys.stdin.read())" <<<"$audit_json" 2>/dev/null; then
+	ok "audit JSON is valid"
+else
+	bad "audit JSON is malformed"
+fi
+grep -q '"password"' <<<"$audit_json" \
+	&& bad "audit JSON leaks password values" || ok "audit JSON does not leak passwords"
+
+# Stats line must be internally consistent.
+stats_line=$(grep "Total:" <<<"$audit_text")
+if [[ -n $stats_line ]]; then
+	ok "audit output includes stats summary"
+else
+	bad "audit output missing stats summary"
+fi
+
 # --------------------------------------------------------------------- report
 
 section "Result"

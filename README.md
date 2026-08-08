@@ -26,7 +26,8 @@ but not yet written.
 |---|---|
 | yes | `init` `ls` `show` `find` `grep` `insert` `edit` `generate` `rm` `mv` `cp` `git` `version` |
 | yes | `otp` (pass-otp), `menu` (passmenu / rofi-pass), `generate --words` (diceware) |
-| not yet | `sync` `tomb` `ss` `plugin` `import` `audit` `tui` |
+| yes | `import` (pass-import, 9 formats), `export` (CSV), `audit` (pass-audit) |
+| not yet | `sync` `tomb` `ss` `plugin` `tui` |
 
 ## Install
 
@@ -56,6 +57,62 @@ binpass generate -c bank/tinkoff 32
 binpass show github.com/alice
 binpass otp github.com/alice
 ```
+
+## Import and export
+
+Move passwords from another manager into binpass. Auto-detection means you don't
+need to know the format — just point `binpass import` at the export file.
+
+```sh
+# Import a CSV or KDBX file (format detected automatically).
+binpass import bitwarden_export.csv
+binpass import keepass.kdbx              # prompts for database password
+
+# See what would be imported without writing anything.
+binpass import --dry-run bitwarden_export.csv
+
+# Force-overwrite entries that already exist.
+binpass import --force bitwarden_export.csv
+
+# Specify the format explicitly when auto-detection fails.
+binpass import --format=1password export.csv
+
+# Handle non-UTF-8 exports (e.g. Russian LastPass).
+binpass import --encoding=windows-1251 lastpass.csv
+```
+
+Supported formats: **Bitwarden, 1Password, LastPass, Chrome, Firefox, Enpass,
+KeePass (KDBX), pass, gopass**.
+
+Export the entire store to CSV. The output contains decrypted passwords in plain
+text — delete the file after use and never commit it.
+
+```sh
+binpass export                           # to stdout
+binpass export backup.csv               # to file
+```
+
+## Audit
+
+Check the store for weak, reused, expired, and breached passwords.
+
+```sh
+# Full audit (includes HIBP breach check, requires network).
+binpass audit
+
+# Offline audit (skip the HIBP check).
+binpass audit --no-hibp
+
+# JSON output for scripting.
+binpass audit --format=json
+
+# Parallel decryption (faster, but bad for hardware tokens).
+binpass audit --parallel=4
+```
+
+The HIBP check uses the k-anonymity protocol: only the first 5 characters of the
+SHA-1 hash are sent to the API. The full password hash never leaves the machine.
+Passwords are never printed in the output — only entry names and verdicts.
 
 `binpass` reads every `PASSWORD_STORE_*` variable pass understands. The
 matching `BINPASS_*` variable wins where both are set.

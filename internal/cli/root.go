@@ -77,6 +77,7 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newGitCmd(app),
 		newMenuCmd(app),
 		newOTPCmd(app),
+		newBinaryCmd(app),
 		newImportCmd(app),
 		newExportCmd(app),
 		newAuditCmd(app),
@@ -93,7 +94,7 @@ func registerCompletions(app *App, root *cobra.Command) {
 	// Commands taking exactly one existing entry.
 	entryCommands := []string{"show", "edit", "otp", "generate"}
 	// Commands taking an entry or a subfolder, possibly twice.
-	treeCommands := []string{"ls", "list", "rm", "remove", "delete", "mv", "rename", "cp", "copy", "insert", "import", "export", "audit"}
+	treeCommands := []string{"ls", "list", "rm", "remove", "delete", "mv", "rename", "cp", "copy", "insert", "import", "export", "audit", "binary"}
 
 	for _, c := range root.Commands() {
 		name := c.Name()

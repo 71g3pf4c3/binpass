@@ -324,6 +324,40 @@ else
 	bad "audit output missing stats summary"
 fi
 
+# -------------------------------------------------------------------- binary
+
+section "Binary secrets"
+
+# Store a binary file.
+binpass_bin_test=$(mktemp /tmp/binpass-bin-XXXXXX)
+printf 'binary-test-payload' > "$binpass_bin_test"
+binpass binary copy test.b64 "$binpass_bin_test" >/dev/null 2>&1
+binpass show test.b64 >/dev/null 2>&1 \
+	&& ok "binary copy stores .b64 entry" || bad "binary copy failed"
+
+# Cat: decode and verify.
+cat_out=$(binpass binary cat test.b64 2>&1)
+check "binary cat round-trips" "binary-test-payload" "$cat_out"
+
+# Sum: SHA-256 of decoded content.
+expected_sum=$(sha256sum "$binpass_bin_test" | awk '{print $1}')
+actual_sum=$(binpass binary sum test.b64 2>&1)
+check "binary sum matches file hash" "$expected_sum" "$actual_sum"
+
+# Non-binary entry should fail.
+binpass binary cat web/site 2>/dev/null \
+	&& bad "binary cat should reject non-.b64 entry" || ok "binary cat rejects non-.b64 entry"
+
+# Move: store + delete original.
+move_file=$(mktemp /tmp/binpass-move-XXXXXX)
+printf 'move-payload' > "$move_file"
+binpass binary move moved.b64 "$move_file" >/dev/null 2>&1
+[[ ! -f "$move_file" ]] && ok "binary move deletes original" || bad "binary move did not delete original"
+move_out=$(binpass binary cat moved.b64 2>&1)
+check "binary move round-trips" "move-payload" "$move_out"
+
+rm -f "$binpass_bin_test"
+
 # --------------------------------------------------------------------- report
 
 section "Result"

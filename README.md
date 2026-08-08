@@ -26,7 +26,7 @@ but not yet written.
 |---|---|
 | yes | `init` `ls` `show` `find` `grep` `insert` `edit` `generate` `rm` `mv` `cp` `git` `version` |
 | yes | `otp` (pass-otp), `menu` (passmenu / rofi-pass), `generate --words` (diceware) |
-| yes | `import` (pass-import, 9 formats), `export` (CSV), `audit` (pass-audit) |
+| yes | `import` (pass-import, 9 formats), `export` (CSV), `audit` (pass-audit), `binary` (pass-file) |
 | not yet | `sync` `tomb` `ss` `plugin` `tui` |
 
 ## Install
@@ -113,6 +113,26 @@ binpass audit --parallel=4
 The HIBP check uses the k-anonymity protocol: only the first 5 characters of the
 SHA-1 hash are sent to the API. The full password hash never leaves the machine.
 Passwords are never printed in the output — only entry names and verdicts.
+
+## Binary secrets
+
+`binpass binary` replaces `pass-file`. Binary entries are stored as base64-encoded
+`.b64` entries (gopass convention), so they are versioned, synced, and re-encrypted
+alongside text secrets.
+
+```sh
+# Store a binary file in the password store.
+binpass binary copy photo.b64 photo.jpg
+
+# Decode and write back to disk.
+binpass binary cat photo.b64 > photo.jpg
+
+# Check the SHA-256 of the decoded content.
+binpass binary sum photo.b64
+
+# Store and delete the original (like git mv).
+binpass binary move key.b64 /path/to/key.pem
+```
 
 `binpass` reads every `PASSWORD_STORE_*` variable pass understands. The
 matching `BINPASS_*` variable wins where both are set.

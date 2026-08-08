@@ -376,6 +376,33 @@ HIBPClient.Check(ctx, pw) — cache by prefix, mutex-protected
 Кеш — in-memory, key = 5-char prefix. Один API call на уникальный prefix,
 повторные passwords с тем же prefix — cache hit.
 
+### 5.3 binary: бинарные секреты
+
+Заменяет `pass-file`. Бинарные записи — обычные зашифрованные записи с именем,
+заканчивающимся на `.b64`, содержимое которых — base64-кодированные исходные данные.
+Совместимо с gopass.
+
+**Команды:**
+
+| Команда | Действие |
+|---|---|
+| `binpass binary cat <name>` | Декодировать и вывести в stdout |
+| `binpass binary sum <name>` | SHA-256 декодированных данных |
+| `binpass binary copy <name> <file>` | Закодировать файл в base64 и сохранить (оригинал остаётся) |
+| `binpass binary move <name> <file>` | То же, но удалить оригинал |
+
+**Потоковость:** Cat и Sum декодируют base64 через `io.Copy` — полный decoded
+контент не буферизуется. Store кодирует за один проход, но результирующая
+base64-строка должна поместиться в память (ограничение crypto-слоя).
+
+**Критичные инварианты:**
+
+1. Запись без суффикса `.b64` — `ErrNotBinary`.
+2. `Store` с `force=false` спрашивает подтверждение при перезаписи (CLI level).
+3. `DetectBinary` — эвристика для отображения (single-line base64), не для
+   security decisions.
+4. Аттачменты из KDBX-импорта (§5.1) используют тот же формат `name.b64`.
+
 ---
 
 ## 6. binpass как системный keystore
@@ -808,6 +835,7 @@ pkg/
     integrations/       git, docker, ssh/sudo askpass, k8s, aws, netrc, exec
   importer/             9 форматов (KDBX, Bitwarden, 1Password, LastPass, Chrome, Firefox, Enpass, pass, gopass); Registry, Entry, Plan/WriteEntries, csvReadAll (BOM/encoding/multiline), NormalizePath/ValidatePath/DeduplicatePaths
   audit/                HIBP k-anonymity (5-char prefix, in-memory cache, noopHIBP для offline), zxcvbn strength, SHA-1 reuse detection, expiry (RFC 3339/ISO/European/relative), FormatHuman (severity grouping), JSON output, parallel decryption
+  binary/               .b64 entries (gopass convention): Cat (streaming base64 decode), Sum (SHA-256), Store (base64 encode), DetectBinary, IsBinary
   pwgen/  clip/  tmpfile/
 ```
 
@@ -918,7 +946,7 @@ sync:
 |---|---|---|
 | **M0** | Дерево, `crypto/gpg` + `crypto/age`, ядро CLI, `version` | Golden-тесты против pass зелёные |
 | **M1** | `identity`: age-plugin протокол, YubiKey PIV, FIDO2, агент | `binpass identity test` проходит на реальном токене |
-| **M2** | `otp`, `binary`, `audit`, `import/export`, `generate --words` | Паритет с pass-otp / pass-audit / pass-import подтверждён тестами. **audit + import/export реализованы** (покрытие: importer 89.5%, audit 96.2%, e2e 43/43). otp и binary — вне текущего scope |
+| **M2** | `otp`, `binary`, `audit`, `import/export`, `generate --words` | Паритет с pass-otp / pass-audit / pass-import подтверждён тестами. **Все пять компонентов реализованы:** otp (main), generate --words (main), binary (pkg/binary, 19 tests), audit (pkg/audit, 96.2%), import/export (pkg/importer, 89.5%, 9 форматов, e2e 43/43) |
 | **M3** | Движок sync, state.db, VV, конфликты, remote `git` | Два клиента, оффлайн-конфликт, корректное разрешение |
 | **M4** | rclone: Drive + Yandex с встроенным OAuth, WebDAV, S3, locking | Интеграционные тесты на всех транспортах |
 | **M5** | `tomb`: coffin везде, LUKS на Linux, sparsebundle на macOS | Автозакрытие по screenlock работает на трёх ОС |

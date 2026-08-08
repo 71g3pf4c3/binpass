@@ -1,0 +1,33 @@
+# Full-system test image for binpass.
+#
+# Dockerfile.test runs the Go suite. This image goes further: it builds a
+# headless Wayland compositor and a real X server inside the container so the
+# clipboard, the launcher scripts, and shell completion can be exercised
+# end to end, against real wl-copy, xclip, fzf and gpg — without touching the
+# developer's session, keyring, store, or clipboard.
+FROM golang:1.26-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	pass gnupg age git tree \
+	wl-clipboard xclip xsel xvfb sway libwayland-server0 \
+	fzf dmenu bash-completion zsh fish \
+	ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0
+ENV BINPASS_CONFIG=/nonexistent.yaml
+# weston needs a writable runtime directory it owns.
+ENV XDG_RUNTIME_DIR=/tmp/xdg-runtime
+
+RUN install -d -m 0700 "$XDG_RUNTIME_DIR" \
+	&& go build -o /usr/local/bin/binpass ./cmd/binpass \
+	&& install -m 0755 contrib/binpass-rofi contrib/binpass-fzf contrib/binpass-dmenu /usr/local/bin/
+
+CMD ["/src/scripts/e2e-session.sh"]

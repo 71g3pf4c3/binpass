@@ -54,15 +54,23 @@ type Resolver struct {
 	PluginUI PluginUI
 }
 
-// DefaultFiles returns the fallback identity files in the order of §3.1:
-// binpass's own store, the standard age key file, then passage's.
+// DefaultFiles returns the fallback identity files in priority order:
+// binpass's own locations, the standard age key file, then passage's.
+//
+// Both ~/.local/share/binpass and ~/.config/binpass are searched. The
+// architecture places the identity in the data directory, but init has
+// historically written it next to the config, and a key the tool created
+// itself must never be a key the tool cannot find.
 func DefaultFiles() []string {
 	var out []string
 	if dir := dataDir(); dir != "" {
 		out = append(out, filepath.Join(dir, "identities.age"))
 	}
 	if dir := configDir(); dir != "" {
-		out = append(out, filepath.Join(dir, "age", "keys.txt"))
+		out = append(out,
+			filepath.Join(dir, "binpass", "identities.age"),
+			filepath.Join(dir, "age", "keys.txt"),
+		)
 	}
 	if p := os.Getenv("PASSAGE_IDENTITIES_FILE"); p != "" {
 		out = append(out, p)
@@ -92,9 +100,38 @@ func (r *Resolver) Load() ([]age.Identity, error) {
 		out = append(out, s.Identities...)
 	}
 	if len(out) == 0 {
-		return nil, ErrNone
+		return nil, r.notFound()
 	}
 	return out, nil
+}
+
+// notFound builds an error naming every location that was searched. "No
+// identity found" on its own sends the user hunting for a key that usually
+// exists a directory away from where the tool looked.
+func (r *Resolver) notFound() error {
+	if r.Explicit != "" {
+		return fmt.Errorf("%w: %s holds no age identity", ErrNone, r.Explicit)
+	}
+	var sb strings.Builder
+	sb.WriteString("searched:")
+	for _, p := range r.Files {
+		if p == "" {
+			continue
+		}
+		sb.WriteString("\n  ")
+		sb.WriteString(p)
+		if _, err := os.Stat(p); err == nil {
+			sb.WriteString("  (exists, but holds no identity)")
+		}
+	}
+	sb.WriteString("\n\nGenerate one with:  age-keygen -o ")
+	if dir := dataDir(); dir != "" {
+		sb.WriteString(filepath.Join(dir, "identities.age"))
+	} else {
+		sb.WriteString("~/.local/share/binpass/identities.age")
+	}
+	sb.WriteString("\nOr point binpass at an existing key with --identity or BINPASS_IDENTITY.")
+	return fmt.Errorf("%w\n%s", ErrNone, sb.String())
 }
 
 // Sources returns the identity sources that yielded keys, in priority order.

@@ -120,7 +120,19 @@ func TestDefaultFilesOrder(t *testing.T) {
 
 	assert.Equal(t, []string{
 		filepath.Join("/data", "identities.age"),
+		filepath.Join("/config", "binpass", "identities.age"),
 		filepath.Join("/config", "age", "keys.txt"),
 		"/passage/ids",
 	}, identity.DefaultFiles())
+}
+
+// TestDefaultFilesCoversWhereInitWrites guards the bug where init created the
+// key under the config directory while the resolver only looked in the data
+// directory, so a store the tool had just set up could not be opened.
+func TestDefaultFilesCoversWhereInitWrites(t *testing.T) {
+	t.Setenv("BINPASS_DATA_DIR", "/data")
+	t.Setenv("XDG_CONFIG_HOME", "/config")
+
+	assert.Contains(t, identity.DefaultFiles(),
+		filepath.Join("/config", "binpass", "identities.age"))
 }

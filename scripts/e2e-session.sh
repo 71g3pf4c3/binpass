@@ -59,13 +59,19 @@ section "Headless display servers"
 Xvfb :99 -screen 0 1024x768x24 >/tmp/xvfb.log 2>&1 &
 export DISPLAY=:99
 # Readiness is probed with xclip itself rather than xdpyinfo, so the check
-# needs no extra package and tests the tool actually used later.
+# needs no extra package and exercises the tool used later. A write that is
+# read back is the only reliable signal: xclip forks a selection owner and
+# exits zero even when the display is not yet accepting connections.
+x_ready=
 for _ in $(seq 100); do
-	xclip -selection clipboard -o >/dev/null 2>&1 && break
-	echo probe | xclip -selection clipboard -in >/dev/null 2>&1 && break
+	echo xvfb-probe | xclip -selection clipboard -in >/dev/null 2>&1
+	if [[ $(xclip -selection clipboard -out 2>/dev/null) == xvfb-probe ]]; then
+		x_ready=1
+		break
+	fi
 	sleep 0.1
 done
-if echo probe | xclip -selection clipboard -in >/dev/null 2>&1; then
+if [[ -n $x_ready ]]; then
 	ok "Xvfb running on :99"
 else
 	bad "Xvfb failed to start"
@@ -173,6 +179,10 @@ check "a foreign copy is left alone" "USER-COPIED-THIS" "$(wl-paste -n)"
 
 section "Clipboard: X11 fallback"
 
+# Hiding Wayland is what forces the X11 backend to be chosen, but the value
+# has to come back afterwards: later sections copy through wl-clipboard, and
+# restoring a guessed socket name silently disables them.
+wayland_display_saved=${WAYLAND_DISPLAY-}
 unset WAYLAND_DISPLAY
 echo "X11-PREVIOUS" | xclip -selection clipboard -in
 timeout 15 binpass show --clip web/site >/dev/null 2>&1 &
@@ -181,7 +191,7 @@ sleep 1
 check "secret reaches the X11 clipboard" "agesecret" "$(xclip -selection clipboard -out)"
 wait $clip_pid
 check "X11 clipboard restored" "X11-PREVIOUS" "$(xclip -selection clipboard -out)"
-export WAYLAND_DISPLAY=wayland-e2e
+[[ -n $wayland_display_saved ]] && export WAYLAND_DISPLAY=$wayland_display_saved
 
 # ------------------------------------------------------------------ launchers
 

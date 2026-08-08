@@ -60,6 +60,8 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 	root.PersistentFlags().StringVar(&app.Cfg.Dir, "store", app.Cfg.Dir, "password store directory")
 	root.PersistentFlags().StringVar(&app.Cfg.Identity, "identity", app.Cfg.Identity, "age identity file")
 
+	root.ValidArgsFunction = app.completeEntriesAndDirs
+
 	root.AddCommand(
 		newInitCmd(app),
 		newListCmd(app),
@@ -75,7 +77,38 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newGitCmd(app),
 		newMenuCmd(app),
 		newOTPCmd(app),
+		newCompletionCmd(app),
 		newVersionCmd(app, version, commit, buildDate),
 	)
+	registerCompletions(app, root)
 	return root
+}
+
+// registerCompletions wires store-aware argument completion onto the commands
+// that take an entry name, so that tab-completion walks the password tree.
+func registerCompletions(app *App, root *cobra.Command) {
+	// Commands taking exactly one existing entry.
+	entryCommands := []string{"show", "edit", "otp", "generate"}
+	// Commands taking an entry or a subfolder, possibly twice.
+	treeCommands := []string{"ls", "list", "rm", "remove", "delete", "mv", "rename", "cp", "copy", "insert"}
+
+	for _, c := range root.Commands() {
+		name := c.Name()
+		switch {
+		case contains(entryCommands, name):
+			c.ValidArgsFunction = app.completeEntries
+		case contains(treeCommands, name):
+			c.ValidArgsFunction = app.completeEntriesAndDirs
+		}
+	}
+}
+
+// contains reports whether needle is in haystack.
+func contains(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }

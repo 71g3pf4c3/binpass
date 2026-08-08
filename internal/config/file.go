@@ -30,6 +30,22 @@ func configDir() string {
 	return filepath.Join(home, ".config")
 }
 
+// DataDir returns $XDG_DATA_HOME/binpass, the sidecar directory for state
+// that must never end up inside the store: plugins, their grants, and caches.
+func DataDir() string {
+	if d := os.Getenv("BINPASS_DATA_DIR"); d != "" {
+		return d
+	}
+	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+		return filepath.Join(d, "binpass")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "binpass")
+}
+
 // applyFile overlays the YAML config file onto cfg. A missing file is not an
 // error: binpass is fully usable with no configuration at all.
 func applyFile(cfg *Config) error {

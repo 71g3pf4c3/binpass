@@ -20,6 +20,7 @@
 | `04-import-export-audit.md` | Импорт 60+ форматов, HIBP-аудит | M2 | да, делится на двоих |
 | `05-tui.md` | bubbletea TUI, history | M7 | да |
 | `06-current-wip.md` | Незакоммиченный WIP: фиксы, e2e, completion, GitLab CI | — | **сначала** |
+| `07-sync-hardening.md` | S3 conditional write, property-тесты, advisory lock, OAuth, sync history, cloud e2e | post-M4 | да, после 01 |
 
 ## Порядок
 

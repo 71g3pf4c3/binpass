@@ -7,6 +7,7 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -53,6 +54,13 @@ type Config struct {
 	Identity string
 	// XSelection is the X11 selection used for clipboard operations.
 	XSelection string
+	// NoColor disables coloured output when the NO_COLOR environment variable
+	// is set, following the https://no-color.org/ convention.
+	NoColor bool
+	// ErrWriter is the destination for diagnostic output. It defaults to
+	// os.Stderr and is overridden by the TUI layer so that bubbletea
+	// rendering is not interleaved with error messages.
+	ErrWriter io.Writer
 }
 
 // Default returns the configuration pass would use with no environment set.
@@ -66,6 +74,8 @@ func Default() Config {
 		CharacterSet:          pwgen.CharacterSet,
 		CharacterSetNoSymbols: pwgen.CharacterSetNoSymbols,
 		XSelection:            "clipboard",
+		NoColor:               os.Getenv("NO_COLOR") != "",
+		ErrWriter:             os.Stderr,
 	}
 }
 

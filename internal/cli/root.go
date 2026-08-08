@@ -76,7 +76,9 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newCopyCmd(app),
 		newGitCmd(app),
 		newMenuCmd(app),
+		newTUICmd(app),
 		newOTPCmd(app),
+		newHistoryCmd(app),
 		newCompletionCmd(app),
 		newVersionCmd(app, version, commit, buildDate),
 	)
@@ -88,7 +90,7 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 // that take an entry name, so that tab-completion walks the password tree.
 func registerCompletions(app *App, root *cobra.Command) {
 	// Commands taking exactly one existing entry.
-	entryCommands := []string{"show", "edit", "otp", "generate"}
+	entryCommands := []string{"show", "edit", "otp", "generate", "history"}
 	// Commands taking an entry or a subfolder, possibly twice.
 	treeCommands := []string{"ls", "list", "rm", "remove", "delete", "mv", "rename", "cp", "copy", "insert"}
 

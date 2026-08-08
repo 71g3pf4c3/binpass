@@ -26,8 +26,11 @@
 | `pkg/pwgen` | Генератор паролей + diceware (EFF-словарь вшит) |
 | `pkg/clip` | Буфер обмена: wl-clipboard, xclip, xsel, pbcopy, с восстановлением |
 | `pkg/otp` | TOTP/HOTP, проверено на векторах RFC 4226 / RFC 6238 |
+| `pkg/importer` | 9 форматов (KDBX, Bitwarden, 1Password, LastPass, Chrome, Firefox, Enpass, pass, gopass); Registry, Entry, Plan/WriteEntries, dry-run, export CSV. 89.5% coverage |
+| `pkg/audit` | HIBP k-anonymity (5-char prefix, in-memory cache, noopHIBP), zxcvbn strength, SHA-1 reuse, expiry (RFC 3339/ISO/Euro/relative), JSON output. 96.2% coverage |
+| `pkg/binary` | .b64 entries (gopass convention): Cat (streaming base64 decode), Sum (SHA-256), Store (base64 encode), DetectBinary, IsBinary |
 | `internal/config` | viper: YAML + ENV + флаги, все `PASSWORD_STORE_*` |
-| `internal/cli` | init, ls, show, find, grep, insert, edit, generate, rm, mv, cp, git, version, otp, menu, completion |
+| `internal/cli` | init, ls, show, find, grep, insert, edit, generate, rm, mv, cp, git, version, otp, menu, completion, import, export, audit, binary |
 
 ## Железные правила
 

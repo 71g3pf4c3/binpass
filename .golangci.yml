@@ -19,6 +19,14 @@ linters:
     gosec:
       excludes:
         - G104   # errcheck overlap; handled elsewhere
+    errcheck:
+      # Writing to stdout or stderr is reported through the process exit code,
+      # not by inspecting each call; checking every Fprintf would add noise
+      # without changing behaviour.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
 
   exclusions:
     rules:

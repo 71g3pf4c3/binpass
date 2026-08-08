@@ -1,0 +1,70 @@
+# Listing, tree rendering, and find.
+
+binpass init --age $RECIPIENT
+
+stdin pw.txt
+binpass insert -m github.com/alice
+stdin pw.txt
+binpass insert -m github.com/bob
+stdin pw.txt
+binpass insert -m bank/tinkoff
+stdin pw.txt
+binpass insert -m top
+
+# LC_ALL is UTF-8 and TERM is empty, so tree draws box glyphs without colour.
+binpass ls
+cmp stdout tree.txt
+
+# Listing a subfolder descends into it and drops the shared prefix.
+binpass ls github.com
+cmp stdout subtree.txt
+
+# A directory name behaves as a listing, not a missing entry.
+binpass github.com
+cmp stdout subtree.txt
+
+# Machine-readable formats exist so scripts never parse the tree.
+binpass ls --format=plain
+cmp stdout plain.txt
+
+binpass ls --format=json
+cmp stdout json.txt
+
+! binpass ls --format=nonsense
+stderr 'unknown format'
+
+# find prunes the tree to matching entries, after echoing the terms.
+binpass find git
+cmp stdout find.txt
+
+-- pw.txt --
+hunter2
+-- tree.txt --
+Password Store
+├── bank
+│   └── tinkoff
+├── github.com
+│   ├── alice
+│   └── bob
+└── top
+-- subtree.txt --
+github.com
+├── alice
+└── bob
+-- plain.txt --
+bank/tinkoff
+github.com/alice
+github.com/bob
+top
+-- json.txt --
+[
+  "bank/tinkoff",
+  "github.com/alice",
+  "github.com/bob",
+  "top"
+]
+-- find.txt --
+Search Terms: git
+└── github.com
+    ├── alice
+    └── bob

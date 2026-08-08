@@ -1,0 +1,56 @@
+# Searching inside decrypted entries, and editing them.
+
+binpass init --age $RECIPIENT
+
+stdin alice.txt
+binpass insert -m github.com/alice
+stdin bob.txt
+binpass insert -m gitlab.com/bob
+
+# grep decrypts every entry and reports the matching lines with their entry.
+# pass colours the directory and the entry name separately, so an escape
+# sequence sits between them.
+binpass grep example.com
+stdout 'github\.com/.*alice'
+stdout 'url: https://.*example\.com'
+! stdout 'bob'
+
+# Matching is case-sensitive unless asked otherwise. Like pass, a search that
+# finds nothing still succeeds; only the output is empty.
+binpass grep ALICE
+! stdout .
+
+binpass grep -i ALICE
+stdout 'username: .*alice'
+
+binpass grep zzz-not-present
+! stdout .
+
+# EDITOR is run against a temporary copy; here it rewrites the password.
+env EDITOR=$WORK/editor.sh
+chmod 0755 $WORK/editor.sh
+binpass edit github.com/alice
+binpass show --field=password github.com/alice
+stdout '^rewritten$'
+
+# The rest of the entry survived the edit.
+binpass show github.com/alice
+stdout 'username: alice'
+
+# An editor that changes nothing leaves the entry alone.
+env EDITOR=true
+binpass edit github.com/alice
+stderr 'unchanged'
+
+-- alice.txt --
+hunter2
+username: alice
+url: https://example.com
+-- bob.txt --
+s3cret
+username: bob
+url: https://other.org
+-- editor.sh --
+#!/bin/sh
+# Replace only the first line, the way a person would.
+sed -i '1s/.*/rewritten/' "$1"

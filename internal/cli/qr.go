@@ -4,18 +4,15 @@ import (
 	"fmt"
 
 	qrcode "github.com/skip2/go-qrcode"
-	"github.com/spf13/cobra"
 )
 
-// renderQR prints a terminal-friendly QR code of text to stdout.
-func renderQR(cmd *cobra.Command, text string) error {
-	if text == "" {
-		return fmt.Errorf("qr: nothing to encode")
-	}
+// renderQR prints text as a QR code on the terminal, so that a secret can be
+// moved to a phone without it ever touching the network.
+func (a *App) renderQR(text string) error {
 	q, err := qrcode.New(text, qrcode.Medium)
 	if err != nil {
-		return fmt.Errorf("qr: %w", err)
+		return err
 	}
-	fmt.Fprint(cmd.OutOrStdout(), q.ToSmallString(false))
+	fmt.Fprint(a.Out, q.ToSmallString(false))
 	return nil
 }

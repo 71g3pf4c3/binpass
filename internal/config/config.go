@@ -1,212 +1,161 @@
-// Package config loads binpass client configuration from YAML, environment
-// variables, and cobra flags, in that reverse order of precedence:
-// flags > env > file > built-in defaults.
+// Package config resolves binpass settings from flags, environment variables
+// and the YAML config file, in that order of precedence.
+//
+// Every PASSWORD_STORE_* variable pass understands is honoured, and the
+// matching BINPASS_* variable takes priority over it, so binpass can be
+// dropped into an existing pass setup unchanged.
 package config
 
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-viper/mapstructure/v2"
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
+	"github.com/71g3pf4c3/binpass/pkg/pwgen"
 )
 
-// Config is the resolved client configuration.
+// Backend names the crypto implementation used for new entries.
+type Backend string
+
+// Supported backends.
+const (
+	// BackendAge encrypts new entries with age.
+	BackendAge Backend = "age"
+	// BackendGPG encrypts new entries with GPG, as pass does.
+	BackendGPG Backend = "gpg"
+)
+
+// Config is the resolved configuration of a binpass invocation.
 type Config struct {
-	// Store holds password-store location settings.
-	Store StoreConfig `mapstructure:"store"`
-	// Crypto holds identity/agent settings.
-	Crypto CryptoConfig `mapstructure:"crypto"`
-	// Clip holds clipboard settings.
-	Clip ClipConfig `mapstructure:"clip"`
-	// Generate holds default password-generation settings.
-	Generate GenerateConfig `mapstructure:"generate"`
-	// Sync holds synchronisation settings.
-	Sync SyncConfig `mapstructure:"sync"`
-	// Log holds logging settings.
-	Log LogConfig `mapstructure:"log"`
+	// Dir is the password store root.
+	Dir string
+	// Default is the backend for new entries.
+	Default Backend
+	// Umask masks the permissions of created files.
+	Umask os.FileMode
+	// ClipTime is how long a copied password stays on the clipboard.
+	ClipTime time.Duration
+	// GeneratedLength is the default length of generated passwords.
+	GeneratedLength int
+	// CharacterSet is the alphabet for generated passwords.
+	CharacterSet string
+	// CharacterSetNoSymbols is the alphabet used with --no-symbols.
+	CharacterSetNoSymbols string
+	// SigningKey holds the GPG keys .gpg-id signatures are verified against.
+	SigningKey string
+	// GPGBinary overrides the gpg executable; empty means autodetect.
+	GPGBinary string
+	// GPGOpts are extra flags passed to every gpg invocation.
+	GPGOpts []string
+	// Identity is an explicit age identity file, from --identity.
+	Identity string
+	// XSelection is the X11 selection used for clipboard operations.
+	XSelection string
 }
 
-// SyncConfig configures synchronisation backends.
-type SyncConfig struct {
-	// FSPath is a directory-backed remote path (shared folder / USB / cloud
-	// mount). When set, "binpass sync" uses it by default.
-	FSPath string `mapstructure:"fs_path"`
-}
-
-// StoreConfig configures the store location.
-type StoreConfig struct {
-	// Dir is the store root directory.
-	Dir string `mapstructure:"dir"`
-	// ObfuscateNames enables name obfuscation (not yet implemented).
-	ObfuscateNames bool `mapstructure:"obfuscate_names"`
-}
-
-// CryptoConfig configures identities and the agent.
-type CryptoConfig struct {
-	// Identity is the path to the age identity file.
-	Identity string `mapstructure:"identity"`
-	// Agent configures the caching agent.
-	Agent AgentConfig `mapstructure:"agent"`
-}
-
-// AgentConfig configures the identity-caching agent.
-type AgentConfig struct {
-	// Enabled turns the agent on.
-	Enabled bool `mapstructure:"enabled"`
-	// TTL is how long the agent caches an unlocked identity.
-	TTL time.Duration `mapstructure:"ttl"`
-}
-
-// ClipConfig configures clipboard behaviour.
-type ClipConfig struct {
-	// Timeout is how long a secret stays on the clipboard.
-	Timeout time.Duration `mapstructure:"timeout"`
-	// RestorePrevious restores prior clipboard contents afterwards.
-	RestorePrevious bool `mapstructure:"restore_previous"`
-}
-
-// GenerateConfig configures default password generation.
-type GenerateConfig struct {
-	// Length is the default generated password length.
-	Length int `mapstructure:"length"`
-	// Symbols includes symbols by default.
-	Symbols bool `mapstructure:"symbols"`
-}
-
-// LogConfig configures logging.
-type LogConfig struct {
-	// Level is the slog level (debug|info|warn|error).
-	Level string `mapstructure:"level"`
-	// Format is text or json.
-	Format string `mapstructure:"format"`
-}
-
-// Load resolves configuration by combining defaults, YAML, env, and flags.
-func Load(cmd *cobra.Command) (*Config, error) {
-	v := viper.New()
-	v.SetConfigName("config")
-	v.SetConfigType("yaml")
-	v.AddConfigPath(userConfigDir())
-	v.AddConfigPath(".")
-
-	v.SetEnvPrefix("BINPASS")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
-	v.AutomaticEnv()
-
-	setDefaults(v)
-
-	// pass-compatibility aliases.
-	_ = v.BindEnv("store.dir", "BINPASS_STORE_DIR", "PASSWORD_STORE_DIR")
-	_ = v.BindEnv("clip.timeout", "BINPASS_CLIP_TIME", "PASSWORD_STORE_CLIP_TIME")
-	_ = v.BindEnv("generate.length", "BINPASS_GENERATED_LENGTH", "PASSWORD_STORE_GENERATED_LENGTH")
-
-	if cmd != nil {
-		bindFlags(v, cmd)
-		if cf, _ := cmd.Root().PersistentFlags().GetString("config"); cf != "" {
-			v.SetConfigFile(cf)
-		}
-	}
-
-	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			return nil, err
-		}
-	}
-
-	var cfg Config
-	decode := viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
-		passDurationHook(),
-		mapstructure.StringToTimeDurationHookFunc(),
-		mapstructure.StringToSliceHookFunc(","),
-	))
-	if err := v.Unmarshal(&cfg, decode); err != nil {
-		return nil, err
-	}
-	cfg.Store.Dir = expandHome(cfg.Store.Dir)
-	cfg.Crypto.Identity = expandHome(cfg.Crypto.Identity)
-	return &cfg, nil
-}
-
-// passDurationHook interprets a bare integer duration (as used by pass, e.g.
-// PASSWORD_STORE_CLIP_TIME=45) as a number of seconds.
-func passDurationHook() mapstructure.DecodeHookFuncType {
-	return func(from, to reflect.Type, data any) (any, error) {
-		if to != reflect.TypeOf(time.Duration(0)) {
-			return data, nil
-		}
-		if from.Kind() != reflect.String {
-			return data, nil
-		}
-		s := strings.TrimSpace(data.(string))
-		if n, err := strconv.Atoi(s); err == nil {
-			return time.Duration(n) * time.Second, nil
-		}
-		return data, nil
+// Default returns the configuration pass would use with no environment set.
+func Default() Config {
+	return Config{
+		Dir:                   defaultDir(),
+		Default:               BackendAge,
+		Umask:                 0o077,
+		ClipTime:              45 * time.Second,
+		GeneratedLength:       pwgen.DefaultLength,
+		CharacterSet:          pwgen.CharacterSet,
+		CharacterSetNoSymbols: pwgen.CharacterSetNoSymbols,
+		XSelection:            "clipboard",
 	}
 }
 
-// flagKeys maps persistent CLI flag names to their viper config keys. Flags
-// are bound explicitly so that "--store" targets "store.dir" and does not
-// shadow the store subtree.
-var flagKeys = map[string]string{
-	"store":     "store.dir",
-	"log-level": "log.level",
+// Load resolves the configuration from the YAML file and the environment.
+func Load() (Config, error) {
+	cfg := Default()
+	if err := applyFile(&cfg); err != nil {
+		return cfg, err
+	}
+	applyEnv(&cfg)
+	return cfg, nil
 }
 
-// bindFlags binds recognised persistent flags to their viper keys, only when
-// the flag was actually set (so unset flags never override env/file).
-func bindFlags(v *viper.Viper, cmd *cobra.Command) {
-	pf := cmd.Root().PersistentFlags()
-	for flagName, key := range flagKeys {
-		f := pf.Lookup(flagName)
-		if f != nil && f.Changed {
-			_ = v.BindPFlag(key, f)
+// applyEnv overlays environment variables onto cfg. For each setting the
+// BINPASS_* form wins over the PASSWORD_STORE_* form.
+func applyEnv(cfg *Config) {
+	if v, ok := lookup("DIR"); ok {
+		cfg.Dir = expand(v)
+	}
+	if v, ok := lookup("UMASK"); ok {
+		if m, err := strconv.ParseUint(v, 8, 32); err == nil {
+			cfg.Umask = os.FileMode(m)
+		}
+	}
+	if v, ok := lookup("CLIP_TIME"); ok {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			cfg.ClipTime = time.Duration(secs) * time.Second
+		}
+	}
+	if v, ok := lookup("GENERATED_LENGTH"); ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.GeneratedLength = n
+		}
+	}
+	if v, ok := lookup("CHARACTER_SET"); ok {
+		if set := pwgen.ExpandCharacterSet(v); set != "" {
+			cfg.CharacterSet = set
+		}
+	}
+	if v, ok := lookup("CHARACTER_SET_NO_SYMBOLS"); ok {
+		if set := pwgen.ExpandCharacterSet(v); set != "" {
+			cfg.CharacterSetNoSymbols = set
+		}
+	}
+	if v, ok := lookup("SIGNING_KEY"); ok {
+		cfg.SigningKey = v
+	}
+	if v, ok := lookup("GPG_OPTS"); ok {
+		cfg.GPGOpts = strings.Fields(v)
+	}
+	if v, ok := lookup("X_SELECTION"); ok {
+		cfg.XSelection = v
+	}
+	if v := os.Getenv("BINPASS_IDENTITY"); v != "" {
+		cfg.Identity = expand(v)
+	}
+	if v := os.Getenv("BINPASS_GPG_BINARY"); v != "" {
+		cfg.GPGBinary = v
+	}
+	if v := os.Getenv("BINPASS_DEFAULT_CRYPTO"); v != "" {
+		if b := Backend(strings.ToLower(v)); b == BackendAge || b == BackendGPG {
+			cfg.Default = b
 		}
 	}
 }
 
-// setDefaults populates built-in default values.
-func setDefaults(v *viper.Viper) {
-	home, _ := os.UserHomeDir()
-	v.SetDefault("store.dir", filepath.Join(home, ".password-store"))
-	v.SetDefault("store.obfuscate_names", false)
-	v.SetDefault("crypto.identity", filepath.Join(userConfigDir(), "identities.age"))
-	v.SetDefault("crypto.agent.enabled", true)
-	v.SetDefault("crypto.agent.ttl", 10*time.Minute)
-	v.SetDefault("clip.timeout", 45*time.Second)
-	v.SetDefault("clip.restore_previous", true)
-	v.SetDefault("generate.length", 25) // matches pass PASSWORD_STORE_GENERATED_LENGTH
-	v.SetDefault("generate.symbols", true)
-	v.SetDefault("log.level", "info")
-	v.SetDefault("log.format", "text")
+// lookup reads a setting from BINPASS_<name>, falling back to
+// PASSWORD_STORE_<name>.
+func lookup(name string) (string, bool) {
+	if v, ok := os.LookupEnv("BINPASS_" + name); ok {
+		return v, true
+	}
+	return os.LookupEnv("PASSWORD_STORE_" + name)
 }
 
-// userConfigDir returns the binpass config directory.
-func userConfigDir() string {
-	base, err := os.UserConfigDir()
+// defaultDir returns ~/.password-store, the location pass uses.
+func defaultDir() string {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".config", "binpass")
+		return ".password-store"
 	}
-	return filepath.Join(base, "binpass")
+	return filepath.Join(home, ".password-store")
 }
 
-// ConfigDir exposes the binpass configuration directory.
-func ConfigDir() string { return userConfigDir() }
-
-// expandHome expands a leading ~ to the user's home directory.
-func expandHome(p string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, strings.TrimPrefix(p, "~"))
+// expand resolves a leading ~ in a path.
+func expand(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(path, "~"))
 		}
 	}
-	return p
+	return path
 }

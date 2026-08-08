@@ -1,65 +1,170 @@
-// Package identity loads and unlocks age identities used for decryption and
-// derives the recipient of a freshly generated identity.
+// Package identity resolves age decryption keys from the sources binpass
+// supports: explicit files, the passage identities file, the standard age key
+// file, and age plugin identities backed by hardware tokens.
+//
+// Resolution is lazy and ordered (see Resolver.Load): nothing is read, and no
+// token is touched, until a decryption actually needs a key.
 package identity
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"filippo.io/age"
-	"filippo.io/age/agessh"
 )
 
-// GenerateX25519 creates a new X25519 identity.
-func GenerateX25519() (*age.X25519Identity, error) {
-	id, err := age.GenerateX25519Identity()
-	if err != nil {
-		return nil, fmt.Errorf("identity: generate: %w", err)
-	}
-	return id, nil
+// ErrNone reports that no identity source yielded a usable key.
+var ErrNone = errors.New("identity: no identity found")
+
+// Kind classifies where an identity comes from.
+type Kind string
+
+// Identity kinds.
+const (
+	// KindFile is a plaintext age key file.
+	KindFile Kind = "file"
+	// KindPlugin is an age plugin identity, typically a hardware token.
+	KindPlugin Kind = "plugin"
+)
+
+// Source is one place identities can be loaded from.
+type Source struct {
+	// Kind classifies the source.
+	Kind Kind
+	// Path is the file the identities came from, for diagnostics.
+	Path string
+	// Identities are the keys the source yielded.
+	Identities []age.Identity
+	// Describe is a human-readable summary, e.g. a plugin name.
+	Describe string
 }
 
-// LoadFile parses identities from an age key file. Lines beginning with
-// AGE-SECRET-KEY or SSH private key blocks are recognised.
-func LoadFile(path string) ([]age.Identity, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("identity: read %s: %w", path, err)
-	}
-	return Parse(data, path)
+// Resolver locates identities in priority order.
+type Resolver struct {
+	// Explicit is the --identity flag or BINPASS_IDENTITY; when set, it is
+	// the only source consulted, so an explicit choice is never silently
+	// widened.
+	Explicit string
+	// Files are the fallback identity files, tried in order.
+	Files []string
+	// PluginUI drives interactive prompts from age plugins.
+	PluginUI PluginUI
 }
 
-// Parse decodes identities from raw key-file bytes. sshPath is used only for
-// error messages and passphrase prompts on SSH keys.
-func Parse(data []byte, sshPath string) ([]age.Identity, error) {
-	if looksLikeSSHKey(data) {
-		id, err := agessh.ParseIdentity(data)
+// DefaultFiles returns the fallback identity files in the order of §3.1:
+// binpass's own store, the standard age key file, then passage's.
+func DefaultFiles() []string {
+	var out []string
+	if dir := dataDir(); dir != "" {
+		out = append(out, filepath.Join(dir, "identities.age"))
+	}
+	if dir := configDir(); dir != "" {
+		out = append(out, filepath.Join(dir, "age", "keys.txt"))
+	}
+	if p := os.Getenv("PASSAGE_IDENTITIES_FILE"); p != "" {
+		out = append(out, p)
+	}
+	return out
+}
+
+// NewResolver builds a resolver from the environment and an optional explicit
+// path taken from --identity.
+func NewResolver(explicit string) *Resolver {
+	if explicit == "" {
+		explicit = os.Getenv("BINPASS_IDENTITY")
+	}
+	return &Resolver{Explicit: explicit, Files: DefaultFiles()}
+}
+
+// Load returns every identity found, in priority order. Sources that do not
+// exist are skipped; a source that exists but cannot be parsed is an error,
+// because silently ignoring a broken key file hides the real problem.
+func (r *Resolver) Load() ([]age.Identity, error) {
+	sources, err := r.Sources()
+	if err != nil {
+		return nil, err
+	}
+	var out []age.Identity
+	for _, s := range sources {
+		out = append(out, s.Identities...)
+	}
+	if len(out) == 0 {
+		return nil, ErrNone
+	}
+	return out, nil
+}
+
+// Sources returns the identity sources that yielded keys, in priority order.
+func (r *Resolver) Sources() ([]Source, error) {
+	if r.Explicit != "" {
+		s, err := r.loadFile(r.Explicit)
 		if err != nil {
-			return nil, fmt.Errorf("identity: parse ssh key %s: %w", sshPath, err)
+			return nil, err
 		}
-		return []age.Identity{id}, nil
+		return []Source{s}, nil
 	}
-	ids, err := age.ParseIdentities(strings.NewReader(string(data)))
+	var out []Source
+	for _, path := range r.Files {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		s, err := r.loadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if len(s.Identities) > 0 {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// loadFile parses one identity file, resolving plugin identity lines through
+// their age-plugin-* binaries.
+func (r *Resolver) loadFile(path string) (Source, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // the path is user-supplied by design.
 	if err != nil {
-		return nil, fmt.Errorf("identity: parse: %w", err)
+		return Source{}, fmt.Errorf("identity: %w", err)
 	}
-	return ids, nil
+	ids, kind, err := ParseIdentities(string(data), r.PluginUI)
+	if err != nil {
+		return Source{}, fmt.Errorf("identity: %s: %w", path, err)
+	}
+	return Source{Kind: kind, Path: path, Identities: ids, Describe: path}, nil
 }
 
-// FirstX25519Recipient returns the recipient string of the first X25519
-// identity in ids, if any.
-func FirstX25519Recipient(ids []age.Identity) (string, bool) {
-	for _, id := range ids {
-		if x, ok := id.(*age.X25519Identity); ok {
-			return x.Recipient().String(), true
+// ParseIdentities parses the contents of an age identity file. Both native
+// AGE-SECRET-KEY-1 lines and AGE-PLUGIN-* lines are accepted; blank lines and
+// '#' comments are ignored.
+func ParseIdentities(data string, ui PluginUI) ([]age.Identity, Kind, error) {
+	kind := KindFile
+	var out []age.Identity
+	for n, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(strings.ToUpper(line), "AGE-PLUGIN-"):
+			id, err := newPluginIdentity(line, ui)
+			if err != nil {
+				return nil, kind, fmt.Errorf("line %d: %w", n+1, err)
+			}
+			kind = KindPlugin
+			out = append(out, id)
+		default:
+			id, err := age.ParseX25519Identity(line)
+			if err != nil {
+				return nil, kind, fmt.Errorf("line %d: %w", n+1, err)
+			}
+			out = append(out, id)
 		}
 	}
-	return "", false
-}
-
-// looksLikeSSHKey reports whether data is an OpenSSH private key.
-func looksLikeSSHKey(data []byte) bool {
-	return strings.Contains(string(data), "OPENSSH PRIVATE KEY") ||
-		strings.Contains(string(data), "BEGIN RSA PRIVATE KEY")
+	return out, kind, nil
 }

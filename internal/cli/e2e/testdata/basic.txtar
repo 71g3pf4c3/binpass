@@ -1,44 +1,40 @@
-# Basic pass-compatible lifecycle: init, insert, list, show, generate, rm.
+# Core lifecycle of a store: init, insert, show, list.
 
-# Initialise a store with a generated identity.
-exec binpass init --generate-identity
-stdout 'initialised store'
+# An uninitialised store refuses to do anything, with pass's own wording.
+! binpass ls
+stderr 'password store is empty'
 
-# Insert a single-line secret from stdin (echoed via -e is not used; feed stdin).
-stdin pw.txt
-exec binpass insert -e github.com/alice
-stdout 'stored github.com/alice'
+binpass init --age $RECIPIENT
+stdout 'Password store initialized'
+exists $WORK/store/.age-recipients
 
-# A bare invocation lists the tree.
-exec binpass
-stdout 'Password Store'
-stdout 'github.com'
-stdout 'alice'
+# Insert reads the entry from stdin with --multiline.
+stdin entry.txt
+binpass insert -m github.com/alice
+exists $WORK/store/github.com/alice.age
 
-# A bare name shows the secret.
-exec binpass github.com/alice
-stdout 'hunter2'
+# Show prints the plaintext back, byte for byte.
+binpass show github.com/alice
+cmp stdout entry.txt
 
-# show also works explicitly.
-exec binpass show github.com/alice
-stdout 'hunter2'
+# A bare name is a show, exactly as in pass.
+binpass github.com/alice
+cmp stdout entry.txt
 
-# generate creates a password of the requested length.
-exec binpass generate work/wifi 20
-stdout '.{20}'
+# Individual fields can be pulled out without the rest of the entry.
+binpass show --field=username github.com/alice
+stdout '^alice$'
 
-# The tree now contains both entries.
-exec binpass ls
-stdout 'github.com'
-stdout 'work'
+binpass show --field=password github.com/alice
+stdout '^hunter2$'
 
-# Remove a secret.
-exec binpass rm github.com/alice
-stdout 'removed github.com/alice'
+! binpass show --field=missing github.com/alice
+stderr 'no field'
 
-# It is gone.
-! exec binpass show github.com/alice
-stderr 'not found'
+# The ciphertext must not contain the secret.
+! grep 'hunter2' $WORK/store/github.com/alice.age
 
--- pw.txt --
+-- entry.txt --
 hunter2
+username: alice
+url: https://github.com

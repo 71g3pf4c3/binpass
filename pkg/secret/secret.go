@@ -1,272 +1,185 @@
-// Package secret parses and serialises the binpass secret format.
+// Package secret parses and serialises the pass(1) secret format.
 //
-// A secret is compatible with pass/gopass: the first line is the password,
-// followed by either "key: value" lines, otpauth:// URIs, or a typed
-// GOPASS-SECRET/BINPASS-SECRET header block. Typed secrets carry a Type
-// (login|text|binary|card|otp) plus arbitrary X-* metadata headers.
+// The format is deliberately minimal and identical to pass: the first line is
+// the password, everything after it is free-form text. Lines shaped like
+// "key: value" are additionally exposed as fields for --field lookups, and any
+// line containing an otpauth:// URI is exposed as an OTP source, but neither is
+// required. Round-tripping a secret through Parse and Bytes is byte-preserving.
 package secret
 
 import (
-	"bufio"
-	"bytes"
-	"fmt"
-	"sort"
 	"strings"
 )
 
-// Kind enumerates the supported secret types.
-type Kind string
+// otpScheme is the URI scheme carrying TOTP/HOTP parameters, as used by pass-otp.
+const otpScheme = "otpauth://"
 
-// Supported secret kinds.
-const (
-	// KindLogin is the default kind: password plus key/value fields.
-	KindLogin Kind = "login"
-	// KindText is free-form text with no structured password semantics.
-	KindText Kind = "text"
-	// KindBinary is a base64-encoded binary payload.
-	KindBinary Kind = "binary"
-	// KindCard is a typed bank card secret.
-	KindCard Kind = "card"
-	// KindOTP is a standalone one-time-password secret.
-	KindOTP Kind = "otp"
-)
-
-// binpassHeader is the marker for a typed binpass secret block.
-const binpassHeader = "BINPASS-SECRET-1.0"
-
-// gopassHeader is the compatible gopass typed-secret marker.
-const gopassHeader = "GOPASS-SECRET-1.0"
-
-// Secret is a parsed representation of a stored entry.
+// Secret is a parsed store entry.
+//
+// Raw holds the exact bytes the entry was parsed from; all other members are
+// views over it. Mutating a Secret through its methods keeps Raw consistent.
 type Secret struct {
-	// Kind is the secret type; defaults to KindLogin.
-	Kind Kind
-	// Password is the first line of a login/card secret (may be empty).
-	Password string
-	// Fields holds ordered key/value metadata (case-insensitive keys).
-	Fields []Field
-	// Body is free-form text following the header block or fields.
-	Body string
-	// OTP holds otpauth:// URIs found in the secret.
-	OTP []string
-	// typed marks that the secret was written as a typed header block.
-	typed bool
+	// raw is the verbatim plaintext of the entry.
+	raw []byte
 }
 
-// Field is a single ordered key/value pair of a secret.
-type Field struct {
-	// Key is the field name as written (original case preserved).
-	Key string
-	// Value is the field value.
-	Value string
+// Parse interprets b as a pass secret. It never fails: any byte sequence is a
+// valid secret, which matches pass's own behaviour.
+func Parse(b []byte) *Secret {
+	return &Secret{raw: b}
 }
 
-// Get returns the first value for key, matched case-insensitively.
-func (s *Secret) Get(key string) (string, bool) {
-	for _, f := range s.Fields {
-		if strings.EqualFold(f.Key, key) {
-			return f.Value, true
+// New builds a secret from a password and an optional trailing body.
+func New(password, body string) *Secret {
+	var sb strings.Builder
+	sb.WriteString(password)
+	sb.WriteString("\n")
+	if body != "" {
+		sb.WriteString(body)
+		if !strings.HasSuffix(body, "\n") {
+			sb.WriteString("\n")
+		}
+	}
+	return &Secret{raw: []byte(sb.String())}
+}
+
+// Bytes returns the verbatim plaintext of the secret.
+func (s *Secret) Bytes() []byte { return s.raw }
+
+// String returns the verbatim plaintext of the secret.
+func (s *Secret) String() string { return string(s.raw) }
+
+// Password returns the first line, without its line terminator.
+func (s *Secret) Password() string {
+	line, _, _ := strings.Cut(string(s.raw), "\n")
+	return strings.TrimSuffix(line, "\r")
+}
+
+// Body returns everything after the first line, verbatim.
+func (s *Secret) Body() string {
+	_, rest, found := strings.Cut(string(s.raw), "\n")
+	if !found {
+		return ""
+	}
+	return rest
+}
+
+// Lines returns the secret split into lines, without terminators. A trailing
+// newline does not produce a final empty element.
+func (s *Secret) Lines() []string {
+	t := strings.TrimSuffix(string(s.raw), "\n")
+	if t == "" {
+		return nil
+	}
+	lines := strings.Split(t, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimSuffix(l, "\r")
+	}
+	return lines
+}
+
+// Field returns the value of the first "key: value" line whose key matches name
+// case-insensitively. The password line is not considered a field.
+func (s *Secret) Field(name string) (string, bool) {
+	lines := s.Lines()
+	if len(lines) < 2 {
+		return "", false
+	}
+	for _, line := range lines[1:] {
+		k, v, ok := splitField(line)
+		if ok && strings.EqualFold(k, name) {
+			return v, true
 		}
 	}
 	return "", false
 }
 
-// Set replaces the value for key (case-insensitive) or appends a new field.
-func (s *Secret) Set(key, value string) {
-	for i := range s.Fields {
-		if strings.EqualFold(s.Fields[i].Key, key) {
-			s.Fields[i].Value = value
-			return
-		}
+// Fields returns all "key: value" pairs after the password line, in order.
+// Duplicate keys are preserved: pass imposes no uniqueness.
+func (s *Secret) Fields() []Field {
+	lines := s.Lines()
+	if len(lines) < 2 {
+		return nil
 	}
-	s.Fields = append(s.Fields, Field{Key: key, Value: value})
-}
-
-// AddOTP appends an otpauth:// URI to the secret.
-func (s *Secret) AddOTP(uri string) {
-	s.OTP = append(s.OTP, uri)
-}
-
-// isTypedHeader reports whether line is a recognised typed-secret marker.
-func isTypedHeader(line string) bool {
-	line = strings.TrimSpace(line)
-	return line == binpassHeader || line == gopassHeader
-}
-
-// Parse decodes raw secret bytes into a Secret.
-func Parse(data []byte) (*Secret, error) {
-	s := &Secret{Kind: KindLogin}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-
-	lines := make([]string, 0, 16)
-	for sc.Scan() {
-		lines = append(lines, sc.Text())
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("secret: read: %w", err)
-	}
-	if len(lines) == 0 {
-		return s, nil
-	}
-
-	if isTypedHeader(lines[0]) {
-		return parseTyped(s, lines[1:])
-	}
-	return parseLogin(s, lines)
-}
-
-// parseLogin decodes the classic pass layout: password then fields/body.
-func parseLogin(s *Secret, lines []string) (*Secret, error) {
-	s.Password = lines[0]
-	var body []string
-	inBody := false
+	var out []Field
 	for _, line := range lines[1:] {
-		if inBody {
-			body = append(body, line)
-			continue
-		}
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "otpauth://") {
-			s.OTP = append(s.OTP, strings.TrimSpace(line))
-			continue
-		}
 		if k, v, ok := splitField(line); ok {
-			s.Fields = append(s.Fields, Field{Key: k, Value: v})
-			continue
-		}
-		// First non-field line starts the free-form body.
-		inBody = true
-		body = append(body, line)
-	}
-	s.Body = strings.Join(body, "\n")
-	return s, nil
-}
-
-// parseTyped decodes a typed header block followed by an optional body.
-func parseTyped(s *Secret, lines []string) (*Secret, error) {
-	s.typed = true
-	i := 0
-	for ; i < len(lines); i++ {
-		line := lines[i]
-		if strings.TrimSpace(line) == "" {
-			i++
-			break
-		}
-		k, v, ok := splitField(line)
-		if !ok {
-			return nil, fmt.Errorf("secret: malformed typed header line %q", line)
-		}
-		switch strings.ToLower(k) {
-		case "type":
-			s.Kind = Kind(strings.ToLower(strings.TrimSpace(v)))
-		case "password":
-			s.Password = v
-		case "otpauth", "otp":
-			s.OTP = append(s.OTP, v)
-		default:
-			s.Fields = append(s.Fields, Field{Key: k, Value: v})
+			out = append(out, Field{Key: k, Value: v})
 		}
 	}
-	if i < len(lines) {
-		s.Body = strings.Join(lines[i:], "\n")
-	}
-	return s, nil
-}
-
-// splitField splits "key: value"; ok is false if there is no colon key.
-func splitField(line string) (key, value string, ok bool) {
-	idx := strings.Index(line, ":")
-	if idx <= 0 {
-		return "", "", false
-	}
-	key = strings.TrimSpace(line[:idx])
-	if key == "" || strings.ContainsAny(key, " \t") && !validKey(key) {
-		return "", "", false
-	}
-	value = strings.TrimSpace(line[idx+1:])
-	return key, value, true
-}
-
-// validKey reports whether key looks like a header key rather than prose.
-func validKey(key string) bool {
-	for _, r := range key {
-		if r == ' ' || r == '\t' {
-			return false
-		}
-	}
-	return true
-}
-
-// Bytes serialises the secret back to its on-disk representation.
-func (s *Secret) Bytes() []byte {
-	var b strings.Builder
-	if s.typed || s.Kind != KindLogin {
-		return s.bytesTyped()
-	}
-	b.WriteString(s.Password)
-	b.WriteString("\n")
-	for _, uri := range s.OTP {
-		b.WriteString(uri)
-		b.WriteString("\n")
-	}
-	for _, f := range s.Fields {
-		b.WriteString(f.Key)
-		b.WriteString(": ")
-		b.WriteString(f.Value)
-		b.WriteString("\n")
-	}
-	if s.Body != "" {
-		b.WriteString(s.Body)
-		if !strings.HasSuffix(s.Body, "\n") {
-			b.WriteString("\n")
-		}
-	}
-	return []byte(b.String())
-}
-
-// bytesTyped serialises a typed secret with a BINPASS-SECRET header block.
-func (s *Secret) bytesTyped() []byte {
-	var b strings.Builder
-	b.WriteString(binpassHeader)
-	b.WriteString("\n")
-	b.WriteString("Type: ")
-	if s.Kind == "" {
-		b.WriteString(string(KindLogin))
-	} else {
-		b.WriteString(string(s.Kind))
-	}
-	b.WriteString("\n")
-	if s.Password != "" {
-		b.WriteString("Password: ")
-		b.WriteString(s.Password)
-		b.WriteString("\n")
-	}
-	for _, uri := range s.OTP {
-		b.WriteString("Otpauth: ")
-		b.WriteString(uri)
-		b.WriteString("\n")
-	}
-	for _, f := range s.Fields {
-		b.WriteString(f.Key)
-		b.WriteString(": ")
-		b.WriteString(f.Value)
-		b.WriteString("\n")
-	}
-	if s.Body != "" {
-		b.WriteString("\n")
-		b.WriteString(s.Body)
-		if !strings.HasSuffix(s.Body, "\n") {
-			b.WriteString("\n")
-		}
-	}
-	return []byte(b.String())
-}
-
-// SortedFields returns fields ordered by key for deterministic display.
-func (s *Secret) SortedFields() []Field {
-	out := append([]Field(nil), s.Fields...)
-	sort.SliceStable(out, func(i, j int) bool {
-		return strings.ToLower(out[i].Key) < strings.ToLower(out[j].Key)
-	})
 	return out
+}
+
+// Field is a single "key: value" pair of a secret.
+type Field struct {
+	// Key is the field name as written, with original case.
+	Key string
+	// Value is the text after the first colon, space-trimmed.
+	Value string
+}
+
+// OTP returns the first otpauth:// URI found anywhere in the secret, matching
+// pass-otp's lookup behaviour.
+func (s *Secret) OTP() (string, bool) {
+	for _, uri := range s.OTPAll() {
+		return uri, true
+	}
+	return "", false
+}
+
+// OTPAll returns every otpauth:// URI in the secret, in order of appearance.
+func (s *Secret) OTPAll() []string {
+	var out []string
+	for _, line := range s.Lines() {
+		if uri, ok := extractOTP(line); ok {
+			out = append(out, uri)
+		}
+	}
+	return out
+}
+
+// SetPassword replaces the first line, keeping the rest of the secret intact.
+func (s *Secret) SetPassword(password string) {
+	body := s.Body()
+	*s = *New(password, body)
+}
+
+// ReplaceLineContaining returns a copy of the secret with the first occurrence
+// of old replaced by replacement, leaving every other byte alone. It is how an
+// advancing HOTP counter is written back without disturbing the rest of the
+// entry.
+func (s *Secret) ReplaceLineContaining(old, replacement string) *Secret {
+	return &Secret{raw: []byte(strings.Replace(string(s.raw), old, replacement, 1))}
+}
+
+// splitField parses a "key: value" line. Keys may not contain spaces or colons,
+// which keeps free-form prose from being misread as fields.
+func splitField(line string) (key, value string, ok bool) {
+	k, v, found := strings.Cut(line, ":")
+	if !found {
+		return "", "", false
+	}
+	k = strings.TrimSpace(k)
+	if k == "" || strings.ContainsAny(k, " \t") {
+		return "", "", false
+	}
+	// A "//" prefix means the colon belonged to a URI scheme, not a field.
+	if strings.HasPrefix(v, "//") {
+		return "", "", false
+	}
+	return k, strings.TrimSpace(v), true
+}
+
+// extractOTP returns the otpauth:// URI contained in line, if any. The URI runs
+// to the first space or to end of line.
+func extractOTP(line string) (string, bool) {
+	i := strings.Index(line, otpScheme)
+	if i < 0 {
+		return "", false
+	}
+	uri := line[i:]
+	if j := strings.IndexAny(uri, " \t"); j >= 0 {
+		uri = uri[:j]
+	}
+	return uri, true
 }

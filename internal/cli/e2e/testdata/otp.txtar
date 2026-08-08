@@ -1,0 +1,48 @@
+# One-time passwords, the pass-otp equivalent.
+
+binpass init --age $RECIPIENT
+
+stdin totp.txt
+binpass insert -m github.com/alice
+
+# A TOTP code is six digits and leaves the entry untouched.
+cp $WORK/store/github.com/alice.age before.age
+binpass otp github.com/alice
+stdout '^\d{6}$'
+cmp $WORK/store/github.com/alice.age before.age
+
+# The URI can be recovered for moving the secret elsewhere.
+binpass otp --uri github.com/alice
+stdout '^otpauth://totp/'
+
+# An entry without a URI says so rather than guessing.
+stdin plain.txt
+binpass insert -m nocode
+! binpass otp nocode
+stderr 'no otpauth'
+
+# A HOTP code advances the stored counter, or it would repeat forever.
+stdin hotp.txt
+binpass insert -m counter
+binpass otp counter
+stdout '^\d{6}$'
+binpass show counter
+stdout 'counter=1'
+
+binpass otp counter
+binpass show counter
+stdout 'counter=2'
+
+# Advancing the counter must not disturb the rest of the entry.
+binpass show counter
+stdout 'username: bob'
+
+-- totp.txt --
+hunter2
+otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitHub
+-- plain.txt --
+hunter2
+-- hotp.txt --
+hunter2
+username: bob
+otpauth://hotp/Example:bob?secret=JBSWY3DPEHPK3PXP&counter=0

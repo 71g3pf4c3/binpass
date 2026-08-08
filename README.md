@@ -1,248 +1,202 @@
 # binpass
 
-A drop-in replacement for [`pass`](https://www.passwordstore.org/) /
-[`gopass`](https://www.gopass.pw/) that encrypts with **age** instead of GPG,
-with built-in **TOTP/HOTP**, typed secrets (login, text, binary, bank cards),
-and end-to-end-encrypted **synchronisation** across devices.
+`pass(1)`, reimagined. The same storage format and the same command surface,
+but everything people install a dozen bash extensions for is built in and works
+the same way on Linux, macOS and Windows.
 
-- Same store layout and command surface as `pass` — existing scripts,
-  `passmenu`/`rofi-pass`, and muscle memory keep working.
-- Encryption with `age` (X25519, ssh keys, passphrase, YubiKey/FIDO2 plugins).
-- One binary, no CGO, cross-platform (Linux, macOS, Windows).
+* Same store layout as pass: a directory tree, `.gpg-id`, `.age-recipients`.
+* Same stdout, byte for byte, so `passmenu`, `rofi-pass`, `browserpass` and
+  QtPass keep working.
+* GPG **and** age side by side in one tree, chosen per entry by file extension.
+* Hardware keys through the standard age-plugin protocol.
+* A single static binary, `CGO_ENABLED=0`.
 
-> The synchronisation **server** (`binpassd`) lives on the [`server`](../../tree/server)
-> branch. This branch is the client and its local/offline sync engine.
+Compatibility is not a claim, it is a test: the suite runs the real `pass`
+against binpass on an identical store and compares stdout, exit codes and the
+resulting tree. See [Compatibility](#compatibility).
 
----
+## Status
+
+Implemented so far: the complete pass command surface, age and GPG backends,
+one-time passwords, and the built-in picker. Sync, tomb, the Secret Service
+provider and the plugin system are specified in [ARCHITECTURE.md](ARCHITECTURE.md)
+but not yet written.
+
+| Working | Command |
+|---|---|
+| yes | `init` `ls` `show` `find` `grep` `insert` `edit` `generate` `rm` `mv` `cp` `git` `version` |
+| yes | `otp` (pass-otp), `menu` (passmenu / rofi-pass), `generate --words` (diceware) |
+| not yet | `sync` `tomb` `ss` `plugin` `import` `audit` `tui` |
 
 ## Install
 
 ```sh
-git clone https://github.com/71g3pf4c3/binpass && cd binpass
-make build           # -> bin/binpass  (or: CGO_ENABLED=0 go build ./cmd/binpass)
+go install github.com/71g3pf4c3/binpass/cmd/binpass@latest
 ```
 
-Check the build metadata (required by the spec):
+Or with Nix:
 
 ```sh
-binpass version
-# binpass v0.1.0
-# commit: abc1234
-# built:  2026-07-31T…Z
-# go:     go1.26 · os/arch: linux/amd64
+nix run github:71g3pf4c3/binpass
+nix develop            # dev shell with go, gpg, pass, age, rofi, fzf
 ```
-
----
 
 ## Quick start
 
 ```sh
-# 1. Create a store and a new age key in one step.
-binpass init --generate-identity
-#   generated identity: ~/.config/binpass/identities.age
-#   recipient:          age1…
+# A new store, encrypted with age.
+age-keygen -o ~/.config/binpass/identities.age
+binpass init --age age1qz...
 
-# 2. Add secrets (first line is the password, pass convention).
-binpass insert github.com/alice           # prompts, hidden input
-binpass generate github.com/bob 25        # random 25-char password
-printf 'hunter2\nurl: https://x\n' | binpass insert -m notes/x   # multiline
+# Or drop in next to an existing pass store; nothing needs converting.
+binpass init --gpg you@example.com
 
-# 3. Read them back.
-binpass                       # list the whole tree
-binpass github.com/alice      # show a secret (bare name, like pass)
-binpass -c github.com/alice   # copy the password to the clipboard
-binpass -c2 github.com/alice  # copy line 2 (e.g. a username field)
+binpass insert github.com/alice
+binpass generate -c bank/tinkoff 32
+binpass show github.com/alice
+binpass otp github.com/alice
 ```
 
-If you already use `pass`, point binpass at the same store and it just works:
+`binpass` reads every `PASSWORD_STORE_*` variable pass understands. The
+matching `BINPASS_*` variable wins where both are set.
+
+## Interactive pickers
+
+`binpass menu` replaces `passmenu`, `rofi-pass` and `fzf-pass` without a
+wrapper script. It detects rofi, wofi, dmenu, wmenu or fzf, and never decrypts
+anything until an entry is actually chosen.
 
 ```sh
-export PASSWORD_STORE_DIR=~/.password-store   # honoured, plus BINPASS_STORE_DIR
-binpass ls
+binpass menu                       # pick, copy the password
+binpass menu --field=username      # copy a field instead
+binpass menu --type                # type it into the focused window
+binpass menu --launcher=fzf        # force a picker
+binpass menu -- -theme solarized   # arguments after -- go to the launcher
 ```
 
----
+Bind it to a key:
 
-## Command reference (pass-compatible)
+```
+# sway
+bindsym $mod+p exec binpass menu
+bindsym $mod+Shift+p exec binpass menu --type
 
-| Command | Description |
+# i3
+bindsym $mod+p exec --no-startup-id binpass menu
+```
+
+### Building your own
+
+`--format=plain` and `--format=json` exist precisely so launcher scripts never
+have to parse the tree output:
+
+```sh
+binpass ls --format=plain | rofi -dmenu -i -p pass
+```
+
+That one line is the core of `rofi-pass`. The scripts in [`contrib/`](contrib/)
+build on it:
+
+| Script | What it does |
 |---|---|
-| `binpass [ls] [subfolder]` | List the tree (or a subfolder). Bare `binpass` lists everything. |
-| `binpass [show] [-c[N]] [--qr[=N]] [--field=k] name` | Show a secret; `-c` copies line N (default 1); `--qr` renders a QR. |
-| `binpass name` | Shorthand for `show name`. |
-| `binpass insert [-e\|-m] [-f] name` | Add a secret (`-e` echo, `-m` multiline, `-f` force). |
-| `binpass generate [-n] [-c] [-i\|-f] name [len]` | Generate a password (default length 25, `-n` no symbols). |
-| `binpass edit name` | Edit in `$EDITOR` via a tmpfs file. |
-| `binpass rm [-r] [-f] name` | Remove a secret or, with `-r`, a directory. |
-| `binpass mv [-f] src dst` / `binpass cp [-f] src dst` | Move/copy, re-encrypting to the destination recipients. |
-| `binpass find term…` | List secrets whose name matches any term (tree output). |
-| `binpass grep pattern` | Search decrypted contents. |
-| `binpass init [-p subfolder] recipient…` | Initialise a store or subfolder; re-encrypts on change. |
-| `binpass completion bash\|zsh\|fish\|powershell` | Shell completion. |
-| `binpass version` | Version, commit, build date, toolchain. |
+| [`binpass-rofi`](contrib/binpass-rofi) | Two-step rofi menu: pick an entry, then copy / type / autofill / OTP |
+| [`binpass-fzf`](contrib/binpass-fzf) | Terminal picker with a preview pane that masks the password |
+| [`binpass-dmenu`](contrib/binpass-dmenu) | Minimal passmenu replacement, works on X11 and Wayland |
 
-### Beyond pass
+A complete rofi-pass equivalent, in full:
 
-| Command | Description |
-|---|---|
-| `binpass otp name` / `binpass otp --watch name` | TOTP/HOTP code from an `otpauth://` URI (pass-otp compatible). |
-| `binpass otp append name uri` | Attach an `otpauth://` URI to a secret. |
-| `binpass card add\|show name` | Typed bank-card secret (number/holder/expiry/CVV). |
-| `binpass recipients add\|remove\|list` · `binpass reencrypt` | Manage age recipients. |
-| `binpass sync [--path DIR]` | Synchronise with a remote (see below). |
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-Any `X-*` header inside a secret is free-form metadata (site, person, bank,
-one-time codes…), available on every secret type.
+entry=$(binpass ls --format=plain | rofi -dmenu -i -p pass) || exit 0
+action=$(printf 'copy\ntype\nautofill\notp\n' | rofi -dmenu -i -p "$entry") || exit 0
 
-### Environment variables
-
-binpass honours its own `BINPASS_*` variables and the classic `PASSWORD_STORE_*`
-aliases so existing tooling keeps working:
-
-```
-BINPASS_STORE_DIR            / PASSWORD_STORE_DIR
-BINPASS_CLIP_TIME            / PASSWORD_STORE_CLIP_TIME          (seconds)
-BINPASS_GENERATED_LENGTH     / PASSWORD_STORE_GENERATED_LENGTH
+case $action in
+copy) binpass show --clip "$entry" ;;
+type) binpass show --field=password "$entry" | tr -d '\n' | wtype - ;;
+otp)  binpass otp --clip "$entry" ;;
+autofill)
+	user=$(binpass show --field=username "$entry")
+	pass=$(binpass show --field=password "$entry")
+	wtype "$user" -k Tab "$pass" -k Return
+	;;
+esac
 ```
 
-Configuration file: `~/.config/binpass/config.yaml`
-(precedence: **flags > env > file > defaults**).
+The upstream `rofi-pass` needs about 900 lines to do this, because pass gives
+it nothing to build on: it walks the store itself, parses human-readable
+output and drives `gpg` by hand.
 
----
+Copying always restores the clipboard's previous contents afterwards, and only
+if the secret is still there, so it never clobbers something you copied in the
+meantime.
 
-## Secret format
+## Storage format
 
-The first line is the password (pass rule); the rest is `key: value` fields,
-`otpauth://` URIs, or a typed header block:
+Identical to pass. The first line is the password, everything after it is free
+text:
 
 ```
 hunter2
-otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&period=30
+otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitHub
 url: https://github.com
 username: alice
 ```
 
-Typed card:
+`key: value` lines are exposed through `--field`, and any `otpauth://` URI is
+picked up by `binpass otp`, but neither is required. A secret round-trips
+through binpass byte for byte, including entries with no trailing newline.
+
+GPG and age entries coexist in one tree, selected by extension. A new entry
+uses the store's default backend, unless the destination only has recipients
+for the other one: a GPG-only store keeps receiving `.gpg` files even when age
+is configured as the default, so your existing `pass` never stops working.
+
+## Compatibility
+
+The golden suite installs the real `pass` and runs both programs over identical
+stores:
 
 ```
-BINPASS-SECRET-1.0
-Type: card
-Bank: Тинькофф
-Number: 5536 9138 XXXX XXXX
-Holder: ALICE IVANOVA
-Expires: 09/29
-CVV: 123
-X-Meta-Note: primary salary card
+TestListingMatchesPass              tree output, byte for byte
+TestShowPreservesExactBytes         entries without a trailing newline
+TestTreeLayoutIsByteIdentical       every connector and continuation glyph
+TestStoreWrittenByBinpassIsReadableByPass
+TestStoreWrittenByPassIsReadableByBinpass
 ```
 
-`Type` is one of `login` (default) · `text` · `binary` · `card` · `otp`.
+`tree(1)` picks its glyphs from the locale codeset and its colours from `TERM`;
+binpass reproduces both decisions rather than hardcoding one, which is why the
+output matches inside a container as well as on a desktop.
 
----
+**Known deviation.** For `rm`, `mv` and `cp`, pass shells out to `rm -v`,
+`mv -v` and `cp -v` and passes coreutils' progress chatter straight through,
+absolute paths and all. binpass performs the same operations and produces the
+same tree, but does not reproduce that output. Nothing in the ecosystem parses
+it.
 
-## Synchronisation
+**Not supported.** pass extensions written in bash that source pass's internals.
+Everything they do is available natively; see ARCHITECTURE.md §5.
 
-Every backend implements one `Remote` interface, driven by a single sync
-engine (content-addressed objects + a signed, version-vectored manifest). This
-branch ships the **directory remote** — a shared folder, USB drive, or any
-cloud-mounted path (Dropbox/Drive/Syncthing):
+## Development
 
 ```sh
-# Device A
-binpass sync --path /mnt/shared/vault        # pushes objects + commits manifest
-
-# Device B (same age identity + recipients = same owner)
-binpass sync --path /mnt/shared/vault        # pulls everything
+nix develop          # go, gpg, pass, age, tree, rofi, fzf, linters
+make test
+make cover
 ```
 
-Or set it once in `~/.config/binpass/config.yaml`:
+The dev shell unsets any `PASSWORD_STORE_*` your own session exports, so tests
+measure the code rather than the machine.
 
-```yaml
-sync:
-  fs_path: /mnt/shared/vault
-```
-
-then just `binpass sync`.
-
-### How conflicts are handled
-
-Nothing is ever lost. Concurrent edits are detected via per-entry version
-vectors; the remote side keeps the canonical path and **your local version is
-saved as a sibling**:
-
-```
-$ binpass sync
-synced with fs: pushed 1, pulled 1, generation 4
-1 conflict(s):
-  github.com/alice (concurrent-edit) — local copy kept as sibling
-
-$ binpass ls
-github.com/alice
-github.com/alice.conflict-dev-abcd1234-20260731T091819
-```
-
-The manifest is signed with the store's Ed25519 key, so a malicious remote can
-neither substitute ciphertext nor roll the store back to an older state.
-HOTP counters merge automatically as `max()`.
-
-### Server backend
-
-To sync through the authenticated, multi-device **binpassd** server (gRPC +
-REST + Swagger, PostgreSQL, E2E-encrypted), see the [`server`](../../tree/server)
-branch and its `server/README.md`.
-
----
-
-## Security model (client)
-
-- Data is encrypted to age recipients; the store holds only ciphertext.
-- Sharing a store between your devices = add each device's `age1…` recipient
-  and `binpass reencrypt`.
-- Local writes are atomic (`tmp → fsync → rename`), `0600`/`0700`.
-- Clipboard is cleared after a timeout; passwords are read from the TTY, never
-  passed as arguments.
-
-Out of scope: a compromised client OS, keyloggers, or a recipient who was once
-granted access (revocation requires `reencrypt` + key rotation).
-
----
-
-## Development & testing
+Run the suite against a plain Debian userland with the distro's own `pass`:
 
 ```sh
-make test        # unit tests
-make cover       # coverage summary
-go test ./...    # everything, incl. e2e (testscript) and integration
-go test ./pkg/sync/ -run xxx -fuzz FuzzMerge3NoDataLoss   # fuzzing
+docker build -f Dockerfile.test -t binpass-test .
+docker run --rm binpass-test
 ```
 
-The suite includes:
+## Licence
 
-- **Unit** tests (table-driven) for `secret`, `otp`, `crypto`, `manifest`,
-  version vectors, `merge3`, WAL, `pwgen`, config.
-- **Mock-based** tests (`go.uber.org/mock`) for the sync engine against the
-  `Remote` interface — including CAS-conflict retry.
-- **Integration** tests: two clients synchronising through a real directory
-  remote, covering push/pull, concurrent-edit conflicts, and deletions.
-- **End-to-end** CLI tests (`rogpeppe/go-internal/testscript`,
-  `internal/cli/e2e/testdata/*.txtar`).
-- **Fuzzing** for the secret parser, canonical manifest encoding, version-vector
-  comparison, and the three-way merge (invariant: no data loss, deterministic).
-
-Layout:
-
-```
-cmd/binpass/           CLI entry point (+ ldflags version/commit/date)
-internal/cli/          cobra commands (1:1 with pass/gopass), e2e scripts
-internal/config/       viper config (YAML + ENV + flags, pass aliases)
-pkg/secret/            secret format parser/serialiser
-pkg/otp/               TOTP/HOTP (RFC 6238 / 4226)
-pkg/crypto/            age encryption (+ generated mocks)
-pkg/identity/          age identity loading/generation
-pkg/storage/           atomic on-disk tree, hierarchical recipients
-pkg/store/             high-level facade (get/set/list/move/reencrypt)
-pkg/pwgen/             CSPRNG password generation
-pkg/manifest/          manifest, version vectors, canonical JSON, Ed25519 sign
-pkg/remote/            Remote interface (+ mocks) + fsremote directory backend
-pkg/sync/              merge3, conflict resolution, WAL, sync engine (+ mocks)
-pkg/syncadapter/       bridges the store to the sync engine
-```
+MIT. See [LICENSE](LICENSE).

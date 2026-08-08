@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# binpass-dmenu — a drop-in passmenu replacement.
+#
+# passmenu ships with pass and does exactly one thing: pick an entry, type its
+# password. This is the same thing, one line shorter, and it also works on
+# Wayland.
+#
+#     bindsym $mod+p exec binpass-dmenu
+set -euo pipefail
+
+BINPASS=${BINPASS:-binpass}
+
+if [[ -n ${WAYLAND_DISPLAY:-} ]] && command -v wmenu >/dev/null; then
+	menu=(wmenu -i -p pass)
+	typer=(wtype -)
+else
+	menu=(dmenu -i -p pass "$@")
+	typer=(xdotool type --clearmodifiers --file -)
+fi
+
+entry=$("$BINPASS" ls --format=plain | "${menu[@]}") || exit 0
+[[ -n $entry ]] || exit 0
+
+"$BINPASS" show --field=password "$entry" | tr -d '\n' | "${typer[@]}"

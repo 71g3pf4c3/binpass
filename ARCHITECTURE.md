@@ -1,853 +1,875 @@
 # binpass — архитектура
 
-**Что это:** drop-in замена `pass`/`gopass` с шифрованием `age` вместо GPG, встроенным TOTP/HOTP,
-поддержкой типизированных секретов (логин/пароль, текст, бинарь, банковские карты) и синхронизацией
-через три взаимозаменяемых бэкенда: собственный сервер, git, облака через rclone.
+**Что это:** `pass(1)`, переосмысленный. Тот же формат хранилища и та же поверхность команд,
+но всё, ради чего в pass ставят десяток bash-расширений, встроено нативно и работает одинаково
+на трёх ОС. Плюс age рядом с GPG, аппаратные ключи, tomb, и синхронизация через
+git / Google Drive / Yandex.Disk / WebDAV.
 
-* Язык: Go 1.23+, `CGO_ENABLED=0`, кросс-компиляция под linux/darwin/windows × amd64/arm64.
-* Бинарники: `binpass` (клиент, CLI+TUI), `binpassd` (сервер синхронизации).
-* Лицензия зависимостей: age (BSD-3), rclone (MIT), go-git (Apache-2.0) — всё совместимо.
-
----
-
-## 0. Ключевые архитектурные решения (TL;DR)
-
-| # | Решение | Почему |
-|---|---------|--------|
-| 1 | **Один `Remote`-интерфейс на все бэкенды** — сервер, git, rclone. Движок синхронизации один | Не плодим три разные логики конфликтов. Сервер — не привилегированный, а частный случай |
-| 2 | **Content-addressed объекты + подписанный манифест** | Дешёвые переименования, дедупликация, целостность, работает поверх тупого блоб-стора (S3/Drive) и поверх git |
-| 3 | **Сервер видит только шифротекст**, ключей не имеет | ТЗ отдаёт «обеспечение безопасности» на откуп исполнителю → E2E-шифрование сильнее любой TLS-схемы |
-| 4 | **Пароль аккаунта ≠ ключ шифрования**, но вводится один | HKDF от мастер-фразы даёт две независимые ветки: auth-секрет уходит на сервер, ключевая — никогда |
-| 5 | **Манифест подписывается ключом хранилища** (Ed25519, лежит в самом хранилище под age) | Защита от rollback/подмены со стороны сервера или облака: recipients-ключи публичны, шифротекст может сфабриковать кто угодно |
-| 6 | **gRPC поверх TLS 1.3 — основной транспорт; grpc-gateway отдаёт REST-фасад и OpenAPI; resty — резервный REST-транспорт** | Закрывает сразу два необязательных пункта ТЗ (бинарный протокол + Swagger), а REST-путь остаётся для окружений, где ломают HTTP/2 |
-| 6a | **Сервер по раскладке `evrone/go-clean-template`** | Готовая Clean Architecture: зависимости внутрь, usecase не знает ни про gin, ни про PostgreSQL → транспорт и хранилище меняются без правки бизнес-логики |
-| 6b | **Конфиг: viper, YAML + ENV + флаги cobra**, единый для клиента и сервера | Один механизм на оба бинаря; в Docker — чистый ENV, локально — YAML, в CI — флаги |
-| 7 | **git/rclone/WebDAV — только на клиенте** (требование заказчика) | Сервер остаётся тонким: auth + блобы + CAS-манифест |
-| 8 | **Version vector на запись**, конфликт → обе копии на диск | Мержить шифротекст нельзя; молча терять данные пароль-менеджеру нельзя тем более |
+* Go 1.23+, `CGO_ENABLED=0` (с одним исключением, §6.3), статика под linux/darwin/windows × amd64/arm64.
+* Один бинарь `binpass` + опционально `binpass-agent`.
+* Сервера нет. Синхронизация — клиент ↔ транспорт, без посредников.
 
 ---
 
-## 1. Границы совместимости
+## 0. Позиционирование
 
-### Что делаем drop-in
+Прошлая итерация пыталась мимикрировать под bash-внутренности pass, чтобы `pass-otp` и
+`pass-update` заводились немодифицированными. Это была ошибка: слой совместимости получался
+самой хрупкой частью системы и при этом воспроизводил функциональность, которую проще написать
+нативно за меньшее время.
 
-Layout хранилища и семантика команд `pass`, поведение `passage` в части age, расширенные команды `gopass`,
-формат OTP как у `pass-otp`.
+Новая позиция:
+
+| Что | Решение |
+|---|---|
+| Формат хранилища | **Идентичен pass.** Дерево файлов, `.gpg-id`, `.age-recipients`. Не трогаем |
+| Поверхность CLI и stdout | **Байт-в-байт как pass.** Чтобы passmenu / rofi-pass / browserpass / pass-git-helper / QtPass работали без правок |
+| Функциональность плагинов pass | **Нативно в Go**, кроссплатформенно, с тестами (§5) |
+| Расширяемость | **Своя система плагинов** (§4) — проще, чем у pass, и не только на bash |
+| Системный keystore | **Заменяем на Linux** (`org.freedesktop.secrets`), **интегрируемся** на macOS/Windows (§6) |
+| bash-расширения pass, сорсящие внутренности | **Не поддерживаем.** Явно и в документации |
+
+Последняя строка — единственная потеря, и она осознанная. Всё, что эти расширения делают,
+есть в §5 нативно.
+
+---
+
+## 1. Хранилище
 
 ```
-$BINPASS_STORE_DIR         (default: ~/.password-store, fallback ~/.passage/store)
-├── .age-recipients               # список получателей (age1..., ssh-ed25519 AAAA...)
-├── .gpg-id                       # читаем только для миграции
+$PASSWORD_STORE_DIR  (=$BINPASS_DIR, default ~/.password-store)
+├── .gpg-id                     # GPG-получатели (pass)
+├── .gpg-id.sig                 # подпись, если задан SIGNING_KEY
+├── .age-recipients             # age-получатели (passage)
 ├── .binpass/
-│   ├── config.yaml               # неконфиденциальный конфиг стора
-│   ├── signing.key.age           # Ed25519 ключ подписи манифеста
-│   ├── index.age                 # опц.: карта имён при обфускации
-│   └── state/
-│       ├── manifest.local.json   # последний известный манифест
-│       ├── base.json             # база для 3-way (общий предок)
-│       └── journal.wal           # WAL незакоммиченных операций
+│   └── plugins/                # плагины стора (синхронизируются вместе с ним)
+├── .gitattributes
 ├── github.com/
-│   ├── alice.age
-│   └── bob.age
+│   ├── alice.gpg
+│   └── bob.age                 # age и gpg в одном дереве, крипто по расширению
 └── bank/
-    ├── .age-recipients           # переопределение получателей для поддерева
-    └── tinkoff-black.age
+    ├── .gpg-id                 # переопределение получателей для поддерева
+    └── tinkoff.gpg
+
+$XDG_DATA_HOME/binpass/          # САЙДКАР, вне стора — pass его не видит
+├── sync/{state.db, base/, journal.wal}
+├── remotes.age                 # OAuth-токены Drive/Yandex, пароли WebDAV
+├── identities.age
+└── plugins/                    # локально установленные плагины
 ```
 
-* Расширение `.age` (как в passage), но `.gpg` читается прозрачно, если найден бинарь `gpg` — нужно для `binpass migrate`.
-* `.age-recipients` наследуется вниз по дереву, ближайший побеждает — как `.gpg-id` в pass.
-* `BINPASS_*` env-переменные дублируют `PASSWORD_STORE_*`, чтобы существующие скрипты и `passmenu`/`rofi-pass` не переписывать.
+Состояние синхронизации принципиально живёт **вне хранилища**: оно device-specific, и попав
+в стор, уехало бы в git-историю и на Google Drive, а `pass git status` показывал бы мусор.
 
 ### Формат секрета
 
-Первая строка — пароль (правило pass). Дальше — либо `key: value`, либо MIME-подобный
-типизированный блок (совместим с `GOPASS-SECRET-1.0`):
+Ровно как в pass, ничего своего: первая строка — пароль, дальше свободный текст.
 
 ```
 hunter2
-otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&period=30
+otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitHub
 url: https://github.com
 username: alice
-comment: рабочий аккаунт
 ```
 
-Типизированный вариант для карт и произвольных данных ТЗ:
-
-```
-BINPASS-SECRET-1.0
-Type: card
-Bank: Тинькофф
-Number: 5536 9138 XXXX XXXX
-Holder: ALICE IVANOVA
-Expires: 09/29
-CVV: 123
-X-Meta-Note: основная зарплатная
-
-<произвольный текст после пустой строки>
-```
-
-* `Type`: `login` (default) | `text` | `binary` | `card` | `otp`.
-* Любые `X-*` заголовки — та самая «произвольная текстовая метаинформация» из ТЗ, применима ко всем типам.
-* Бинарь: gopass-совместимо кладём как `name.b64.age` (base64 внутри) для мелких файлов; для
-  > 1 МиБ — чанкованное хранение (см. §5.3), в секрете остаётся только манифест чанков.
+`key: value` парсим для `--field`, но не требуем. OTP — `otpauth://` в любой строке, как у `pass-otp`.
+Бинарники — `name.b64.gpg` с base64 внутри (gopass-совместимо).
 
 ---
 
-## 2. Криптография
-
-### 2.1 Шифрование данных
-
-`filippo.io/age`. Получатели поддерживаются все, что умеет age:
-
-| Тип | Пакет | Сценарий |
-|-----|-------|----------|
-| X25519 (`age1...`) | `age` | базовый |
-| ssh-ed25519 / ssh-rsa | `age/agessh` | переиспользование существующих ключей, deploy-ключи |
-| scrypt (парольная фраза) | `age` | одиночный юзер без файла ключа |
-| age-plugin-yubikey / -fido2 / -se | `age/plugin` | аппаратный второй фактор к самому хранилищу |
-
-Мульти-recipient «из коробки» — это и есть шаринг стора между устройствами и людьми:
-добавил `age1...` нового устройства в `.age-recipients`, сделал `binpass reencrypt`, синхронизировал.
-
-### 2.2 Мастер-фраза и разделение ключей
-
-Пользователь помнит одну фразу. Из неё:
-
-```
-MK  = Argon2id(passphrase, salt=user_salt, m=256MiB, t=3, p=4)   // 32 байта, только в памяти клиента
-AUTH_SECRET = HKDF-SHA256(MK, info="binpass/auth/v1")            // уходит на сервер (сервер хранит Argon2id от него)
-IDENT_KEY   = HKDF-SHA256(MK, info="binpass/identity/v1")        // никогда не покидает клиент
-```
-
-`IDENT_KEY` разворачивает локальный `identities.age` (scrypt-обёртка над X25519-ключом устройства).
-Сервер, даже полностью скомпрометированный, получает только `Argon2id(AUTH_SECRET)` — до данных
-это не приближает. `user_salt` выдаётся сервером при регистрации и синхронизируется как публичное поле.
-
-Если пользователь предпочитает файл ключа / YubiKey — ветка `IDENT_KEY` не используется вовсе,
-пароль аккаунта задаётся отдельно.
-
-### 2.3 Целостность и защита от отката
-
-Проблема: recipients-ключи публичны, значит любой (включая скомпрометированный сервер)
-может создать валидный `.age`, который клиент расшифрует. Плюс сервер может подсунуть старую версию манифеста.
-
-Решение: **манифест подписан** Ed25519-ключом хранилища (`.binpass/signing.key.age`, доступен
-всем, кто может читать стор).
+## 2. Крипто: GPG и age равноправно
 
 ```go
-type SignedManifest struct {
-    Manifest   []byte // canonical JSON
-    Signature  []byte // Ed25519 над (Generation || StoreID || sha256(Manifest))
-    PublicKey  []byte
+// Crypto — шифрование одной записи. Реализация выбирается по расширению файла.
+type Crypto interface {
+    Ext() string                                              // ".gpg" | ".age"
+    Encrypt(w io.Writer, plaintext []byte, rcp []Recipient) error
+    Decrypt(r io.Reader) ([]byte, error)
+    ParseRecipients(dir string) ([]Recipient, error)          // .gpg-id | .age-recipients
 }
 ```
 
-Клиент отвергает манифест, если: подпись не сходится, `Generation` меньше локально известной,
-или `StoreID` не тот. Объекты, которых нет в подписанном манифесте, не расшифровываются вообще.
+**GPG** — через внешний бинарь `gpg`, не через Go-реализацию OpenPGP. Так работают smartcard,
+gpg-agent, pinentry, кейринги и `PASSWORD_STORE_SIGNING_KEY`, а результат совпадает с pass
+бит-в-бит. `ProtonMail/go-crypto` — фолбэк для окружений без gpg, с честным предупреждением,
+что аппаратные ключи там не заведутся.
 
-### 2.4 Агент
+**age** — `filippo.io/age`. Дефолт для новых хранилищ: формат проще, ключи короче, аппаратная
+поддержка через плагины (§3).
 
-`binpass-agent` (или встроенный демон, поднимаемый по требованию): unix-socket `$XDG_RUNTIME_DIR/binpass/agent.sock`,
-на Windows — named pipe. Держит расшифрованную identity `BINPASS_AGENT_TTL` (default 600 c),
-умеет forget по SIGHUP и по блокировке экрана. Секреты в памяти — `memguard`/`mlock` best-effort,
-явное зануление буферов, отключение core dumps.
-
----
-
-## 3. MFA: TOTP / HOTP
-
-* `pkg/otp`, RFC 6238 / RFC 4226, алгоритмы SHA1/SHA256/SHA512, digits 6–8, произвольный period/skew.
-* Источник — URI `otpauth://` в теле секрета (совместимо с `pass-otp`) или отдельный секрет `Type: otp`.
-* Команды: `binpass otp <name>` (код + остаток времени), `-c` в буфер, `--qr` для переноса на телефон,
-  `binpass otp append <name>` для добавления URI к существующей записи.
-* **HOTP-счётчик — единственное поле с автоинкрементом**, и это конфликтная точка при синхронизации.
-  Счётчик выносится из шифротекста в отдельный объект `<path>#hotp` с правилом мержа `max(a, b)`
-  (проскочить вперёд безопасно, откатиться — нет). Правило зашито в движок синхронизации как
-  специальный merger, см. §6.3.
-* TUI-режим `binpass otp --watch` с обратным отсчётом.
+Оба сосуществуют в одном дереве. `binpass migrate --to=age` переводит стор, `--dry-run` показывает план.
 
 ---
 
-## 4. Раскладка кода
+## 3. Аппаратные ключи
 
-```
-cmd/
-  binpass/            main + ldflags-версия
-  binpassd/           сервер
-  binpass-agent/
-internal/
-  cli/              cobra-команды, ровно 1:1 с поверхностью pass/gopass; pflag ↔ viper binding
-  tui/              bubbletea (необязательный пункт ТЗ)
-  config/           viper: загрузка YAML + ENV + флагов, валидация
-pkg/
-  store/            фасад: Get/Set/List/Move/Remove/Reencrypt — вся бизнес-логика стора
-  secret/           парсер/сериализатор формата, типы login|text|binary|card|otp
-  otp/              TOTP/HOTP
-  crypto/           interface Crypto: age (осн.), gpg (только чтение, миграция)
-  identity/         поиск/разблокировка identity, agent-клиент, plugins
-  storage/          локальное дерево: fs (atomic write, fsync, 0600)
-  remote/           interface Remote + реализации:
-    server/         gRPC-клиент (основной) + resty-транспорт REST (fallback), выбор из конфига
-    git/            git-бинарь + go-git fallback
-    rclone/         S3, WebDAV, Google Drive, Yandex.Disk, …
-  sync/             движок: манифест, version vectors, конфликты, WAL
-  manifest/         структуры, канонизация, подпись
-  pwgen/  clip/  tmpfile/  audit/  fsck/
-```
+Отдельный раздел, потому что это одно из главных «зачем» проекта.
 
-Сервер (`binpassd`) — отдельный модуль по раскладке `evrone/go-clean-template`:
-
-```
-cmd/binpassd/main.go          конфиг → app.Run(cfg), больше ничего
-config/
-  config.go                 структуры + viper-загрузка + validator
-  config.yaml               дефолты, без секретов
-internal/
-  app/
-    app.go                  DI-сборка: postgres → repo → usecase → controllers → httpserver
-    migrate.go              автомиграции (build-tag migrate)
-  entity/                   User, Device, Session, Object, Manifest — чистые типы, нулевые зависимости
-  usecase/
-    contracts.go            ВСЕ интерфейсы (UserRepo, ManifestRepo, ObjectRepo, BlobStore, TokenIssuer)
-    auth.go                 AuthUseCase: register/login/refresh/enroll/revoke
-    vault.go                VaultUseCase: manifest CAS, objects, events
-    repo/
-      persistent/           PostgreSQL-реализации (pgx)
-      blob/                 fs / s3 реализация BlobStore
-  controller/
-    grpc/v1/                основной контроллер: Auth, Vault, интерцепторы
-    http/v1/                grpc-gateway + gin для /healthz, /metrics, /swagger
-api/proto/v1/               *.proto — единственный источник правды по контракту
-gen/                        сгенерённое: pb.go, gateway, openapiv2 (в репо, buf generate)
-migrations/                 goose/golang-migrate
-docs/                       swaggo → swagger.json + Swagger UI
-integration-test/           testcontainers, полный цикл через реальный HTTP
-pkg/
-  httpserver/  grpcserver/  logger/  postgres/  argon2/  jwt/
-```
-
-**Правило зависимостей:** `controller → usecase → entity`, `repo → usecase (через интерфейсы)`.
-Ни один импорт не идёт наружу. `usecase` не знает слов `gin`, `pgx`, `resty` — за счёт этого
-и появляется возможность подключить gRPC-контроллер вторым, не тронув бизнес-логику.
-
-Каждый экспортированный тип/функция/переменная и каждый пакет — с godoc-комментарием
-(жёсткое требование ТЗ; линтуется `revive` + `godot` в CI).
-
----
-
-## 5. Модель данных синхронизации
-
-### 5.1 Объекты
-
-Всё, что хранится, — иммутабельный блоб, адресуемый по хешу **шифротекста**:
-
-```
-ObjectID = "b3:" + hex(blake3-256(ciphertext))
-```
-
-Плюсы: сервер/облако не может подменить содержимое незаметно; переименование = изменение только манифеста;
-дедупликация между версиями; повторная отправка идемпотентна.
-
-### 5.2 Манифест
+### 3.1 Абстракция identity
 
 ```go
-// Manifest — полное состояние хранилища на момент Generation.
-type Manifest struct {
-    Version    int                 `json:"v"`
-    StoreID    string              `json:"store_id"`    // UUID, создаётся при init
-    Generation uint64              `json:"gen"`         // монотонный счётчик коммитов
-    Entries    map[string]Entry    `json:"entries"`     // ключ — логический путь "github.com/alice"
-    Devices    map[string]Device   `json:"devices"`     // для аудита и отзыва
-    UpdatedAt  time.Time           `json:"updated_at"`
+// Identity — источник ключа расшифровки. Не обязательно файл.
+type Identity interface {
+    Kind() Kind                  // file | passphrase | pgpcard | agePlugin | tpm | fido2
+    Unwrap(ctx context.Context, stanzas []*age.Stanza) ([]byte, error)
+    RequiresPresence() bool      // нужно физическое касание
+    Describe() string            // "YubiKey 5C серия 12345678, slot 9a"
 }
-
-// Entry — одна запись хранилища.
-type Entry struct {
-    Object   ObjectID          `json:"oid,omitempty"`    // для мелких секретов
-    Chunks   []ObjectID        `json:"chunks,omitempty"` // для бинарей
-    Size     int64             `json:"size"`
-    Kind     Kind              `json:"kind"`             // secret | binary | counter
-    Version  VersionVector     `json:"vv"`               // {deviceID: counter}
-    Deleted  bool              `json:"deleted,omitempty"`// tombstone
-    DeletedAt *time.Time       `json:"deleted_at,omitempty"`
-}
-
-// VersionVector — причинность правок между устройствами.
-type VersionVector map[string]uint64
 ```
 
-Манифест целиком — один объект, коммитится атомарно через compare-and-swap по `Generation`.
-Это даёт транзакционность мультифайловых операций (`mv` каталога, `reencrypt` всего стора)
-на любом бэкенде, включая тупой S3.
+Порядок поиска: `--identity` → `BINPASS_IDENTITY` → `identities.age` → `~/.config/age/keys.txt` →
+`$PASSAGE_IDENTITIES_FILE` → подключённые аппаратные токены (автодетект). Если подходят несколько —
+пробуем по очереди, спрашиваем только при неоднозначности.
 
-Tombstone'ы живут `retention` (default 90 дней), потом вычищаются `binpass gc` — иначе манифест растёт вечно.
+### 3.2 Поддерживаемое железо
 
-### 5.3 Большие бинарники
+| Устройство | Механизм | Как |
+|---|---|---|
+| YubiKey / Nitrokey (OpenPGP) | GPG smartcard | Через gpg-agent, работает из коробки для `.gpg` |
+| YubiKey (PIV) | `age-plugin-yubikey` | Ключ не покидает токен, PIN + опц. касание |
+| Любой FIDO2 (YubiKey, SoloKey, Token2) | `age-plugin-fido2-hmac` | `hmac-secret`, касание обязательно |
+| Apple Secure Enclave | `age-plugin-se` | Touch ID / Apple Watch как подтверждение |
+| TPM 2.0 | `age-plugin-tpm` | Привязка к машине, без внешнего токена |
 
-Чанкование FastCDC (~1 МиБ средний чанк), каждый чанк шифруется отдельно и адресуется по хешу.
-Даёт инкрементальную дозагрузку и дедупликацию между версиями файла. Заливка/скачивание —
-gRPC-стримами по чанку на сообщение (без буферизации файла в памяти),
-у rclone — обычными multipart-загрузками.
+Плагины age вызываются по **штатному age-plugin протоколу** (stdio, бинарь `age-plugin-*` на PATH) —
+свою реализацию криптографии токенов не пишем: там легко ошибиться, а протокол уже стандартизован.
 
-Утечка метаданных: размер и число чанков видны. Кому критично — `padding: true` в конфиге,
-округление до степени двойки.
+### 3.3 Что именно защищается ключом
 
-### 5.4 Обфускация имён (опционально)
+Три независимых уровня, включаются по отдельности:
 
-По умолчанию пути в открытом виде — цена совместимости с pass. Флаг `obfuscate: true`:
-`storedPath = base32(HMAC-SHA256(index_key, logicalPath))`, карта имён — в `.binpass/index.age`.
-Совместимость с `pass` при этом теряется, о чём предупреждаем при `init --obfuscate`.
+1. **Записи.** Recipient — аппаратный. Каждая расшифровка требует касания. Максимальная защита,
+   но `binpass grep` по всему стору превращается в пытку. Разумно для поддерева `bank/`.
+2. **Identity-файл.** `identities.age` завёрнут в аппаратный recipient, разворачивается один раз
+   за сессию агента. Компромисс по умолчанию.
+3. **Tomb/coffin.** Ключ от контейнера (§7) на токене — вынул ключ, стор физически недоступен.
+
+Конфигурация — на уровне подкаталогов через `.age-recipients`, то есть тем же механизмом,
+что и обычный шаринг.
+
+### 3.4 Второй фактор на само хранилище
+
+Отдельная опция `unlock.require_presence`: даже когда identity уже в агенте, операция
+`show`/`edit` требует касания токена. Реализуется пустой FIDO2-assertion — дёшево и не ломает
+кеширование ключа.
+
+### 3.5 YubiKey OATH для OTP
+
+Бонус: TOTP-секреты можно держать не в сторе, а в OATH-апплете YubiKey.
+`binpass otp --oath <name>` читает код прямо с токена (`ykman oath accounts code`).
+Секрет тогда вообще не существует на диске. `binpass otp move-to-oath <name>` переносит.
 
 ---
 
-## 6. Движок синхронизации
+## 4. Система плагинов
 
-### 6.1 Интерфейс remote
+Задача: расширяемость не хуже pass, но без сорсинга bash-функций.
+
+### 4.1 Три уровня
+
+**Уровень 1 — subcommand на PATH (git-style).** Самый простой, любой язык.
+Файл `binpass-foo` на PATH или в `$XDG_DATA_HOME/binpass/plugins/` → появляется команда `binpass foo`.
+
+Плагин получает окружение и **стабильный CLI обратно в binpass** — это замена сорсингу функций:
+
+```bash
+#!/usr/bin/env bash
+# binpass-lastused — показать давно не использованные записи
+: "${BINPASS_STORE:?}" "${BINPASS_BIN:?}"
+
+"$BINPASS_BIN" ls --format=json | jq -r '.[] | select(.used_days_ago > 365) | .path'
+```
+
+Экспортируемое окружение: `BINPASS_BIN`, `BINPASS_STORE`, `BINPASS_VERSION`, `BINPASS_PLUGIN_DIR`,
+`BINPASS_API=1`, `PASSWORD_STORE_DIR` (для скриптов, ожидающих pass).
+
+Машиночитаемый вывод у всех команд — `--format=json|yaml|template` — чтобы плагины не парсили
+человекочитаемый stdout. Схема вывода версионируется, ломающие изменения — только со сменой
+`BINPASS_API`.
+
+**Уровень 2 — декларативные рецепты.** Для типовых вещей код не нужен:
+
+```yaml
+# ~/.config/binpass/recipes/rotate-github.yaml
+name: rotate-github
+description: Сменить пароль GitHub и записать новый
+match: "github.com/*"
+steps:
+  - generate: { length: 32, symbols: true }
+  - open_url: "https://github.com/settings/admin"
+  - confirm: "Пароль изменён на сайте?"
+  - commit: "Rotate GitHub password"
+```
+
+**Уровень 3 — типизированные плагины через `hashicorp/go-plugin`** (gRPC поверх stdio).
+Для глубокой интеграции: свой транспорт синхронизации, свой источник identity, свой тип секрета,
+свой импортёр.
 
 ```go
-// Remote — транспорт синхронизации. Реализуется сервером, git и rclone одинаково.
+// Плагин реализует один или несколько интерфейсов ядра.
+type RemotePlugin  interface { Remote }            // новый бэкенд синхронизации
+type IdentityPlugin interface { Identity }         // новый источник ключа
+type SecretPlugin  interface {                     // новый тип секрета: рендер, валидация, поля
+    Kind() string
+    Parse([]byte) (Secret, error)
+    Render(Secret, RenderOpts) ([]byte, error)
+}
+```
+
+Транспорт — gRPC, значит плагины можно писать на любом языке, и падение плагина не роняет binpass.
+
+### 4.2 Модель разрешений
+
+Плагины видят пароли. Значит без capability-модели это дыра, а не фича.
+
+```yaml
+# plugin.yaml — манифест, обязателен
+name: pass-import-bitwarden
+version: 1.2.0
+api: 1
+capabilities:
+  read_paths: ["**"]           # что может читать
+  write_paths: ["import/**"]   # что может писать
+  decrypt: false               # нужен ли ДОСТУП К PLAINTEXT
+  network: ["vault.bitwarden.com"]  # белый список хостов
+  exec: []                     # какие внешние бинари может звать
+```
+
+* При установке — показ манифеста и явное подтверждение. `decrypt: true` подсвечивается отдельно.
+* Гранты пишутся в `plugins.lock` с хешем бинаря плагина; изменился хеш — переспрашиваем.
+* Сеть режется на уровне процесса (плагин ходит наружу только через прокси ядра, если объявил хосты).
+* Плагины уровня 3 запускаются с отдельным umask, без наследования агентского сокета.
+* `binpass plugin audit` показывает, у кого какие права.
+
+Полноценной песочницы не обещаем: на уровне 1 плагин — это обычный процесс пользователя,
+и он может обойти ограничения. Модель защищает от небрежного плагина, не от вредоносного.
+Для настоящей изоляции есть опциональный WASM-рантайм (`wazero`) на уровне 3, но там нет
+доступа к сети и файлам вовсе — годится для трансформаций и валидаторов.
+
+### 4.3 Дистрибуция
+
+```
+binpass plugin search <query>
+binpass plugin install <name|url|path>     # с проверкой подписи (minisign)
+binpass plugin list | info | update | remove
+binpass plugin audit
+```
+
+Реестр — git-репозиторий с индексом; ничего централизованного, установка по URL всегда работает.
+Плагины в `.binpass/plugins/` внутри стора синхронизируются вместе с ним (удобно, но требует
+доверия ко всем, у кого есть доступ — предупреждаем).
+
+---
+
+## 5. Нативные аналоги плагинов pass
+
+Всё это встроено, кроссплатформенно и покрыто тестами.
+
+| Плагин pass | Команда binpass | Что сверх оригинала |
+|---|---|---|
+| `pass-otp` | `binpass otp` | HOTP-счётчик синхронизируется корректно (§8.5), `--watch`, YubiKey OATH, QR |
+| `pass-update` | `binpass update` | Массовая ротация по маске, интеграция с рецептами (§4.1), политика длины из конфига |
+| `pass-audit` | `binpass audit` | HIBP по k-anonymity, слабые/переиспользованные/просроченные, zxcvbn-оценка, вывод JSON |
+| `pass-import` | `binpass import` | 60+ форматов: KeePass, Bitwarden, 1Password, LastPass, Chrome, Firefox, Enpass, pass, gopass. Плюс `binpass export` |
+| `pass-tomb` / `pass-coffin` | `binpass tomb` | Кроссплатформенно (§7) |
+| `pass-file` | `binpass binary` | Стрим без буферизации в память, `sum`, детект бинарности |
+| `pass-genphrase` | `binpass generate --words=5` | Diceware, EFF-словари, несколько языков |
+| `pass-rotate` | `binpass rotate` | Рецепты + известные URL смены пароля (`.well-known/change-password`) |
+| `pass-checkup` | `binpass doctor` | Проверка стора, ключей, прав, recipients, зависших lock'ов |
+| `pass-clip` | встроено в `-c` | Автоочистка + восстановление прежнего содержимого буфера |
+| `pass-grid` / TUI | `binpass tui` | bubbletea: поиск, дерево, просмотр, OTP с обратным отсчётом |
+| `passmenu` / `rofi-pass` | работают как есть | Держим stdout-совместимость; плюс `binpass menu` со встроенным dmenu/fzf-режимом |
+| `browserpass` | работает как есть | Зовёт gpg напрямую → Tier совместимости по `.gpg`; для `.age` нужен `binpass gpg-shim` в его конфиге |
+| `pass-git-helper` | `binpass git-credential` | Нативный git credential helper, конфиг маппинга URL→запись |
+| `pass-secret-service` | `binpass ss` | Атрибуты зашифрованы (слепой индекс), ACL до выдачи секрета, а не уведомление после (§6) |
+
+Плюс то, чего в pass-экосистеме нет:
+
+* `binpass history <name>` — все версии записи из git с diff по полям.
+* `binpass expire` — TTL на записи, напоминание о ротации.
+* `binpass qr <name>` — QR для переноса на телефон.
+* `binpass fill` — вывод в формате для автозаполнения (`--format=json`).
+* `binpass watch` — реакция на изменения стора (для интеграций).
+
+---
+
+## 6. binpass как системный keystore
+
+Цель: приложения, которые уже умеют работать с системным хранилищем паролей, должны прозрачно
+попадать в binpass, ничего не зная о нём. Chrome, VS Code, Docker, NetworkManager, GNOME Online
+Accounts, `git`, `kubectl`, Nextcloud, Evolution, Element — все они ходят в keystore
+и должны получать секреты из твоего стора.
+
+### 6.1 Linux: провайдер `org.freedesktop.secrets`
+
+Полная реализация Secret Service API (аналог `pass-secret-service`, gnome-keyring, KWallet)
+прямо в `binpass-agent`. Демон занимает имя на session bus, реализует объекты
+`Service`, `Collection`, `Item`, `Session`, `Prompt`; поставляется с systemd user unit
+и D-Bus activation-файлом.
+
+**Маппинг на стор:**
+
+```
+/org/freedesktop/secrets/collection/login   →  $STORE/secret-service/login/
+/org/freedesktop/secrets/aliases/default    →  алиас на неё же
+  └── item/1a2b3c…                          →  $STORE/secret-service/login/1a2b3c.age
+```
+
+Файл — обычный pass-секрет, читаемый `binpass show` и `pass show`:
+
+```
+correct-horse-battery-staple
+label: GitHub token
+attr.application: git
+attr.server: github.com
+attr.username: alice
+created: 1754651234
+```
+
+**Шифрование транспорта.** Обязательны оба алгоритма из спецификации: `plain` и
+`dh-ietf1024-sha256-aes128-cbc-pkcs7` (DH на группе MODP-1024, ключ через SHA-256 HKDF,
+AES-128-CBC с PKCS#7). Без второго libsecret работать не будет.
+
+### 6.2 Проблема атрибутов и слепой индекс
+
+`pass-secret-service` хранит атрибуты в открытом виде — это заявлено в его README прямым текстом.
+Но атрибуты — это `server`, `username`, `application`, `url`. То есть полная карта всех твоих
+аккаунтов лежит в git-репозитории и на Google Drive нешифрованной, даже когда сами пароли зашифрованы.
+
+Решение опирается на важное свойство спецификации: **`SearchItems` делает точное совпадение**
+по парам ключ-значение, а не поиск по подстроке. Значит детерминированный HMAC работает
+как полноценный поисковый индекс:
+
+```go
+// blind вычисляет слепой ключ атрибута для точного поиска без расшифровки.
+// indexKey выводится из identity, наружу не попадает.
+func blind(indexKey []byte, name, value string) string {
+    m := hmac.New(sha256.New, indexKey)
+    m.Write([]byte(name)); m.Write([]byte{0}); m.Write([]byte(value))
+    return base32.StdEncoding.EncodeToString(m.Sum(nil)[:16])
+}
+```
+
+* Атрибуты в открытом виде лежат **внутри зашифрованного файла**.
+* Рядом — `secret-service/.index.age`: карта `blind(attr) → [itemID]`.
+* Поиск при разблокированном сторе: считаем HMAC от запроса, идём в индекс. Расшифровывать
+  ничего не нужно, скорость — как у plaintext-индекса.
+* Провайдер (git-хостинг, Drive) видит только base32-хеши. Утекает лишь то, что два элемента
+  разделяют одинаковое значение атрибута — на порядки меньше, чем полный список серверов и логинов.
+* При заблокированном сторе `SearchItems` возвращает элементы помеченными `Locked` и объект
+  `Prompt` — ровно как предписывает спецификация.
+
+Индексный ключ живёт в агенте и разворачивается вместе с identity. Пересборка индекса —
+`binpass ss reindex`, вызывается автоматически после `sync`.
+
+### 6.3 Контроль доступа
+
+Слабое место всей модели Secret Service: **session bus не изолирует приложения**. Любой процесс
+пользователя может запросить любой секрет. gnome-keyring это никак не ограничивает,
+`pass-secret-service` — только уведомляет постфактум через `--notify-on-access` и умеет
+показать последнего обратившегося.
+
+binpass добавляет политику **до** выдачи секрета:
+
+```yaml
+# ~/.config/binpass/secret-service.yaml
+default: prompt              # allow | deny | prompt
+remember: 8h                 # сколько помнить решение пользователя
+rules:
+  - app: /usr/bin/git
+    attrs: { server: "github.com" }
+    action: allow
+  - app: /usr/lib/firefox/firefox
+    collection: login
+    action: prompt
+  - app: "*"
+    attrs: { application: "ssh" }
+    action: deny
+notify: on-access            # off | on-access | on-prompt
+audit: true                  # журнал: кто, что, когда
+```
+
+Идентификация вызывающего: unique name на шине → `GetConnectionCredentials` →
+PID → `/proc/PID/exe`, на systemd — через pidfd, что закрывает гонку с переиспользованием PID.
+**Честная оговорка:** и pidfd не спасает от процесса, который подменил себя после старта;
+это ограничение самой модели D-Bus, а не реализации. Политика защищает от случайного
+и неаккуратного доступа, не от целенаправленной атаки локального злоумышленника.
+
+Дополнительно:
+
+* `binpass ss last-accessor <id>` — кто последним читал секрет (PID, UID, имя программы, время).
+* `binpass ss audit` — полный журнал доступов.
+* Форсированный `Lock` при блокировке экрана, suspend и по таймеру; `--forget-on-lock`
+  заставляет gpg-agent/binpass-agent забыть ключ.
+* `require_presence` (§3.4) действует и здесь: касание токена на выдачу секрета приложению.
+
+### 6.4 Сосуществование с gnome-keyring и KWallet
+
+Имя `org.freedesktop.secrets` на шине может занять только один демон. Поэтому:
+
+* `binpass ss doctor` определяет, кто сейчас владеет именем, и печатает точные команды
+  для отключения конкурента (`systemctl --user mask gnome-keyring-daemon.socket` и т.п.).
+* Режим `--takeover=refuse|wait|replace` — что делать, если имя занято.
+* **Импорт**: `binpass import keyring` вытягивает существующие элементы из gnome-keyring
+  или KWallet через тот же Secret Service API и складывает в стор — переезд без потерь.
+* Приложения в Flatpak и Snap ходят не напрямую, а через `org.freedesktop.portal.Secret`.
+  Портал проксирует в тот же демон, так что достаточно, чтобы `xdg-desktop-portal` был настроен;
+  `ss doctor` это проверяет.
+
+### 6.5 macOS и Windows
+
+Здесь системный keystore заменить нельзя — только интегрироваться. Что и делаем, в обе стороны.
+
+**macOS Keychain:**
+
+* `binpass keychain import|export|sync` — двусторонний перенос элементов.
+* age-identity можно завернуть в Keychain-элемент, защищённый Touch ID / Apple Watch
+  (`kSecAccessControlUserPresence`) — разблокировка стора отпечатком без внешнего токена.
+* `binpass ss` на macOS не поднимает D-Bus; вместо него работают интеграции §6.6.
+
+**Windows Credential Manager:**
+
+* `binpass wincred import|export|sync` через `CredRead`/`CredWrite`.
+* Обёртка identity через DPAPI/CNG с привязкой к пользователю, опционально к TPM.
+* Windows Hello (платформенный WebAuthn-аутентификатор) как фактор разблокировки —
+  тот же механизм, что FIDO2 в §3.2.
+
+### 6.6 Интеграции уровня приложений
+
+Работают на всех трёх ОС, D-Bus не требуют — часто это практичнее, чем полноценный keystore:
+
+| Интеграция | Команда | Что даёт |
+|---|---|---|
+| git | `binpass git-credential` | Пароли и токены для push/pull, маппинг URL → запись |
+| Docker / containerd | `docker-credential-binpass` | Логины в registry по протоколу credential helper (JSON через stdin/stdout) |
+| SSH | `SSH_ASKPASS=binpass askpass` | Пароли к ключам и хостам |
+| sudo | `SUDO_ASKPASS=binpass askpass` | То же для sudo |
+| kubectl | `binpass k8s-credential` | Плагин `client.authentication.k8s.io/v1` |
+| AWS CLI | `credential_process = binpass aws` | Ключи не лежат в `~/.aws/credentials` |
+| Ansible | `binpass ansible-vault-pass` | Пароль от vault из стора |
+| netrc | `binpass netrc --generate` | Временный `.netrc` в tmpfs для legacy-утилит |
+| Переменные окружения | `binpass exec -- <cmd>` | Инъекция секретов в окружение дочернего процесса, без записи на диск |
+
+`binpass exec` — самый полезный из списка: `binpass exec --env=DB_PASS=prod/db -- ./app`
+подставляет секрет в переменную окружения ровно на время жизни процесса.
+
+---
+
+## 7. Tomb и coffin
+
+Цель: стор не просто зашифрован по файлам, а целиком скрыт, когда не используется —
+не видны ни имена, ни структура, ни факт существования записей.
+
+### 7.1 Две стратегии
+
+**Coffin (кроссплатформенно, дефолт).** Весь стор — один зашифрованный архив
+`store.coffin.age`. Открытие: расшифровка в приватный tmpfs-каталог (Linux) или в
+каталог с 0700 и явным затиранием (macOS/Windows). Закрытие: перешифровка + `shred`.
+
+* Работает везде, включая Windows, без прав root.
+* Ограничение: слабое место — plaintext-каталог во время сессии. Митигируем tmpfs, `mlock`
+  для мелких файлов, автозакрытием по таймауту и на события ОС (suspend, screen lock, logout).
+* Ключ от coffin — обычный age-recipient, значит **сразу поддерживает аппаратные ключи**.
+
+**Tomb (Linux, максимальная защита).** LUKS-контейнер через `cryptsetup`, совместимый
+с `pass-tomb`/`tomb(1)`.
+
+* Данные в plaintext существуют только в маппинге dm-crypt, на диск не попадают.
+* Ключ-файл контейнера сам зашифрован age/GPG → аппаратный токен как ключ от tomb.
+* Нужен root (или соответствующая polkit-политика) — честно предупреждаем.
+* Совместимость: существующий tomb от `pass-tomb` открывается binpass'ом.
+
+**macOS** — третий вариант: encrypted APFS sparse bundle через `hdiutil`, ключ в Keychain
+или на аппаратном токене. По защите ближе к tomb, по удобству — к coffin.
+
+### 7.2 Команды
+
+```
+binpass tomb init [--type=coffin|luks|sparsebundle] [--size=1G] [--recipient=age1...]
+binpass tomb open  [--timer=1h]     # автозакрытие
+binpass tomb close [--force]
+binpass tomb status
+```
+
+Автозакрытие вешается на: таймер, блокировку экрана (D-Bus / IOKit / WinAPI), suspend, logout,
+и `binpass-agent` forget. При аварийном завершении — `binpass doctor` находит незакрытый контейнер.
+
+### 7.3 CGO
+
+`CGO_ENABLED=0` держим для основного бинаря. LUKS-путь зовёт внешний `cryptsetup`, а не линкуется
+с libcryptsetup — иначе теряется статика и кроссплатформенная сборка. Единственное возможное
+исключение — FIDO2 через `go-libfido2`, поэтому по умолчанию идём через `age-plugin-fido2-hmac`
+(внешний бинарь), а нативную сборку выносим под build-tag `cgo_fido2`.
+
+---
+
+## 8. Синхронизация
+
+### 8.1 Модель
+
+Хранилище — обычные файлы, значит синхронизация файловая. Состояние в `sync/state.db` (bbolt):
+
+```go
+// FileState — что binpass знает о файле на момент последней успешной синхронизации.
+type FileState struct {
+    Path      string        // "github.com/alice.gpg"
+    Hash      [32]byte      // blake3 от ШИФРОТЕКСТА — ключ для сравнения не нужен
+    Size      int64
+    ModTime   time.Time
+    Version   VersionVector // {deviceID: counter}
+    RemoteRev string        // git sha | ETag | Drive revision
+}
+```
+
+Хеш от шифротекста: `binpass sync` работает при заблокированном сторе. Обратная сторона —
+GPG недетерминирован, перешифровка того же plaintext даёт другой шифротекст. Поэтому первичный
+детектор изменений — `(size, mtime)`, хеш подтверждает.
+
+### 8.2 Интерфейс транспорта
+
+```go
+// Remote — транспорт синхронизации. Одинаков для git, Drive, Yandex, WebDAV, S3.
 type Remote interface {
     Name() string
-    Caps() Caps // AtomicCAS, History, Watch, PartialFetch
+    Caps() Caps   // Atomic, History, Locking, Rename, Watch
 
-    Manifest(ctx context.Context) (*manifest.Signed, error)
-    CommitManifest(ctx context.Context, m *manifest.Signed, expect uint64) error // ErrConflict при рассинхроне
-
-    HasObjects(ctx context.Context, ids []ObjectID) (map[ObjectID]bool, error)
-    PutObject(ctx context.Context, id ObjectID, r io.Reader) error
-    GetObject(ctx context.Context, id ObjectID) (io.ReadCloser, error)
-    DeleteObjects(ctx context.Context, ids []ObjectID) error // GC
-
-    Watch(ctx context.Context) (<-chan Event, error) // опц.
+    List(ctx context.Context) ([]RemoteFile, error)
+    Get(ctx context.Context, path string) (io.ReadCloser, string, error)
+    Put(ctx context.Context, path string, r io.Reader, expectRev string) (string, error)
+    Delete(ctx context.Context, path string, expectRev string) error
+    Rename(ctx context.Context, from, to string) error
+    Lock(ctx context.Context) (Unlock, error)
     Close() error
 }
 ```
 
-Реализации бэкендов:
+Плагины уровня 3 могут реализовать этот интерфейс и добавить свой бэкенд.
 
-| | Сервер | git | rclone |
-|---|---|---|---|
-| Объекты | таблица + blobstore | `objects/ab/cdef…` в репозитории | ключи в бакете/папке |
-| Манифест | строка в PG, CAS по generation | `manifest.json` в коммите | `manifest.json` + условная запись |
-| Атомарность CAS | транзакция БД | атомарность `push` (non-fast-forward отклоняется) | ETag/If-Match у S3; у Drive/WebDAV — lock-файл + retry |
-| История | таблица `manifests` | сам git | нет (только N последних манифестов) |
-| Watch | серверный gRPC-стрим | нет (polling) | нет (polling) |
+### 8.3 git
 
-`Caps()` честно сообщает движку, чего бэкенд не умеет, — дальше деградация: нет `Watch` → polling
-с интервалом; нет истинного CAS → advisory-lock + verify-after-write.
+* Системный `git` (credential helpers, ssh-agent, подпись коммитов, прокси), `go-git` — фолбэк.
+* Автокоммит с теми же сообщениями, что у pass (`Add given password for X to store.`) —
+  история неотличима.
+* `.gitattributes`: `*.gpg binary`, `*.age binary`, merge-driver `binpass merge-driver` → §8.5.
+* Работает с любым существующим pass-репозиторием без конвертации.
 
-### 6.2 Цикл синхронизации
+### 8.4 Google Drive, Yandex.Disk, WebDAV, S3
 
-```
-1. WAL: локальные изменения уже записаны в journal.wal (crash-safe)
-2. remoteM  := remote.Manifest()      → проверка подписи и монотонности generation
-3. baseM    := state/base.json        (общий предок)
-4. localM   := построить из дерева + WAL
-5. merged, conflicts := merge3(baseM, localM, remoteM)
-6. push: объекты, которых нет на remote (HasObjects → PutObject)
-7. remote.CommitManifest(merged, expect=remoteM.Generation)
-      ErrConflict → goto 2 (backoff, до N раз)
-8. pull: GetObject для новых записей → atomic write в дерево
-9. state/base.json := merged;  WAL очищается
-10. conflicts → на диск как отдельные записи + отчёт пользователю
-```
+Первоклассная поддержка, а не «настройте rclone сами».
 
-Порядок «сначала объекты, потом манифест» гарантирует, что манифест никогда не ссылается
-на несуществующий блоб. Обратный порядок при удалении: сначала манифест, потом GC блобов.
+**Встроенный OAuth.** `binpass remote add gdrive` поднимает локальный редирект на `127.0.0.1`,
+открывает браузер, забирает токен, кладёт в `remotes.age`. Никаких предварительных конфигов.
+Yandex.Disk — аналогично через Яндекс OAuth. Для headless — device-flow с кодом.
 
-### 6.3 Разрешение конфликтов
-
-Сравниваем version vectors записи:
-
-| Ситуация | Действие |
-|---|---|
-| `VV_local == VV_remote` | ничего |
-| `VV_local` доминирует | push |
-| `VV_remote` доминирует | pull |
-| Одинаковый `ObjectID`, разные VV | слить VV, данные не трогать |
-| **Расходятся** (concurrent) | конфликт |
-| Расходятся, `Kind == counter` (HOTP) | `max(a,b)`, автоматически |
-| Расходятся, delete vs edit | побеждает edit, tombstone снимается, юзеру warning |
-
-Конфликт по умолчанию: побеждает удалённая версия в основном пути, локальная сохраняется как
-`github.com/alice.conflict-<device>-20260730T142233.age`, в конце `binpass sync` — сводка.
-Ничего не теряется молча — принцип Syncthing.
-
-Опция `--merge=interactive`: обе версии расшифровываются, показывается пофайловый diff
-по полям секрета (пароль маскируется), пользователь выбирает. Полностью автоматический
-field-wise merge сознательно **не** делаем по умолчанию — слишком легко получить франкенштейн-секрет.
-
-### 6.4 Оффлайн и отказы
-
-* Всё работает без сети: `Set/Get/Remove` пишут в дерево + WAL, `sync` догоняет позже.
-* WAL реиграется при старте, если процесс упал между записью файла и обновлением состояния.
-* Локальные записи всегда атомарны: `write tmp → fsync → rename → fsync(dir)`, права 0600/0700.
-
----
-
-## 7. Сервер синхронизации (`binpassd`)
-
-Покрывает ровно то, что требует ТЗ: регистрация, аутентификация, авторизация, хранение приватных
-данных, синхронизация между несколькими клиентами одного владельца, выдача данных по запросу.
-Git/rclone/WebDAV в сервере отсутствуют — это чисто клиентские бэкенды.
-
-### 7.1 Протокол
-
-**gRPC поверх TLS 1.3** — основной транспорт и одновременно «бинарный протокол» из необязательных
-пунктов ТЗ. Рядом `grpc-gateway` поднимает REST-фасад из тех же `.proto` и генерит
-`openapiv2/swagger.json` (ещё один необязательный пункт). Контракт живёт в `api/proto/v1`,
-кодогенерация — `buf generate`, сгенерённое коммитится в репозиторий.
-
-```proto
-service Auth {
-  rpc Register     (RegisterRequest)  returns (TokenPair);   // login + auth_secret → tokens + user_salt
-  rpc Login        (LoginRequest)     returns (TokenPair);
-  rpc Refresh      (RefreshRequest)   returns (TokenPair);
-  rpc Logout       (LogoutRequest)    returns (google.protobuf.Empty);
-  rpc EnrollDevice (EnrollRequest)    returns (Device);
-  rpc ListDevices  (google.protobuf.Empty) returns (DeviceList);
-  rpc RevokeDevice (RevokeRequest)    returns (google.protobuf.Empty);
-}
-
-service Vault {
-  rpc GetManifest    (google.protobuf.Empty)   returns (SignedManifest);
-  rpc CommitManifest (CommitRequest)           returns (CommitResponse);
-  rpc HasObjects     (ObjectIDs)               returns (ObjectPresence);
-  rpc PutObject      (stream PutObjectChunk)   returns (PutObjectResponse);
-  rpc GetObject      (GetObjectRequest)        returns (stream ObjectChunk);
-  rpc Watch          (WatchRequest)            returns (stream ChangeEvent);
-}
-
-message CommitRequest {
-  SignedManifest manifest = 1;
-  uint64 expect_generation = 2;   // CAS: несовпадение → FAILED_PRECONDITION
-}
-
-message PutObjectChunk {
-  oneof payload {
-    ObjectHeader header = 1;      // oid + total_size, первым сообщением
-    bytes        data   = 2;      // ≤ 1 MiB на сообщение
-  }
-}
-```
-
-Правила отображения ошибок (единые для gRPC и REST через gateway):
-
-| Домен | gRPC | HTTP |
-|---|---|---|
-| Гонка при коммите манифеста | `FAILED_PRECONDITION` | 412 |
-| Объект не найден | `NOT_FOUND` | 404 |
-| Токен протух / невалиден | `UNAUTHENTICATED` | 401 |
-| Чужой ресурс | `PERMISSION_DENIED` | 403 |
-| Логин занят | `ALREADY_EXISTS` | 409 |
-| Превышена квота / размер объекта | `RESOURCE_EXHAUSTED` | 429 |
-
-`Watch` — серверный стрим, даёт мгновенное распространение изменений между устройствами
-(сценарий ТЗ «синхронизация между несколькими авторизованными клиентами одного владельца»).
-Fallback — polling с интервалом из конфига.
-
-**Клиент (`pkg/remote/server`).** Два транспорта за одним интерфейсом, выбор через
-`remotes.server.transport`:
-
-* `grpc` (по умолчанию) — `grpc-go` с интерцепторами:
-  * unary+stream auth-интерцептор подставляет `authorization: Bearer <access>`;
-  * при `UNAUTHENTICATED` — прозрачный refresh **под single-flight** и один повтор
-    (иначе десяток параллельных 401 сожгут цепочку ротации и выкинут пользователя);
-  * retry-интерцептор с backoff+jitter на `UNAVAILABLE`/`RESOURCE_EXHAUSTED`, уважает `retry-after`;
-  * keepalive, `WithBlock` только на явном `binpass login`, TLS 1.3, опц. pinning по SPKI;
-  * стриминг блобов чанками по 1 МиБ — файл на 500 МБ не попадает в heap.
-* `rest` — `resty` поверх gateway-эндпоинтов, для окружений с прокси, которые ломают HTTP/2.
-  Тот же набор операций, CAS через `If-Match`/`412`, ретраи и refresh — в `OnBeforeRequest`/`OnAfterResponse`.
-
-REST-эндпоинты (генерятся из proto-аннотаций, они же в Swagger):
-
-```
-POST   /api/v1/auth/register | /login | /refresh | /logout
-GET    /api/v1/devices        POST /api/v1/devices        DELETE /api/v1/devices/{id}
-GET    /api/v1/vault/manifest                 → ETag: "<generation>"
-PUT    /api/v1/vault/manifest                 If-Match: "<generation>" → 412 при гонке
-POST   /api/v1/vault/objects:check
-PUT|GET /api/v1/vault/objects/{oid}           octet-stream, стрим
-GET    /healthz  /readyz  /metrics  /swagger/index.html
-```
-
-### 7.1a Слои сервера
-
-| Слой | Пакет | Знает про | Пример |
-|---|---|---|---|
-| Entity | `internal/entity` | ничего | `User`, `Device`, `Manifest`, `Object`, `ErrGenerationMismatch` |
-| UseCase | `internal/usecase` | только entity + свои интерфейсы | `VaultUseCase.CommitManifest(ctx, userID, m, expectGen)` |
-| Repo | `internal/usecase/repo` | pgx, S3 | `ManifestRepo.InsertIfAbsent(...)` |
-| Controller | `internal/controller/grpc/v1` | grpc, protobuf-DTO, коды статусов | `CommitManifest` → мапит `expect_generation`, зовёт usecase |
-| App | `internal/app` | всё, только для сборки | DI, миграции, graceful shutdown |
-
-Интерфейсы объявляются **в `usecase/contracts.go`** (потребителем), а не в репозитории —
-это то, что делает usecase тестируемым чистыми моками, позволяет подменить PostgreSQL
-на что угодно и держать два транспорта (gRPC и REST) поверх одной бизнес-логики.
-
-### 7.2 Аутентификация и авторизация
-
-* Регистрация: клиент шлёт `login` + `AUTH_SECRET` (см. §2.2). Сервер хранит `Argon2id(AUTH_SECRET)`
-  и выдаёт `user_salt`. Пароль в открытом виде сервер не видит никогда.
-* Access-token: JWT (Ed25519), TTL 15 мин, claims `sub`, `device_id`, `store_id`.
-* Refresh-token: случайные 32 байта, хранится хешем, привязан к устройству, ротация при каждом
-  использовании, детект переиспользования → отзыв всей цепочки.
-* Авторизация: interceptor проверяет `user_id` из токена против владельца ресурса. Модель простая —
-  один пользователь = одно хранилище; шаринг между людьми делается на уровне age-recipients,
-  а не на уровне сервера. Это осознанно: сервер не должен знать, кто с кем чем делится.
-* Rate limiting на `Login`/`Register` (token bucket по IP + по логину), защита от брутфорса.
-* Опционально TOTP как второй фактор на вход в аккаунт — переиспользуем `pkg/otp`.
-
-### 7.3 Хранилище сервера
-
-PostgreSQL для метаданных + blobstore (локальная ФС или S3) для объектов.
-
-```sql
-users          (id, login UNIQUE, auth_hash, user_salt, created_at)
-devices        (id, user_id, name, pubkey, created_at, last_seen_at, revoked_at)
-refresh_tokens (id, device_id, token_hash, expires_at, used_at, revoked)
-manifests      (user_id, generation, blob, signature, device_id, created_at,
-                PRIMARY KEY (user_id, generation))
-objects        (user_id, oid, size, storage_ref, created_at,
-                PRIMARY KEY (user_id, oid))
-object_refs    (user_id, oid, generation)   -- для GC по достижимости
-audit_log      (id, user_id, device_id, action, ip, at)
-```
-
-CAS-коммит манифеста:
-
-```sql
-INSERT INTO manifests (user_id, generation, blob, signature, device_id)
-VALUES ($1, $2 + 1, $3, $4, $5);   -- уникальный индекс по (user_id, generation) = гонка отсекается
-```
-
-Квоты на пользователя (объём/число объектов). GC: объекты, не достижимые ни из одного манифеста
-за retention-окно, удаляются фоновым воркером.
-
-### 7.4 Эксплуатация
-
-Health/readiness пробы, `/metrics` (Prometheus), структурные логи (zap/slog) **без единого
-байта пользовательских данных**, graceful shutdown, миграции (goose/golang-migrate),
-Docker + docker-compose для локального запуска, конфиг через env/флаги/файл с приоритетом flags > env > file.
-
----
-
-## 8. Конфигурация: YAML + ENV + флаги (viper)
-
-Один механизм на оба бинаря. Приоритет строгий: **флаги cobra > переменные окружения > YAML-файл > дефолты в коде**.
-
-```go
-// config.Load читает YAML, накладывает ENV и флаги, валидирует результат.
-func Load(cmd *cobra.Command) (*Config, error) {
-    v := viper.New()
-    v.SetConfigName("config")
-    v.SetConfigType("yaml")
-    v.AddConfigPath(userConfigDir())         // ~/.config/binpass  |  /etc/binpassd
-    v.AddConfigPath(".")
-
-    v.SetEnvPrefix("BINPASS")                // APASSD для сервера
-    v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
-    v.AutomaticEnv()                         // store.dir → BINPASS_STORE_DIR
-
-    setDefaults(v)
-
-    if err := v.BindPFlags(cmd.Flags()); err != nil { return nil, err }
-    if err := v.ReadInConfig(); err != nil {
-        if _, ok := err.(viper.ConfigFileNotFoundError); !ok { return nil, err }
-    }
-
-    var cfg Config
-    if err := v.Unmarshal(&cfg); err != nil { return nil, err }
-    return &cfg, validator.New().Struct(&cfg)   // go-playground/validator
-}
-```
-
-### 8.1 Клиент — `~/.config/binpass/config.yaml`
-
-```yaml
-store:
-  dir: ~/.password-store
-  obfuscate_names: false
-crypto:
-  identity: ~/.config/binpass/identities.age
-  agent:
-    enabled: true
-    ttl: 10m
-clip:
-  timeout: 45s
-  restore_previous: true
-generate:
-  length: 24
-  symbols: true
-remotes:
-  default: server
-  server:
-    url: https://vault.example.com
-    timeout: 30s
-    retry: 3
-    transport: grpc        # grpc | rest
-    events: stream         # stream | poll | off
-    poll_interval: 60s
-    tls:
-      pin_sha256: ""
-  git:
-    url: git@github.com:alice/secrets.git
-    binary: git            # git | go-git
-    sign_commits: true
-  gdrive:                  # любой remote из rclone.conf
-    type: rclone
-    rclone_remote: gdrive:binpass
-sync:
-  auto: on-change          # off | on-change | interval
-  conflict: keep-both      # keep-both | interactive | prefer-remote | prefer-local
-log:
-  level: info
-  format: text
-```
-
-Совместимость со скриптами вокруг `pass` — через явные алиасы, а не магию:
-
-```go
-v.BindEnv("store.dir", "BINPASS_STORE_DIR", "PASSWORD_STORE_DIR")
-v.BindEnv("clip.timeout", "BINPASS_CLIP_TIME", "PASSWORD_STORE_CLIP_TIME")
-v.BindEnv("generate.length", "BINPASS_GENERATED_LENGTH", "PASSWORD_STORE_GENERATED_LENGTH")
-```
-
-### 8.2 Сервер — `config/config.yaml`
-
-```yaml
-app:
-  name: binpassd
-  version: ""              # подставляется ldflags, в файле пусто
-http:                      # grpc-gateway + health/metrics/swagger
-  port: "8080"
-  read_timeout: 10s
-  write_timeout: 30s
-  shutdown_timeout: 15s
-grpc:
-  port: "8081"             # основной транспорт
-  max_recv_mib: 8          # чуть больше размера чанка
-  keepalive: 30s
-pg:
-  pool_max: 20
-  url: ""                  # ТОЛЬКО из ENV: BINPASSD_PG_URL
-blob:
-  driver: fs               # fs | s3
-  fs_path: /var/lib/binpassd/blobs
-  s3: { endpoint: "", bucket: "", region: "" }
-auth:
-  argon2: { memory_mib: 256, time: 3, threads: 4 }
-  access_ttl: 15m
-  refresh_ttl: 720h
-  jwt_private_key: ""      # ТОЛЬКО из ENV/секрет-файла
-limits:
-  max_object_size: 100MiB
-  quota_per_user: 5GiB
-  rate_login_per_min: 10
-log:
-  level: info
-  format: json
-```
-
-### 8.3 Правила, которые нельзя нарушать
-
-* **Секреты не живут в YAML.** `pg.url`, `jwt_private_key`, S3-credentials — только ENV или
-  `*_FILE`-путь к секрет-файлу (docker/k8s secrets). Файл в репозитории содержит пустые плейсхолдеры,
-  а `config.Load` падает на старте, если обязательное поле пустое (`validate:"required"`).
-* **Никакого дампа конфига в лог целиком.** Метод `Config.Redacted()` возвращает копию
-  с зачёркнутыми чувствительными полями — только он и логируется.
-* **`viper.WatchConfig` — точечно.** Hot-reload разрешён только для `log.level` и лимитов;
-  перечитывать на лету DSN или ключи подписи — источник трудновоспроизводимых багов.
-* **В Docker — чистый ENV**, YAML не монтируется. В `docker-compose.yml` весь конфиг виден в одном месте.
-* Клиентский `config.yaml` создаётся `binpass init` с правами 0600, каталог — 0700.
-
----
-
-## 9. Клиентские бэкенды
-
-### 8.1 git
-
-```
-binpass sync --remote git
-binpass git init git@github.com:alice/secrets.git
-```
-
-* Основной путь — вызов системного `git` (работают credential helpers, ssh-agent, подпись коммитов,
-  корпоративные прокси). Fallback на `go-git` там, где бинаря нет.
-* Репозиторий хранит `objects/` + `manifest.json`; истории коммитов достаточно для отката.
-* `.gitattributes`: `*.age binary`, кастомный merge-driver, который вместо мержа шифротекста
-  зовёт `binpass merge-driver` → уходит в общий конфликт-резолвер §6.3.
-* Не-fast-forward push = `ErrConflict` для движка, дальше стандартный retry-цикл.
-* Совместимость: обычный `pass git`-стор (файлы в дереве, без `objects/`) читается в legacy-режиме.
-
-### 8.2 rclone (S3, WebDAV, Google Drive, Yandex.Disk, …)
-
-Подключаем как библиотеку, а не как бинарь:
+**Под капотом rclone как библиотека**, точечные импорты (не `backend/all`, иначе бинарь пухнет
+на десятки мегабайт; полный набор — под build-tag `rclone_full`):
 
 ```go
 import (
     _ "github.com/rclone/rclone/backend/drive"
-    _ "github.com/rclone/rclone/backend/s3"
-    _ "github.com/rclone/rclone/backend/webdav"
     _ "github.com/rclone/rclone/backend/yandex"
-    "github.com/rclone/rclone/fs"
-    "github.com/rclone/rclone/fs/operations"
+    _ "github.com/rclone/rclone/backend/webdav"
+    _ "github.com/rclone/rclone/backend/s3"
 )
 ```
 
-* Импортируем **точечно** нужные бэкенды, не `backend/all` — иначе бинарь распухает на десятки МБ.
-  Build-теги `rclone_full` для сборки со всем набором.
-* Конфиг берём из существующего `~/.config/rclone/rclone.conf` (если есть) либо из
-  `.binpass/remotes.age` — OAuth-токены Google/Yandex это чувствительные данные,
-  в открытом виде их не держим.
-* CAS эмулируется: S3 — `If-Match` по ETag; Drive/WebDAV — lock-объект `manifest.lock` с TTL,
-  запись, чтение-проверка. Честно помечаем в `Caps()` как `WeakCAS` и добавляем verify-after-write.
-* Для Drive/Yandex учитываем rate limits → backoff с jitter, батчинг мелких объектов.
+Существующий `~/.config/rclone/rclone.conf` подхватывается, если есть — тогда доступны все
+40+ бэкендов rclone разом.
 
-### 8.3 Несколько remote одновременно
+Особенности, которые реально стреляют:
 
-`config.yaml` разрешает список: например, сервер как основной + git как резервный.
-`binpass sync` проходит их последовательно, `binpass sync --remote=all` — по всем.
-Манифест один и тот же, generation общий, так что бэкенды взаимно догоняются.
+* **Атомарности нет нигде.** S3 — `If-Match` по ETag; Drive/WebDAV/Yandex — advisory-lock
+  `.binpass.lock` с TTL и владельцем + verify-after-write. `Caps()` возвращает `WeakAtomic`,
+  движок добавляет проверку после записи.
+* **Rate limits.** Drive: 1000 запросов/100 с на пользователя; Yandex жёстче. Backoff с jitter,
+  батчинг, уважение `Retry-After`. Стор на 2000 записей нельзя лить по файлу за запрос —
+  дельта-синхронизация обязательна.
+* **Yandex.Disk** доступен и как WebDAV (`https://webdav.yandex.ru`), и нативно.
+  Нативный быстрее и не упирается в лимиты WebDAV-шлюза — он и по умолчанию.
+* **Drive и регистр имён.** Drive допускает два файла с одинаковым именем в папке.
+  При обнаружении дубля — не угадываем, а зовём конфликт-резолвер.
+* **Что видит провайдер:** только шифротексты и файлы получателей. Но **имена записей видны** —
+  это врождённое свойство pass. Опция `--obfuscate` (base32 HMAC от пути, карта имён
+  в зашифрованном индексе) есть, но ломает совместимость с pass; либо tomb/coffin (§7),
+  который решает вопрос радикально — наружу уезжает один блоб.
+
+### 8.5 Конфликты
+
+| Ситуация | Действие |
+|---|---|
+| VV равны | ничего |
+| Локальный доминирует | push |
+| Удалённый доминирует | pull |
+| **Расходятся** | конфликт |
+| Расходятся, шифротексты идентичны | слить VV, файл не трогать |
+| Расходятся, в секрете HOTP | автомерж по `max(counter)` |
+| delete vs edit | побеждает edit, warning |
+
+Дефолт — обе копии на диск, ничего не теряется молча:
+
+```
+github.com/alice.gpg                                    ← удалённая
+github.com/alice.conflict-thinkpad-20260808T142233.gpg  ← локальная
+```
+
+`binpass conflicts list|diff|resolve` — пофайловый diff расшифрованных секретов, пароль
+замаскирован (`--show-secrets` снимает). Автомержа полей по умолчанию нет: слишком легко
+получить секрет-франкенштейн с логином от одной версии и паролем от другой.
+
+HOTP — единственное место, где движок синхронизации заглядывает внутрь секрета, и это неизбежно:
+счётчик расходится на двух устройствах закономерно, а не случайно.
+
+### 8.6 Надёжность
+
+* Всё работает оффлайн, `sync` догоняет.
+* Запись: `tmp в том же каталоге → fsync → rename → fsync(dir)`, права 0600/0700.
+* WAL реиграется при старте, если процесс убили посреди операции.
+* `binpass fsck` сверяет дерево, state.db и recipients, чинит расхождения.
 
 ---
 
-## 10. Поверхность CLI
+## 9. CLI
+
+Первая группа — команды pass, ведут себя идентично, включая коды возврата и формат вывода дерева.
 
 ```
-binpass init [--recipient age1... | --identity file | --yubikey]
-binpass insert [-m|--multiline] [-f] <name>
-binpass show [-c[n]] [--field=url] [--qr] <name>
-binpass edit <name>                     # правка в $EDITOR через tmpfs-файл
-binpass generate [-n] [-c] <name> [len]
-binpass rm|mv|cp|find|grep|ls
-binpass otp [-c] [--watch] <name> ; binpass otp append <name> <uri>
-binpass binary cat|copy|move|sum <name>
-binpass card add|show <name>            # типизированный ввод: номер/держатель/срок/CVV
-binpass recipients add|remove|list ; binpass reencrypt
-binpass sync [--remote=NAME|all] [--dry-run] ; binpass conflicts list|resolve
-binpass remote add server|git|rclone ...
-binpass login|logout|register|devices [revoke]
-binpass migrate --from=pass|gopass      # GPG → age, дерево переносится 1:1
-binpass fsck ; binpass gc ; binpass audit   # аудит: слабые/переиспользованные пароли, HIBP k-anonymity
-binpass tui
-binpass version                         # версия, дата сборки, коммит, Go-версия, ОС/арх
+binpass init [--path=subdir] [--age|--gpg] <recipient>...
+binpass [ls] [subfolder]            binpass find <term>...
+binpass show [-c[n]] [--field=f] [--qr] <name>
+binpass insert [-m] [-f] <name>     binpass edit <name>
+binpass generate [-n] [-c] [-f] [-i] [--words=N] <name> [len]
+binpass rm [-r] [-f] <name>         binpass mv|cp [-f] <old> <new>
+binpass grep [opts] <pattern>       binpass git <args>...
+binpass version | help
+
+--- нативные аналоги плагинов ---
+binpass otp | update | audit | import | export | rotate | binary | doctor | menu
+
+--- сверх того ---
+binpass ss run|status|doctor|reindex|audit|last-accessor   # Secret Service (Linux)
+binpass keychain import|export|sync   # macOS
+binpass wincred import|export|sync    # Windows
+binpass exec --env=VAR=path -- <cmd>  # инъекция секретов в окружение
+binpass askpass | git-credential | k8s-credential | aws | netrc
+binpass tomb init|open|close|status
+binpass sync [--remote=NAME|all] [--dry-run]
+binpass remote add gdrive|yandex|webdav|s3|git <name> [url]
+binpass conflicts list|diff|resolve
+binpass recipients add|remove|list  binpass reencrypt [--to=age] [path]
+binpass identity list|add|test      # аппаратные ключи, диагностика
+binpass plugin search|install|list|info|update|remove|audit
+binpass history|expire|qr|fill|watch|tui
+binpass git-credential                # helper для git
 binpass completion bash|zsh|fish|powershell
 ```
 
-Версия и дата сборки (требование ТЗ) — через ldflags, без CGO:
+Всё `PASSWORD_STORE_*` уважается как есть, `BINPASS_*` приоритетнее:
+`DIR`, `CLIP_TIME`, `UMASK`, `GENERATED_LENGTH`, `CHARACTER_SET[_NO_SYMBOLS]`, `SIGNING_KEY`, `GPG_OPTS`, `KEY`.
 
-```
-go build -trimpath -ldflags="\
-  -X main.version=$(git describe --tags) \
-  -X main.commit=$(git rev-parse --short HEAD) \
-  -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ./cmd/binpass
-```
+Клипборд: X11 `xclip`, Wayland `wl-copy`, macOS `pbcopy`, Windows WinAPI — с автоочисткой
+и восстановлением прежнего содержимого. `edit` — файл в tmpfs (Linux) или 0600 + явное затирание.
+Пароли читаются только с TTY/stdin, никогда из argv.
 
-Дерево команд — `cobra`, каждая команда в отдельном файле `internal/cli/<cmd>.go`,
-глобальные флаги `--config`, `--store`, `--remote`, `--log-level` привязаны к viper через
-`BindPFlags` в `PersistentPreRunE`. Команды не содержат бизнес-логики: парсинг флагов →
-вызов `pkg/store`/`pkg/sync` → форматирование вывода. Это делает возможным TUI и будущий
-демон поверх той же логики.
-
-Кросс-платформенность: пути через `os.UserConfigDir`, буфер обмена — `xclip`/`wl-copy`/`pbcopy`/
-WinAPI с автоочисткой через N секунд (и восстановлением прежнего содержимого),
-`edit` — во временный файл в tmpfs (Linux) / `os.CreateTemp` c 0600 и явным затиранием (Win/macOS).
+`binpass version` — версия, коммит, дата сборки, Go, ОС/арх (ldflags).
 
 ---
 
-## 11. Модель угроз
+## 10. Модель угроз
 
 | Угроза | Митигация |
 |---|---|
-| Компрометация сервера/облака | E2E: только шифротекст. Ключей на сервере нет физически |
-| Подмена шифротекста (recipients публичны) | Подписанный манифест, объекты вне манифеста игнорируются |
-| Rollback к старому состоянию | Монотонный `Generation` + локальный якорь последней виденной версии |
-| Утечка имён секретов | Известное ограничение pass; опция обфускации имён (§5.4) |
-| Утечка размеров | Опциональный паддинг чанков |
-| Брутфорс аккаунта | Argon2id (m=256MiB), rate limiting, опц. TOTP-2FA |
-| Кража ноутбука | age-identity под scrypt/YubiKey, TTL агента, автолок |
-| Секреты в swap/core | mlock best-effort, `RLIMIT_CORE=0`, зануление буферов |
-| Секреты в истории шелла | чтение из stdin/TTY, никаких паролей аргументами |
-| Утечка через логи | запрет полей с plaintext на уровне линтера + code review |
-| MITM | TLS 1.3, опц. certificate pinning для собственного сервера |
+| Компрометация Drive / Yandex / WebDAV | Провайдер видит только шифротекст, ключей нет |
+| Провайдер видит имена записей | Врождённое для pass. `--obfuscate` или tomb/coffin (§7) |
+| Провайдер видит атрибуты keystore (server, username, url) | Атрибуты внутри шифротекста, поиск по слепому HMAC-индексу (§6.2). Утекает только равенство значений |
+| Чужое приложение читает секрет через D-Bus | Политика allow/deny/prompt **до** выдачи, журнал, `last-accessor` (§6.3). Ограничение модели D-Bus признаём явно |
+| Подмена процесса между проверкой и выдачей | pidfd вместо PID там, где есть systemd; полностью не решается — фиксируем в документации |
+| Подмена шифротекста провайдером | Подпись `.gpg-id`; для age — подписанный индекс; git — подписанные коммиты |
+| Откат к старой версии | git-история; для облаков — якорь последнего rev в state.db + предупреждение при регрессе |
+| Кража ноутбука | Аппаратный ключ (§3), tomb закрыт, TTL агента |
+| Вредоносный плагин | Манифест разрешений, явный грант на `decrypt`, пиннинг хеша, `plugin audit` (§4.2) |
+| Секреты в swap/core | mlock best-effort, `RLIMIT_CORE=0`, зануление буферов, tmpfs для coffin |
+| Секреты в истории шелла | Ввод только с TTY/stdin |
+| Утечка через конфликт-файлы | `.conflict-*` шифруются теми же получателями |
+| Форензика после закрытия tomb | `shred` + tmpfs; на SSD с wear-leveling гарантий нет — говорим прямо |
 
-Явно **вне** модели: скомпрометированная ОС клиента, кейлоггеры, злонамеренный recipient
-(доступ, однажды выданный, отзывается только через `reencrypt` + ротацию — старые копии уже утекли).
-
----
-
-## 12. Тестирование и документация
-
-ТЗ требует ≥70% покрытия юнит-тестами и исчерпывающую документацию всего экспортированного.
-
-* **Unit**: table-driven, `gomock` на интерфейсы `Remote`/`Crypto`/`Storage`. Цель 80%,
-  gate в CI на 70% (`go test -coverprofile`, проверка порога скриптом).
-* **Property/fuzz**: парсер секретов (`go test -fuzz`), FastCDC-чанкер, merge3 (инвариант:
-  ничего не теряется, результат детерминирован при любом порядке аргументов).
-* **Интеграционные**: `testcontainers-go` — PostgreSQL, MinIO (S3), локальный WebDAV,
-  bare git-репозиторий во временной папке. Полный цикл: register → insert → sync →
-  второй клиент → login → sync → show.
-* **Конфликтные сценарии**: два клиента правят одну запись оффлайн, delete-vs-edit, гонка
-  CommitManifest (параллельные горутины), обрыв сети посередине заливки, реиграние WAL после kill -9.
-* **Совместимость**: golden-тесты на реальных сторах `pass` и `passage`; прогон вырезки
-  из официального тест-сьюта pass поверх `binpass` с симлинком `pass → binpass`.
-* **E2E CLI**: `testscript` (rogpeppe/go-internal) — сценарии как txt-файлы.
-* **Docs**: godoc на каждый пакет (`doc.go`), `golangci-lint` с `revive.exported` + `godot`,
-  README + `docs/` (архитектура, протокол, миграция, threat model), Swagger UI из `protoc-gen-openapiv2` на `/swagger/index.html`.
-
-CI: lint → unit+race → coverage gate → integration → build matrix (3 ОС × 2 арх) →
-`gosec` + `govulncheck` → goreleaser (подписанные артефакты, SBOM).
+Вне модели: скомпрометированная ОС, кейлоггеры, злонамеренный получатель (выданный однажды
+доступ отзывается только `reencrypt` + ротацией, старые копии уже утекли).
 
 ---
 
-## 13. Дорожная карта
+## 11. Раскладка кода
 
-| Этап | Содержание | Результат |
-|---|---|---|
-| **M0** | Каркас, `pkg/secret`, `pkg/crypto/age`, `pkg/storage/fs`, CLI-ядро | Локальный pass-совместимый менеджер, `version` работает |
-| **M1** | `pkg/otp`, типы `card`/`binary`/`text`, `migrate` с GPG | Все типы данных из ТЗ + OTP |
-| **M2** | Манифест, объекты, version vectors, движок sync, WAL, remote `fs` | Синхронизация через общую папку, конфликт-резолвер |
-| **M3** | `binpassd` по go-clean-template: entity/usecase/repo, gRPC-контроллер + gateway, PG, blobstore | Полное покрытие обязательной части ТЗ |
-| **M4** | Remote `git`, remote `rclone` (S3/WebDAV/Drive/Yandex) | Три бэкенда за одним интерфейсом |
-| **M5** | Агент, TUI, `Watch`, audit/HIBP, GC | Необязательные пункты ТЗ + удобство |
-| **M6** | Покрытие ≥70%, интеграционные тесты, goreleaser, docs | Релиз |
+```
+cmd/binpass/            main, ldflags-версия
+cmd/binpass-agent/
+internal/
+  cli/                  cobra-команды, одна на файл, без бизнес-логики
+  tui/                  bubbletea
+  config/               viper: YAML + ENV + флаги
+pkg/
+  store/                фасад: Get/Set/List/Move/Remove/Reencrypt
+  secret/               парсер/сериализатор, поля, маскирование
+  crypto/               Crypto: gpg (внешний бинарь), age; recipients
+  identity/             источники ключей, age-plugin протокол, агент-клиент
+  otp/                  TOTP/HOTP, YubiKey OATH
+  tomb/                 coffin | luks | sparsebundle
+  sync/                 движок, VersionVector, конфликты, WAL
+  remote/               Remote + git, rclone (drive|yandex|webdav|s3)
+  plugin/               три уровня: exec, recipes, go-plugin; манифесты, гранты
+  keystore/
+    secretservice/      D-Bus объекты, DH-сессии, слепой индекс, политика доступа
+    keychain/           macOS Security.framework
+    wincred/            Windows CredRead/CredWrite, DPAPI
+    integrations/       git, docker, ssh/sudo askpass, k8s, aws, netrc, exec
+  importer/             60+ форматов
+  audit/                HIBP k-anonymity, zxcvbn, дубликаты
+  pwgen/  clip/  tmpfile/
+```
 
-Критический путь — M2: если модель манифеста и конфликтов заложена правильно, M3–M4
-становятся тремя реализациями одного интерфейса, а не тремя разными проектами.
+Каждый экспортированный элемент и каждый пакет — с godoc (`doc.go`), линтуется
+`revive.exported` + `godot`.
 
 ---
 
-## 14. Открытые вопросы
+## 12. Тестирование
 
-1. **Один пользователь = одно хранилище?** Или нужны несколько сторов/маунтов, как в gopass
-   (`binpass mounts add work ~/work-secrets`)? Влияет на схему БД и на модель авторизации.
-2. **Шаринг между людьми** — только через age-recipients (сервер не в курсе), или сервер должен
-   уметь групповой доступ? Второе сильно усложняет авторизацию и ломает «сервер ничего не знает».
-3. **Восстановление доступа**: забыл мастер-фразу — данные потеряны навсегда. Нужны ли
-   recovery-коды (Shamir по ключу) или это приемлемо?
-4. **Ротация ключей**: `reencrypt` всего стора при отзыве устройства — какой ожидается объём
-   хранилища (это O(n) перезаливка)?
-5. **Максимальный размер бинарника** для квот и выбора стратегии чанкования.
-6. **Требуется ли поддержка существующих gopass-сторов на GPG в постоянном режиме**, или GPG
-   нужен только как одноразовый мост при миграции?
+* **Golden-тесты против настоящего pass**: в контейнере ставится `pass`, на одинаковом сторе
+  прогоняется одна последовательность команд для обоих, сравниваются stdout, stderr, коды
+  возврата и состояние дерева. Расхождение — падение сборки. Это то, что делает
+  «совместим с pass» проверяемым утверждением.
+* **Совместимость экосистемы**: смоук-сценарии для `passmenu`, `rofi-pass`, `browserpass-native`,
+  `pass-git-helper`, QtPass. Результат — таблица поддержки в README.
+* **Паритет с плагинами**: для каждого нативного аналога (§5) — тест «делает то же, что оригинал»
+  на одинаковых входных данных, где оригинал устанавливается в контейнер.
+* **Unit**, table-driven, `gomock` на `Crypto`/`Remote`/`Identity`/`Storage`. Цель 85%, gate 70%.
+* **Fuzz**: парсер секретов, `otpauth://`, парсеры импорта (чужие форматы — самое хрупкое).
+* **Property**: движок мержа — «ничего не теряется» + детерминизм при любом порядке аргументов.
+* **Интеграционные** (`testcontainers`): bare git, WebDAV, MinIO, `rclone serve` как заглушка Drive.
+  Сценарий: два клиента, оффлайн-правки, конфликт, разрешение.
+* **Аппаратные ключи**: `age-plugin-*` мокаются через тестовый плагин, реализующий протокол;
+  реальное железо — в отдельном ручном чек-листе перед релизом.
+* **Tomb**: тесты на LUKS в привилегированном контейнере, coffin — везде.
+* **Secret Service**: реальные клиенты против нашего демона в контейнере с dbus-daemon —
+  `secret-tool`, `libsecret` через биндинги, Python `keyring`, git credential helper.
+  Отдельно — соответствие спецификации: обе схемы `OpenSession`, `Prompt`, `Lock`/`Unlock`,
+  алиас `default`, `replace` в `CreateItem`. Слепой индекс проверяется property-тестом:
+  результат `SearchItems` совпадает с результатом поиска по расшифрованным атрибутам.
+* **Интеграции**: docker credential helper, `git credential fill`, `aws credential_process`,
+  `kubectl` exec-plugin — по фиксированным контрактам их протоколов.
+* **E2E CLI**: `rogpeppe/go-internal/testscript`, сценарии обычными txt-файлами.
+* Прогоны на всех трёх ОС — клипборд, права и пути ломаются именно там.
 
 ---
 
-## 15. Зафиксированный стек
+## 13. Стек
 
 | Слой | Выбор |
 |---|---|
 | CLI | `spf13/cobra` + `spf13/pflag` |
-| Конфиг | `spf13/viper` (YAML + ENV + флаги) + `go-playground/validator` |
-| Основной транспорт | `grpc/grpc-go` + `protobuf`, кодогенерация через `buf` |
-| REST-фасад | `grpc-ecosystem/grpc-gateway/v2` + `gin-gonic/gin` (health, metrics, swagger) |
-| Swagger | `protoc-gen-openapiv2` → `/swagger` |
-| HTTP-клиент | `go-resty/resty/v2` — резервный REST-транспорт клиента |
-| БД | PostgreSQL + `jackc/pgx/v5`, миграции `golang-migrate` |
-| Крипто | `filippo.io/age`, `x/crypto/argon2`, `crypto/ed25519` |
-| Бэкенды remote | `go-git/go-git/v5`, `rclone/rclone` (точечные импорты backend'ов) |
-| Логи | `log/slog` (text для CLI, json для сервера) |
-| Тесты | `stretchr/testify`, `golang/mock`, `testcontainers-go`, `rogpeppe/go-internal/testscript` |
-| TUI (опц.) | `charmbracelet/bubbletea` |
-| Сборка | `goreleaser`, `Makefile`, `golangci-lint` |
+| Конфиг | `spf13/viper`, приоритет: флаги > ENV > YAML > дефолты |
+| Крипто | `filippo.io/age` (+ `agessh`, `plugin`), внешний `gpg`, `ProtonMail/go-crypto` как фолбэк |
+| Аппаратные ключи | age-plugin протокол (`yubikey`, `fido2-hmac`, `se`, `tpm`), gpg-agent для smartcard |
+| git | системный `git`, `go-git/go-git/v5` фолбэк |
+| Облака | `rclone/rclone` — точечные импорты `drive`, `yandex`, `webdav`, `s3` |
+| OAuth | `golang.org/x/oauth2` + локальный редирект / device-flow |
+| Плагины | exec + `hashicorp/go-plugin` (gRPC), опц. `tetratelabs/wazero` для WASM |
+| D-Bus | `godbus/dbus/v5` — чистый Go, без libdbus и CGO |
+| Keychain / WinCred | `keybase/go-keychain`, прямые вызовы `advapi32`/`crypt32` через `golang.org/x/sys/windows` |
+| Локальное состояние | `go.etcd.io/bbolt` |
+| Хеш | `zeebo/blake3` |
+| TUI | `charmbracelet/bubbletea` + `lipgloss` |
+| Оценка паролей | `zxcvbn-go`, EFF-словари для diceware |
+| Логи | `log/slog`, по умолчанию warn+ |
+| Тесты | `testify`, `golang/mock`, `testcontainers-go`, `testscript` |
+| Сборка | `goreleaser` (deb/rpm/apk/brew/scoop/AUR/winget), `golangci-lint`, `govulncheck` |
+
+### Конфиг — `~/.config/binpass/config.yaml`
+
+```yaml
+store:
+  dir: ~/.password-store
+crypto:
+  default: age                 # чем шифровать НОВЫЕ записи: age | gpg
+  gpg: { binary: gpg, opts: [] }
+  age:
+    identity: ~/.local/share/binpass/identities.age
+    plugins: [yubikey, fido2-hmac]
+unlock:
+  agent: { enabled: true, ttl: 10m }
+  require_presence: false      # касание токена на каждую расшифровку
+tomb:
+  type: coffin                 # coffin | luks | sparsebundle
+  auto_close: 1h
+  close_on: [screenlock, suspend, logout]
+clip: { timeout: 45s, restore_previous: true }
+generate: { length: 25, symbols: true, words: 0 }
+plugins:
+  enabled: true
+  allow_network: false         # глобальный запрет, перекрывает манифесты
+secret_service:                # Linux
+  enabled: true
+  collection_path: secret-service
+  takeover: refuse             # refuse | wait | replace — если имя на шине занято
+  default_action: prompt       # allow | deny | prompt
+  remember: 8h
+  notify: on-access
+  lock_on: [screenlock, suspend, idle]
+remotes:
+  default: origin
+  origin: { type: git, url: "git@github.com:alice/pass.git", sign_commits: true }
+  gdrive: { type: drive, folder: "binpass" }
+  yadisk: { type: yandex, folder: "binpass" }
+  work:   { type: webdav, url: "https://dav.example.com/pass" }
+sync:
+  auto: off                    # off | on-change | interval
+  conflict: keep-both          # keep-both | interactive | prefer-remote | prefer-local
+```
+
+---
+
+## 14. Дорожная карта
+
+| Этап | Содержание | Критерий готовности |
+|---|---|---|
+| **M0** | Дерево, `crypto/gpg` + `crypto/age`, ядро CLI, `version` | Golden-тесты против pass зелёные |
+| **M1** | `identity`: age-plugin протокол, YubiKey PIV, FIDO2, агент | `binpass identity test` проходит на реальном токене |
+| **M2** | `otp`, `binary`, `audit`, `import/export`, `generate --words` | Паритет с pass-otp / pass-audit / pass-import подтверждён тестами |
+| **M3** | Движок sync, state.db, VV, конфликты, remote `git` | Два клиента, оффлайн-конфликт, корректное разрешение |
+| **M4** | rclone: Drive + Yandex с встроенным OAuth, WebDAV, S3, locking | Интеграционные тесты на всех транспортах |
+| **M5** | `tomb`: coffin везде, LUKS на Linux, sparsebundle на macOS | Автозакрытие по screenlock работает на трёх ОС |
+| **M6** | Система плагинов: три уровня, манифесты, гранты, реестр | Внешний плагин ставится и работает по документации |
+| **M6.5** | Secret Service: D-Bus, DH-сессии, слепой индекс, ACL, импорт из gnome-keyring | `secret-tool` и Chrome работают против binpass; gnome-keyring отключён |
+| **M6.6** | Keychain/WinCred, `exec`, credential helpers (git, docker, k8s, aws) | Интеграции проходят контрактные тесты |
+| **M7** | TUI, `update`/`rotate`/рецепты, `history`, `doctor`, `menu` | — |
+| **M8** | Покрытие ≥70%, man-страницы, goreleaser, пакеты | Релиз |
+
+Критический путь — **M3**. Синхронизация с разрешением конфликтов — единственная часть,
+где ошибка в модели данных означает переписывание, а не доработку. Всё остальное аддитивно.
+
+---
+
+## 15. Что решить до старта
+
+1. **Дефолтная крипта — age или GPG?** В конфиге стоит `age`, и для нового пользователя это
+   правильно (проще, аппаратные плагины). Но тогда неизменённый `pass` не увидит новые записи,
+   потому что хардкодит `.gpg`. Вопрос: важнее «поставил рядом с pass» или «переехал начисто»?
+2. **Уровень 3 плагинов (go-plugin) — сразу или после M6?** Уровни 1–2 закрывают 90% кейсов
+   за 10% усилий. gRPC-плагины нужны только для своих транспортов и типов секретов.
+3. **Реестр плагинов** — заводим свой (модерация, подписи, ответственность) или только
+   установка по URL?
+4. **Windows и tomb.** Coffin работает, LUKS — нет. VHDX+BitLocker требует Pro-редакцию.
+   Достаточно coffin или нужен третий бэкенд?
+5. **`--obfuscate`** — делаем ли вообще, если tomb/coffin решает ту же задачу лучше
+   и без потери совместимости?
+6. **Объём стора для проектирования дельта-синхронизации.** 200 записей и 5000 — разные
+   стратегии на Drive из-за rate limits.
+7. **Secret Service и синхронизация.** Chrome и NetworkManager пишут в keystore постоянно.
+   При `sync.auto: on-change` это означает коммит в git на каждое обновление cookie-ключа.
+   Варианты: отдельная политика синхронизации для `secret-service/`, дебаунс, или исключение
+   этого поддерева из автосинка по умолчанию. Склоняюсь к дебаунсу в 30–60 с.
+8. **Дефолт политики доступа.** `prompt` безопаснее, но первый запуск Chrome выдаст серию
+   диалогов и человек нажмёт «разрешить всё». `allow` с журналом и уведомлениями честнее
+   по отношению к реальному поведению пользователей. Что выбираем?
+9. **Ключ слепого индекса** живёт в агенте. Значит при заблокированном сторе поиск невозможен
+   и любой `SearchItems` порождает Prompt. Приемлемо, или нужен отдельный «поисковый» режим,
+   когда индексный ключ кешируется дольше, чем ключ расшифровки?

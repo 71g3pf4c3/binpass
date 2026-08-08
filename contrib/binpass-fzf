@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# binpass-fzf — a terminal password picker with a live preview.
+#
+# The preview pane shows an entry's fields with the password masked, so
+# browsing the store never puts a secret on screen or in the scrollback.
+#
+# Usage:
+#     binpass-fzf              # pick an entry, copy its password
+#     binpass-fzf --print      # print it instead
+#     binpass-fzf --otp        # copy the one-time code
+set -euo pipefail
+
+BINPASS=${BINPASS:-binpass}
+mode=${1:---clip}
+
+# The preview runs in a subshell per entry, so it must be self-contained.
+preview="$BINPASS show {} | awk 'NR==1 {print \"password: ********\"; next} {print}'"
+
+entry=$(
+	"$BINPASS" ls --format=plain |
+		fzf --prompt 'pass> ' \
+			--height 60% \
+			--reverse \
+			--preview "$preview" \
+			--preview-window 'right:50%:wrap'
+) || exit 0
+
+[[ -n $entry ]] || exit 0
+
+case $mode in
+--print) "$BINPASS" show --field=password "$entry" ;;
+--otp) "$BINPASS" otp --clip "$entry" ;;
+*) "$BINPASS" show --clip "$entry" ;;
+esac

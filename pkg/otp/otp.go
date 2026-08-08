@@ -1,197 +1,187 @@
-// Package otp implements TOTP (RFC 6238) and HOTP (RFC 4226) generation
-// and otpauth:// URI parsing, compatible with pass-otp.
+// Package otp implements the one-time password schemes carried in otpauth://
+// URIs: TOTP (RFC 6238) and HOTP (RFC 4226).
 package otp
 
 import (
 	"crypto/hmac"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // HMAC-SHA1 is mandated by RFC 4226.
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Algorithm identifies the HMAC hash used for code derivation.
-type Algorithm string
+// Kind distinguishes time-based from counter-based one-time passwords.
+type Kind string
 
-// Supported OTP hash algorithms.
+// Supported OTP kinds.
 const (
-	// AlgSHA1 is the default RFC-recommended algorithm.
-	AlgSHA1 Algorithm = "SHA1"
-	// AlgSHA256 uses SHA-256.
-	AlgSHA256 Algorithm = "SHA256"
-	// AlgSHA512 uses SHA-512.
-	AlgSHA512 Algorithm = "SHA512"
+	// TOTP is the time-based scheme.
+	TOTP Kind = "totp"
+	// HOTP is the counter-based scheme.
+	HOTP Kind = "hotp"
 )
 
-// Type distinguishes time-based from counter-based OTPs.
-type Type string
-
-// OTP types.
-const (
-	// TypeTOTP is time-based.
-	TypeTOTP Type = "totp"
-	// TypeHOTP is counter-based.
-	TypeHOTP Type = "hotp"
-)
-
-// Key is a parsed otpauth:// configuration.
-type Key struct {
-	// Type is totp or hotp.
-	Type Type
-	// Issuer is the optional service issuer.
-	Issuer string
-	// Account is the account label.
-	Account string
-	// Secret is the raw decoded shared secret.
+// Config is a parsed otpauth:// URI.
+type Config struct {
+	// Kind is totp or hotp.
+	Kind Kind
+	// Secret is the shared key, already base32-decoded.
 	Secret []byte
-	// Algorithm is the HMAC hash algorithm.
-	Algorithm Algorithm
-	// Digits is the number of code digits (6-8).
+	// Digits is the length of the generated code, normally 6.
 	Digits int
-	// Period is the TOTP step in seconds.
-	Period int
-	// Counter is the HOTP moving factor.
+	// Period is the TOTP time step.
+	Period time.Duration
+	// Counter is the HOTP counter.
 	Counter uint64
+	// Algorithm names the HMAC hash: SHA1, SHA256 or SHA512.
+	Algorithm string
+	// Issuer is the service the code belongs to, for display.
+	Issuer string
+	// Account is the account name, for display.
+	Account string
 }
 
-// hasher returns a hash constructor for the key algorithm.
-func (k *Key) hasher() func() hash.Hash {
-	switch k.Algorithm {
-	case AlgSHA256:
-		return sha256.New
-	case AlgSHA512:
-		return sha512.New
-	default:
-		return sha1.New
-	}
-}
-
-// Parse decodes an otpauth:// URI into a Key.
-func Parse(uri string) (*Key, error) {
-	u, err := url.Parse(strings.TrimSpace(uri))
+// Parse interprets an otpauth:// URI.
+func Parse(uri string) (*Config, error) {
+	u, err := url.Parse(uri)
 	if err != nil {
-		return nil, fmt.Errorf("otp: parse uri: %w", err)
+		return nil, fmt.Errorf("otp: %w", err)
 	}
 	if u.Scheme != "otpauth" {
-		return nil, fmt.Errorf("otp: unsupported scheme %q", u.Scheme)
+		return nil, fmt.Errorf("otp: not an otpauth URI: %q", uri)
 	}
-	k := &Key{
-		Type:      Type(strings.ToLower(u.Host)),
-		Algorithm: AlgSHA1,
+
+	cfg := &Config{
+		Kind:      Kind(strings.ToLower(u.Host)),
 		Digits:    6,
-		Period:    30,
+		Period:    30 * time.Second,
+		Algorithm: "SHA1",
 	}
-	if k.Type != TypeTOTP && k.Type != TypeHOTP {
-		return nil, fmt.Errorf("otp: unknown type %q", u.Host)
+	if cfg.Kind != TOTP && cfg.Kind != HOTP {
+		return nil, fmt.Errorf("otp: unsupported type %q", u.Host)
 	}
 
 	label := strings.TrimPrefix(u.Path, "/")
-	if i := strings.Index(label, ":"); i >= 0 {
-		k.Issuer = label[:i]
-		k.Account = label[i+1:]
+	if issuer, account, found := strings.Cut(label, ":"); found {
+		cfg.Issuer, cfg.Account = issuer, strings.TrimSpace(account)
 	} else {
-		k.Account = label
+		cfg.Account = label
 	}
 
 	q := u.Query()
-	secretStr := strings.ToUpper(strings.TrimSpace(q.Get("secret")))
-	if secretStr == "" {
-		return nil, fmt.Errorf("otp: missing secret")
+	secret := strings.ToUpper(strings.ReplaceAll(q.Get("secret"), " ", ""))
+	if secret == "" {
+		return nil, fmt.Errorf("otp: %q has no secret", uri)
 	}
-	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.TrimRight(secretStr, "="))
+	// Authenticator secrets are commonly written without padding.
+	cfg.Secret, err = base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.TrimRight(secret, "="))
 	if err != nil {
-		return nil, fmt.Errorf("otp: decode secret: %w", err)
+		return nil, fmt.Errorf("otp: bad secret: %w", err)
 	}
-	k.Secret = secret
 
 	if v := q.Get("issuer"); v != "" {
-		k.Issuer = v
+		cfg.Issuer = v
 	}
 	if v := q.Get("algorithm"); v != "" {
-		k.Algorithm = Algorithm(strings.ToUpper(v))
+		cfg.Algorithm = strings.ToUpper(v)
 	}
 	if v := q.Get("digits"); v != "" {
-		if d, err := strconv.Atoi(v); err == nil {
-			k.Digits = d
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 6 || n > 10 {
+			return nil, fmt.Errorf("otp: bad digits %q", v)
 		}
+		cfg.Digits = n
 	}
 	if v := q.Get("period"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil {
-			k.Period = p
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("otp: bad period %q", v)
 		}
+		cfg.Period = time.Duration(n) * time.Second
 	}
 	if v := q.Get("counter"); v != "" {
-		if c, err := strconv.ParseUint(v, 10, 64); err == nil {
-			k.Counter = c
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("otp: bad counter %q", v)
 		}
+		cfg.Counter = n
 	}
-	return k, nil
+	return cfg, nil
 }
 
-// URI renders the key back to an otpauth:// string.
-func (k *Key) URI() string {
-	label := k.Account
-	if k.Issuer != "" {
-		label = k.Issuer + ":" + k.Account
+// Code returns the one-time password for the given moment. For HOTP the time
+// is ignored and the configured counter is used.
+func (c *Config) Code(at time.Time) (string, error) {
+	counter := c.Counter
+	if c.Kind == TOTP {
+		// Times before the epoch have no meaning for TOTP, and a negative
+		// Unix time would wrap into an enormous counter.
+		seconds := at.Unix()
+		if seconds < 0 {
+			return "", fmt.Errorf("otp: time %s precedes the Unix epoch", at)
+		}
+		step := int64(c.Period.Seconds())
+		counter = uint64(seconds / step) //nolint:gosec // seconds is non-negative and step is positive.
 	}
-	q := url.Values{}
-	q.Set("secret", base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(k.Secret))
-	if k.Issuer != "" {
-		q.Set("issuer", k.Issuer)
-	}
-	q.Set("algorithm", string(k.Algorithm))
-	q.Set("digits", strconv.Itoa(k.Digits))
-	if k.Type == TypeTOTP {
-		q.Set("period", strconv.Itoa(k.Period))
-	} else {
-		q.Set("counter", strconv.FormatUint(k.Counter, 10))
-	}
-	u := url.URL{Scheme: "otpauth", Host: string(k.Type), Path: "/" + label, RawQuery: q.Encode()}
-	return u.String()
+	return c.codeAt(counter)
 }
 
-// hotp computes the code for a specific counter value.
-func (k *Key) hotp(counter uint64) string {
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, counter)
-	mac := hmac.New(k.hasher(), k.Secret)
-	mac.Write(buf)
+// codeAt computes the HOTP value of a counter, the primitive both schemes use.
+func (c *Config) codeAt(counter uint64) (string, error) {
+	newHash, err := c.hash()
+	if err != nil {
+		return "", err
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], counter)
+
+	mac := hmac.New(newHash, c.Secret)
+	mac.Write(buf[:])
 	sum := mac.Sum(nil)
+
+	// Dynamic truncation, RFC 4226 §5.3.
 	offset := sum[len(sum)-1] & 0x0f
-	value := (uint32(sum[offset]&0x7f) << 24) |
-		(uint32(sum[offset+1]) << 16) |
-		(uint32(sum[offset+2]) << 8) |
-		uint32(sum[offset+3])
-	mod := uint32(1)
-	for i := 0; i < k.Digits; i++ {
-		mod *= 10
-	}
-	return fmt.Sprintf("%0*d", k.Digits, value%mod)
+	value := binary.BigEndian.Uint32(sum[offset:offset+4]) & 0x7fffffff
+
+	mod := uint32(math.Pow10(c.Digits))
+	return fmt.Sprintf("%0*d", c.Digits, value%mod), nil
 }
 
-// Generate returns the current OTP code and, for TOTP, the seconds remaining
-// in the current step (0 for HOTP).
-func (k *Key) Generate() (code string, remaining int) {
-	return k.GenerateAt(time.Now())
+// hash returns the constructor for the configured HMAC hash.
+func (c *Config) hash() (func() hash.Hash, error) {
+	switch c.Algorithm {
+	case "SHA1", "":
+		return sha1.New, nil
+	case "SHA256":
+		return sha256.New, nil
+	case "SHA512":
+		return sha512.New, nil
+	default:
+		return nil, fmt.Errorf("otp: unsupported algorithm %q", c.Algorithm)
+	}
 }
 
-// GenerateAt returns the OTP code valid at t (used for testing).
-func (k *Key) GenerateAt(t time.Time) (code string, remaining int) {
-	if k.Type == TypeHOTP {
-		return k.hotp(k.Counter), 0
+// Expires returns when the current TOTP code stops being valid.
+func (c *Config) Expires(at time.Time) time.Time {
+	if c.Kind != TOTP {
+		return time.Time{}
 	}
-	period := k.Period
-	if period <= 0 {
-		period = 30
-	}
-	counter := uint64(t.Unix() / int64(period))
-	rem := period - int(t.Unix()%int64(period))
-	return k.hotp(counter), rem
+	step := int64(c.Period.Seconds())
+	return time.Unix((at.Unix()/step+1)*step, 0)
+}
+
+// Next returns a copy of the configuration with the HOTP counter advanced.
+// Callers must store the result, or the code would repeat.
+func (c *Config) Next() *Config {
+	next := *c
+	next.Counter++
+	return &next
 }

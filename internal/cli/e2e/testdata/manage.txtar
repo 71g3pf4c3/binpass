@@ -1,0 +1,57 @@
+# Generating, moving, copying and removing entries.
+
+binpass init --age $RECIPIENT
+
+# A generated entry is stored and echoed once.
+binpass generate -f site 24
+stdout 'The generated password for site is:'
+exists $WORK/store/site.age
+
+# --in-place rotates the password but keeps everything below it.
+stdin full.txt
+binpass insert -m -f keepme
+binpass generate -i keepme 16
+binpass show keepme
+stdout 'username: alice'
+stdout 'otpauth://totp'
+! stdout 'hunter2'
+
+# A diceware passphrase is words joined by the separator.
+binpass generate -f --words=5 phrase
+stdout 'The generated password for phrase is:'
+binpass show --field=password phrase
+stdout '^\w+-\w+-\w+-\w+-\w+$'
+
+# Moving an entry leaves nothing behind.
+stdin pw.txt
+binpass insert -m old/name
+binpass mv -f old/name new/name
+exists $WORK/store/new/name.age
+! exists $WORK/store/old/name.age
+! exists $WORK/store/old
+
+# Copying keeps both.
+binpass cp -f new/name copy/name
+exists $WORK/store/new/name.age
+exists $WORK/store/copy/name.age
+
+# Removing an entry prunes the directories it empties.
+binpass rm -f copy/name
+! exists $WORK/store/copy
+
+# A directory needs --recursive, exactly as in pass.
+! binpass rm -f new
+stderr 'is a directory'
+binpass rm -rf new
+! exists $WORK/store/new
+
+# Removing something that is not there fails.
+! binpass rm -f absent
+stderr 'not in the password store'
+
+-- pw.txt --
+hunter2
+-- full.txt --
+hunter2
+username: alice
+otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP

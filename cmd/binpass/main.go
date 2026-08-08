@@ -1,33 +1,22 @@
-// Command binpass is the age-based password manager client, a drop-in
-// replacement for pass/gopass.
+// Command binpass is a pass(1)-compatible password manager.
 package main
 
 import (
-	"context"
-	"fmt"
 	"os"
 
 	"github.com/71g3pf4c3/binpass/internal/cli"
-	versionpkg "github.com/71g3pf4c3/binpass/internal/version"
 )
 
-// These variables are overridden at build time via
-// -ldflags "-X main.version=... -X main.commit=... -X main.buildDate=...".
+// Build metadata, set through -ldflags at release time.
 var (
-	version   = "dev"
-	commit    = "none"
+	// version is the release version.
+	version = "dev"
+	// commit is the git revision the binary was built from.
+	commit = "none"
+	// buildDate is the build timestamp.
 	buildDate = "unknown"
 )
 
 func main() {
-	versionpkg.Version = version
-	versionpkg.Commit = commit
-	versionpkg.BuildDate = buildDate
-
-	root := cli.NewRootCmd()
-	root.SetArgs(cli.NormalizeArgs(os.Args[1:]))
-	if err := root.ExecuteContext(context.Background()); err != nil {
-		fmt.Fprintln(os.Stderr, "binpass:", err)
-		os.Exit(1)
-	}
+	os.Exit(cli.Execute(version, commit, buildDate))
 }

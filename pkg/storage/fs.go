@@ -1,210 +1,202 @@
-// Package storage manages the on-disk password-store tree: atomic writes,
-// directory traversal, and hierarchical .age-recipients resolution.
+// Package storage is the on-disk layout of a password store: name-to-path
+// mapping, tree walking, and durable writes.
+//
+// The layout is byte-identical to pass. A store is a plain directory tree, an
+// entry is a file named after the entry plus a crypto extension, and nothing
+// binpass-specific is ever written into it.
 package storage
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
-// recipientsFile is the per-directory recipients list filename.
-const recipientsFile = ".age-recipients"
+// ErrOutsideStore reports a name that escapes the store root.
+var ErrOutsideStore = errors.New("storage: path escapes the store")
 
-// Ext is the ciphertext file extension used by binpass.
-const Ext = ".age"
-
-// FS is a filesystem-backed password store rooted at Dir.
+// FS is a store rooted at a directory.
 type FS struct {
-	// Dir is the absolute root of the store.
+	// Dir is the absolute store root.
 	Dir string
+	// Umask masks the permissions of created files and directories,
+	// honouring PASSWORD_STORE_UMASK.
+	Umask os.FileMode
 }
 
-// New returns an FS rooted at dir.
+// New returns an FS rooted at dir with pass's default 077 umask.
 func New(dir string) *FS {
-	return &FS{Dir: dir}
+	return &FS{Dir: filepath.Clean(dir), Umask: 0o077}
 }
 
-// path resolves a logical secret name to its ciphertext file path.
-func (f *FS) path(name string) string {
-	return filepath.Join(f.Dir, filepath.FromSlash(name)+Ext)
-}
-
-// Exists reports whether a secret with name exists.
-func (f *FS) Exists(name string) bool {
-	_, err := os.Stat(f.path(name))
-	return err == nil
-}
-
-// Read returns the raw ciphertext bytes for name.
-func (f *FS) Read(name string) ([]byte, error) {
-	data, err := os.ReadFile(f.path(name))
+// Path returns the absolute path of an entry name with the given extension.
+// Names are slash-separated and relative to the store root.
+func (f *FS) Path(name, ext string) (string, error) {
+	rel, err := f.rel(name)
 	if err != nil {
-		return nil, fmt.Errorf("storage: read %s: %w", name, err)
+		return "", err
 	}
-	return data, nil
+	return filepath.Join(f.Dir, rel+ext), nil
 }
 
-// Write atomically stores ciphertext for name (0600 file, 0700 dirs).
-func (f *FS) Write(name string, data []byte) error {
-	dst := f.path(name)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return fmt.Errorf("storage: mkdir: %w", err)
+// DirPath returns the absolute path of a subfolder name.
+func (f *FS) DirPath(name string) (string, error) {
+	rel, err := f.rel(name)
+	if err != nil {
+		return "", err
 	}
-	return atomicWrite(dst, data, 0o600)
+	if rel == "." {
+		return f.Dir, nil
+	}
+	return filepath.Join(f.Dir, rel), nil
 }
 
-// Remove deletes the secret and prunes now-empty parent directories.
-func (f *FS) Remove(name string) error {
-	dst := f.path(name)
-	if err := os.Remove(dst); err != nil {
-		return fmt.Errorf("storage: remove %s: %w", name, err)
+// rel validates an entry name and returns it as a cleaned relative path.
+// Absolute names and any ".." traversal are refused: an entry name arriving
+// from a plugin or a synced tree must never be able to write outside the store.
+func (f *FS) rel(name string) (string, error) {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "/")
+	if name == "" {
+		return ".", nil
 	}
-	f.pruneEmpty(filepath.Dir(dst))
-	return nil
+	if filepath.IsAbs(name) {
+		return "", fmt.Errorf("%w: %q", ErrOutsideStore, name)
+	}
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %q", ErrOutsideStore, name)
+	}
+	return clean, nil
 }
 
-// pruneEmpty removes empty directories up towards the store root.
-func (f *FS) pruneEmpty(dir string) {
-	for dir != f.Dir && strings.HasPrefix(dir, f.Dir) {
-		entries, err := os.ReadDir(dir)
-		if err != nil || len(entries) > 0 {
-			return
+// Name converts an absolute entry path back into a store name, stripping the
+// crypto extension. The result always uses forward slashes.
+func (f *FS) Name(path string) (string, error) {
+	rel, err := filepath.Rel(f.Dir, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("%w: %q", ErrOutsideStore, path)
+	}
+	rel = strings.TrimSuffix(rel, filepath.Ext(rel))
+	return filepath.ToSlash(rel), nil
+}
+
+// Find returns the path of the entry called name, whatever its crypto
+// extension, preferring exts in the order given. It reports fs.ErrNotExist
+// when no candidate exists.
+func (f *FS) Find(name string, exts []string) (string, error) {
+	for _, ext := range exts {
+		path, err := f.Path(name, ext)
+		if err != nil {
+			return "", err
 		}
-		if os.Remove(dir) != nil {
-			return
+		if st, err := os.Stat(path); err == nil && !st.IsDir() {
+			return path, nil
 		}
-		dir = filepath.Dir(dir)
 	}
+	return "", fmt.Errorf("storage: %q: %w", name, fs.ErrNotExist)
 }
 
-// List returns all secret names (without extension), sorted.
-func (f *FS) List() ([]string, error) {
-	var names []string
-	err := filepath.WalkDir(f.Dir, func(path string, d os.DirEntry, err error) error {
+// IsDir reports whether name is an existing subfolder of the store.
+func (f *FS) IsDir(name string) bool {
+	path, err := f.DirPath(name)
+	if err != nil {
+		return false
+	}
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+// Entry is one secret found in the store.
+type Entry struct {
+	// Name is the slash-separated store name, without extension.
+	Name string
+	// Path is the absolute file path.
+	Path string
+	// Ext is the crypto extension, including the dot.
+	Ext string
+}
+
+// Entries walks the subtree rooted at name and returns its entries, sorted by
+// name. Dotfiles and dot-directories are skipped, matching pass, which keeps
+// .git, .gpg-id and .binpass out of listings.
+func (f *FS) Entries(name string, exts []string) ([]Entry, error) {
+	root, err := f.DirPath(name)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]bool, len(exts))
+	for _, e := range exts {
+		allowed[e] = true
+	}
+
+	var out []Entry
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && path != f.Dir {
-				return filepath.SkipDir
+		base := d.Name()
+		if path != root && strings.HasPrefix(base, ".") {
+			if d.IsDir() {
+				return fs.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(d.Name(), Ext) {
+		if d.IsDir() {
 			return nil
 		}
-		rel, err := filepath.Rel(f.Dir, path)
+		ext := filepath.Ext(base)
+		if !allowed[ext] {
+			return nil
+		}
+		entryName, err := f.Name(path)
 		if err != nil {
 			return err
 		}
-		rel = strings.TrimSuffix(filepath.ToSlash(rel), Ext)
-		names = append(names, rel)
+		out = append(out, Entry{Name: entryName, Path: path, Ext: ext})
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("storage: list: %w", err)
+		return nil, err
 	}
-	sort.Strings(names)
-	return names, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
-// Recipients resolves the effective recipients for name by walking upward
-// from the secret's directory to the store root; the nearest file wins.
-func (f *FS) Recipients(name string) ([]string, error) {
-	dir := filepath.Dir(f.path(name))
-	for {
-		rf := filepath.Join(dir, recipientsFile)
-		if lines, err := readLines(rf); err == nil {
-			return lines, nil
+// Read returns the raw ciphertext of a file.
+func (f *FS) Read(path string) ([]byte, error) {
+	return os.ReadFile(path) //nolint:gosec // paths are resolved through rel.
+}
+
+// Remove deletes an entry file and then prunes the directories it leaves
+// empty, up to the store root, exactly as pass does.
+func (f *FS) Remove(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return f.pruneEmpty(filepath.Dir(path))
+}
+
+// pruneEmpty removes dir and its now-empty parents, stopping at the root.
+func (f *FS) pruneEmpty(dir string) error {
+	for dir != f.Dir && strings.HasPrefix(dir, f.Dir) {
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) > 0 {
+			return nil
 		}
-		if dir == f.Dir || !strings.HasPrefix(dir, f.Dir) {
-			break
+		if err := os.Remove(dir); err != nil {
+			return nil //nolint:nilerr // a directory we cannot prune is not a failure.
 		}
 		dir = filepath.Dir(dir)
 	}
-	// Fall back to the root recipients file explicitly.
-	return readLines(filepath.Join(f.Dir, recipientsFile))
-}
-
-// SetRootRecipients writes the store-root recipients file.
-func (f *FS) SetRootRecipients(recipients []string) error {
-	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
-		return fmt.Errorf("storage: mkdir root: %w", err)
-	}
-	data := strings.Join(recipients, "\n") + "\n"
-	return atomicWrite(filepath.Join(f.Dir, recipientsFile), []byte(data), 0o600)
-}
-
-// SetSubRecipients writes a recipients file inside the given subfolder,
-// overriding the inherited set for that subtree.
-func (f *FS) SetSubRecipients(sub string, recipients []string) error {
-	dir := filepath.Join(f.Dir, filepath.FromSlash(strings.Trim(sub, "/")))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("storage: mkdir sub: %w", err)
-	}
-	data := strings.Join(recipients, "\n") + "\n"
-	return atomicWrite(filepath.Join(dir, recipientsFile), []byte(data), 0o600)
-}
-
-// readLines reads non-empty, non-comment lines from a file.
-func readLines(path string) ([]string, error) {
-	fh, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer fh.Close()
-	var lines []string
-	sc := bufio.NewScanner(fh)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		lines = append(lines, line)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	if len(lines) == 0 {
-		return nil, fmt.Errorf("storage: no recipients in %s", path)
-	}
-	return lines, nil
-}
-
-// atomicWrite writes data to path via a temp file, fsync, and rename.
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return fmt.Errorf("storage: temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("storage: write temp: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("storage: sync temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("storage: close temp: %w", err)
-	}
-	if err := os.Chmod(tmpName, perm); err != nil {
-		return fmt.Errorf("storage: chmod temp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("storage: rename: %w", err)
-	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
 	return nil
 }
+
+// dirPerm returns the directory permissions after applying the umask.
+func (f *FS) dirPerm() os.FileMode { return 0o777 &^ f.Umask }
+
+// filePerm returns the file permissions after applying the umask.
+func (f *FS) filePerm() os.FileMode { return 0o666 &^ f.Umask }

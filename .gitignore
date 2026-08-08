@@ -1,6 +1,9 @@
 /bin/
 /dist/
 coverage.out
+coverage.filtered
 *.out
 *.test
 .env
+result
+result-*

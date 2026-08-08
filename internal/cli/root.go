@@ -1,112 +1,81 @@
-// Package cli implements the binpass command-line interface as a cobra
-// command tree. Commands are thin: they parse flags, invoke pkg/store, and
-// format output. Business logic lives in the pkg/* packages.
 package cli
 
 import (
-	"context"
 	"fmt"
+	"os"
 
 	"github.com/71g3pf4c3/binpass/internal/config"
-	"github.com/71g3pf4c3/binpass/pkg/crypto"
-	"github.com/71g3pf4c3/binpass/pkg/identity"
-	"github.com/71g3pf4c3/binpass/pkg/store"
 	"github.com/spf13/cobra"
 )
 
-// appState carries resolved config across commands via cobra context.
-type appState struct {
-	// cfg is the loaded configuration.
-	cfg *config.Config
+// Execute builds the command tree and runs it, returning the process exit
+// code. pass exits 1 on any error, and so do we.
+func Execute(version, commit, buildDate string) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	app := NewApp(cfg)
+
+	root := newRootCmd(app, version, commit, buildDate)
+	if err := root.Execute(); err != nil {
+		// Cobra has already printed usage errors; ours are printed here.
+		if !isUsageError(err) {
+			fmt.Fprintln(app.Err, err)
+		}
+		return 1
+	}
+	return 0
 }
 
-// stateKey is the context key type for appState.
-type stateKey struct{}
+// usageError marks an error whose message cobra has already shown.
+type usageError struct{ error }
 
-// NewRootCmd builds the root binpass command.
-func NewRootCmd() *cobra.Command {
+// isUsageError reports whether err was already reported by cobra.
+func isUsageError(err error) bool {
+	_, ok := err.(usageError) //nolint:errorlint // the wrapper is never wrapped further.
+	return ok
+}
+
+// newRootCmd assembles the command tree.
+func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "binpass",
-		Short:         "binpass — age-based password manager, drop-in for pass/gopass",
+		Use:   "binpass",
+		Short: "A pass(1)-compatible password manager",
+		// pass prints its own diagnostics; cobra's extra noise would break
+		// output compatibility.
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		// Accept arbitrary args so a bare name behaves like `pass name`.
-		Args: cobra.ArbitraryArgs,
-		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := config.Load(cmd)
-			if err != nil {
-				return fmt.Errorf("config: %w", err)
-			}
-			ctx := context.WithValue(cmd.Context(), stateKey{}, &appState{cfg: cfg})
-			cmd.SetContext(ctx)
-			return nil
-		},
-		// Default command, matching pass: no args → list the tree; a single
-		// argument → show that secret.
+		Args:          cobra.ArbitraryArgs,
+		// Bare `binpass` is `binpass ls`, and `binpass foo` is `binpass show
+		// foo`, exactly as pass dispatches.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := openStore(cmd)
-			if err != nil {
-				return err
-			}
 			if len(args) == 0 {
-				return listTree(cmd, st, "")
+				return app.runList(cmd.Context(), "")
 			}
-			return listTree(cmd, st, args[0])
+			return app.runShow(cmd.Context(), showOpts{name: args[0]})
 		},
 	}
-
-	pf := root.PersistentFlags()
-	pf.String("store", "", "password store directory")
-	pf.String("config", "", "config file path")
-	pf.String("log-level", "", "log level (debug|info|warn|error)")
-	_ = pf.Lookup("store")
+	root.PersistentFlags().StringVar(&app.Cfg.Dir, "store", app.Cfg.Dir, "password store directory")
+	root.PersistentFlags().StringVar(&app.Cfg.Identity, "identity", app.Cfg.Identity, "age identity file")
 
 	root.AddCommand(
-		newVersionCmd(),
-		newInitCmd(),
-		newInsertCmd(),
-		newShowCmd(),
-		newEditCmd(),
-		newGenerateCmd(),
-		newRemoveCmd(),
-		newMoveCmd(),
-		newCopyCmd(),
-		newListCmd(),
-		newFindCmd(),
-		newGrepCmd(),
-		newOTPCmd(),
-		newCardCmd(),
-		newRecipientsCmd(),
-		newReencryptCmd(),
-		newSyncCmd(),
-		newCompletionCmd(root),
+		newInitCmd(app),
+		newListCmd(app),
+		newShowCmd(app),
+		newFindCmd(app),
+		newGrepCmd(app),
+		newInsertCmd(app),
+		newEditCmd(app),
+		newGenerateCmd(app),
+		newRemoveCmd(app),
+		newMoveCmd(app),
+		newCopyCmd(app),
+		newGitCmd(app),
+		newMenuCmd(app),
+		newOTPCmd(app),
+		newVersionCmd(app, version, commit, buildDate),
 	)
 	return root
-}
-
-// stateOf extracts the appState from the command context.
-func stateOf(cmd *cobra.Command) *appState {
-	s, _ := cmd.Context().Value(stateKey{}).(*appState)
-	return s
-}
-
-// openStore builds a Store from config, loading identities when available.
-func openStore(cmd *cobra.Command) (*store.Store, error) {
-	cfg := stateOf(cmd).cfg
-	c, err := loadCrypto(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return store.New(cfg.Store.Dir, c), nil
-}
-
-// loadCrypto assembles an age Crypto with identities from the config path.
-// Missing identity files are tolerated for encrypt-only operations.
-func loadCrypto(cfg *config.Config) (crypto.Crypto, error) {
-	loaded, err := identity.LoadFile(cfg.Crypto.Identity)
-	if err != nil {
-		// Encrypt-only paths (insert/generate) still work without identities.
-		return crypto.NewAge(nil), nil
-	}
-	return crypto.NewAge(loaded), nil
 }

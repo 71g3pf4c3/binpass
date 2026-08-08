@@ -1,0 +1,186 @@
+# GitLab CI for binpass. Mirrors .github/workflows/ci.yml so a mirrored
+# repository is held to the same bar, and adds the end-to-end session that
+# needs a container to run at all.
+stages:
+  - lint
+  - test
+  - build
+  - release
+
+variables:
+  GO_VERSION: "1.26"
+  GOTOOLCHAIN: local
+  CGO_ENABLED: "0"
+  # Module and build caches live in the project directory: GitLab can only
+  # cache paths under CI_PROJECT_DIR.
+  GOPATH: $CI_PROJECT_DIR/.go
+  GOCACHE: $CI_PROJECT_DIR/.cache/go-build
+  GOLANGCI_LINT_CACHE: $CI_PROJECT_DIR/.cache/golangci-lint
+
+default:
+  image: golang:${GO_VERSION}
+  cache:
+    key:
+      files:
+        - go.sum
+    paths:
+      - .go/pkg/mod
+      - .cache
+  before_script:
+    - go env -w GOFLAGS=-mod=mod
+
+.rules_default: &rules_default
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------- lint
+
+vet:
+  stage: lint
+  <<: *rules_default
+  script:
+    - go vet ./...
+
+golangci-lint:
+  stage: lint
+  image: golangci/golangci-lint:latest
+  <<: *rules_default
+  script:
+    - golangci-lint run --timeout=5m
+
+tidy:
+  stage: lint
+  <<: *rules_default
+  script:
+    # A go.mod that changes under `go mod tidy` means the committed
+    # dependency set is not the one the code actually needs.
+    - go mod tidy
+    - git diff --exit-code go.mod go.sum
+
+# ---------------------------------------------------------------------- test
+
+unit:
+  stage: test
+  <<: *rules_default
+  # The race detector needs cgo, so this job alone overrides it.
+  variables:
+    CGO_ENABLED: "1"
+  script:
+    # The golden suite compares binpass byte-for-byte against real pass. Absent
+    # these packages it skips silently, so the tools are verified rather than
+    # assumed: a green pipeline that tested nothing is worse than a red one.
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends pass gnupg tree age
+    - command -v pass || { echo "pass is missing; the golden suite would skip"; exit 1; }
+    - command -v tree || { echo "tree is missing; pass cannot render listings"; exit 1; }
+    - command -v gpg  || { echo "gnupg is missing; the GPG backend is untestable"; exit 1; }
+    - go test -race ./...
+
+coverage:
+  stage: test
+  <<: *rules_default
+  script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends pass gnupg tree age
+    - go test -coverpkg=./pkg/...,./internal/... -coverprofile=coverage.out ./...
+    # Generated code would inflate the figure without anyone having tested it.
+    - grep -v -E '/mocks/|_mock\.go|/gen/' coverage.out > coverage.filtered
+    - go tool cover -func=coverage.filtered | tail -1
+    - |
+      total=$(go tool cover -func=coverage.filtered | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+      echo "business-logic coverage: ${total}%"
+      awk -v c="$total" 'BEGIN { exit (c+0 >= 70.0) ? 0 : 1 }' \
+        || { echo "coverage ${total}% is below the 70% threshold"; exit 1; }
+    - go tool cover -html=coverage.filtered -o coverage.html
+  coverage: '/^total:\s+\(statements\)\s+(\d+\.\d+)%/'
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - coverage.html
+      - coverage.out
+
+# The same suite on a plain Debian userland against the distro's own pass.
+# This is what caught tree(1)'s locale- and TERM-dependent rendering, which a
+# Nix-only run does not exercise.
+debian-parity:
+  stage: test
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  <<: *rules_default
+  before_script: []
+  script:
+    - docker build -f Dockerfile.test -t binpass-test .
+    - docker run --rm binpass-test
+
+# Clipboard, launchers and completion against a real compositor. This cannot
+# run on the host: it copies, pastes and clears selections, which would
+# trample the clipboard of whoever ran it. The container is the isolation.
+e2e-session:
+  stage: test
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  <<: *rules_default
+  before_script: []
+  script:
+    - docker build -f Dockerfile.e2e -t binpass-e2e .
+    - docker run --rm binpass-e2e
+
+govulncheck:
+  stage: test
+  <<: *rules_default
+  script:
+    - go install golang.org/x/vuln/cmd/govulncheck@latest
+    - $GOPATH/bin/govulncheck ./...
+  # Advisories appear without any change on our side, so this reports rather
+  # than blocks. A failure here is a task, not a broken build.
+  allow_failure: true
+
+# --------------------------------------------------------------------- build
+
+build:
+  stage: build
+  <<: *rules_default
+  parallel:
+    matrix:
+      - GOOS: [linux, darwin, windows]
+        GOARCH: [amd64, arm64]
+  script:
+    - go build -trimpath -o /dev/null ./cmd/binpass
+
+# ------------------------------------------------------------------- release
+
+release:
+  stage: release
+  image: goreleaser/goreleaser:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+  before_script: []
+  script:
+    # syft supplies the SBOM attached to every archive; without it the run
+    # fails at the final step, after everything has already been built.
+    - command -v syft || { echo "syft is missing; SBOM generation would fail"; exit 1; }
+    - goreleaser release --clean
+  artifacts:
+    expire_in: 1 month
+    paths:
+      - dist/*.deb
+      - dist/*.rpm
+      - dist/*.apk
+      - dist/*.tar.gz
+      - dist/*.zip
+      - dist/checksums.txt

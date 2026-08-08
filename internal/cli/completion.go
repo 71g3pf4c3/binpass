@@ -60,6 +60,25 @@ func (a *App) completeEntries(_ *cobra.Command, args []string, toComplete string
 	return filterPrefix(names, toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
+// completeRootArg completes the bare `binpass <tab>` position, where both a
+// plugin command and an entry name are valid.
+//
+// Plugins are offered first and described as such, so that a plugin does not
+// look like a password that has mysteriously appeared in the store.
+func (a *App) completeRootArg(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var out []string
+	for _, c := range a.pluginSource().Candidates(builtinNames(cmd.Root())) {
+		if c.Usable() {
+			out = append(out, c.Name+"\tplugin")
+		}
+	}
+	entries, directive := a.completeEntriesAndDirs(cmd, args, toComplete)
+	return append(out, entries...), directive
+}
+
 // completeEntriesAndDirs completes with entries and the subfolders holding
 // them, for commands like mv, cp and ls that accept either.
 func (a *App) completeEntriesAndDirs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

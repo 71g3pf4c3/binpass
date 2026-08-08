@@ -77,6 +77,10 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newGitCmd(app),
 		newMenuCmd(app),
 		newOTPCmd(app),
+		newSyncCmd(app),
+		newRemoteCmd(app),
+		newConflictsCmd(app),
+		newFsckCmd(app),
 		newCompletionCmd(app),
 		newVersionCmd(app, version, commit, buildDate),
 	)

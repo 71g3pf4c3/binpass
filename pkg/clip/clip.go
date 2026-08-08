@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -70,15 +71,30 @@ func CopyWithTimeout(ctx context.Context, b Backend, text string, d time.Duratio
 	return b.Copy(ctx, previous)
 }
 
-// run executes a clipboard helper, feeding it stdin and returning stdout.
-func run(ctx context.Context, name string, args []string, stdin string) (string, error) {
+// run executes a clipboard helper that produces output, such as a paste.
+func run(ctx context.Context, name string, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // the name comes from a fixed table.
-	if stdin != "" {
-		cmd.Stdin = stringReader(stdin)
-	}
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("clip: %s: %w", name, err)
 	}
 	return string(out), nil
+}
+
+// runCopy feeds text to a clipboard helper on standard input.
+//
+// The helper's own output is discarded rather than captured. wl-copy forks a
+// daemon that keeps serving the selection after the parent exits, and that
+// daemon inherits its parent's stdout: capturing it would leave binpass
+// waiting on a pipe that is never closed, hanging until the clipboard is
+// replaced. Waiting for the parent alone is enough.
+func runCopy(ctx context.Context, name string, args []string, text string) error {
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // the name comes from a fixed table.
+	cmd.Stdin = strings.NewReader(text)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("clip: %s: %w", name, err)
+	}
+	return nil
 }

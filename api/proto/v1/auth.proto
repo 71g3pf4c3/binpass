@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+// Package binpass.v1 is the binpassd wire contract: authentication and
+// end-to-end-encrypted vault synchronisation. The server never sees
+// plaintext or encryption keys.
+package binpass.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/71g3pf4c3/binpass/api/gen/v1;binpassv1";
+
+// Auth handles user registration, login, token rotation, and device
+// enrolment. Clients send an auth_secret derived from the master phrase; the
+// server stores only its Argon2id hash and never the phrase itself.
+service Auth {
+  // Register creates a new account and returns tokens plus the user salt.
+  rpc Register(RegisterRequest) returns (TokenPair) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/register"
+      body: "*"
+    };
+  }
+
+  // Login authenticates an existing user for a device.
+  rpc Login(LoginRequest) returns (TokenPair) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/login"
+      body: "*"
+    };
+  }
+
+  // Refresh rotates a refresh token, returning a fresh token pair.
+  rpc Refresh(RefreshRequest) returns (TokenPair) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/refresh"
+      body: "*"
+    };
+  }
+
+  // Logout revokes the given refresh token.
+  rpc Logout(LogoutRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/logout"
+      body: "*"
+    };
+  }
+
+  // ListDevices returns the caller's enrolled devices.
+  rpc ListDevices(google.protobuf.Empty) returns (DeviceList) {
+    option (google.api.http) = {get: "/api/v1/devices"};
+  }
+
+  // RevokeDevice revokes a device and its refresh-token chain.
+  rpc RevokeDevice(RevokeDeviceRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/api/v1/devices/{device_id}"};
+  }
+}
+
+// RegisterRequest carries the credentials for a new account.
+message RegisterRequest {
+  // login is the unique account identifier.
+  string login = 1;
+  // auth_secret is the HKDF-derived authentication secret (base64).
+  string auth_secret = 2;
+  // device_name is a human label for the enrolling device.
+  string device_name = 3;
+}
+
+// LoginRequest authenticates an existing user.
+message LoginRequest {
+  // login is the account identifier.
+  string login = 1;
+  // auth_secret is the HKDF-derived authentication secret (base64).
+  string auth_secret = 2;
+  // device_name labels the device requesting access.
+  string device_name = 3;
+}
+
+// RefreshRequest rotates an existing refresh token.
+message RefreshRequest {
+  // refresh_token is the opaque refresh token to rotate.
+  string refresh_token = 1;
+}
+
+// LogoutRequest revokes a refresh token.
+message LogoutRequest {
+  // refresh_token is the token to revoke.
+  string refresh_token = 1;
+}
+
+// RevokeDeviceRequest revokes a specific device.
+message RevokeDeviceRequest {
+  // device_id is the device to revoke.
+  string device_id = 1;
+}
+
+// TokenPair is the result of a successful auth operation.
+message TokenPair {
+  // access_token is a short-lived JWT for API calls.
+  string access_token = 1;
+  // refresh_token is a long-lived opaque token for rotation.
+  string refresh_token = 2;
+  // user_salt is the per-user salt for client-side key derivation (base64).
+  string user_salt = 3;
+  // device_id identifies the authenticated device.
+  string device_id = 4;
+  // access_expires_at is the access-token expiry.
+  google.protobuf.Timestamp access_expires_at = 5;
+}
+
+// Device describes an enrolled client device.
+message Device {
+  // id is the device identifier.
+  string id = 1;
+  // name is the human label.
+  string name = 2;
+  // created_at is when the device enrolled.
+  google.protobuf.Timestamp created_at = 3;
+  // last_seen_at is the last authenticated activity.
+  google.protobuf.Timestamp last_seen_at = 4;
+  // revoked reports whether the device is revoked.
+  bool revoked = 5;
+}
+
+// DeviceList wraps a set of devices.
+message DeviceList {
+  // devices is the enrolled device set.
+  repeated Device devices = 1;
+}

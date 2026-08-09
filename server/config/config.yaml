@@ -1,0 +1,40 @@
+app:
+  name: binpassd
+  version: ""              # set at build time via ldflags
+
+http:                      # grpc-gateway REST + health/metrics/swagger
+  port: "8080"
+  read_timeout: 10s
+  write_timeout: 30s
+  shutdown_timeout: 15s
+
+grpc:
+  port: "8081"             # primary binary transport
+  max_recv_mib: 8
+  keepalive: 30s
+
+pg:
+  pool_max: 20
+  url: ""                  # ENV ONLY: BINPASSD_PG_URL
+
+blob:
+  driver: fs               # fs | s3
+  fs_path: /var/lib/binpassd/blobs
+
+auth:
+  argon2:
+    memory_mib: 256
+    time: 3
+    threads: 4
+  access_ttl: 15m
+  refresh_ttl: 720h
+  jwt_private_key: ""      # ENV ONLY: BINPASSD_JWT_PRIVATE_KEY (base64 ed25519 seed)
+
+limits:
+  max_object_size: 104857600      # 100 MiB
+  quota_per_user: 5368709120      # 5 GiB
+  rate_login_per_min: 10
+
+log:
+  level: info
+  format: json

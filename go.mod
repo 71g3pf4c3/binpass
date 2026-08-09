@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	filippo.io/age v1.3.1
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/rogpeppe/go-internal v1.15.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2

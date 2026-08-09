@@ -228,10 +228,13 @@ func TestCoffinStatus(t *testing.T) {
 	err = c.Init(dir, []string{rcp}, 0)
 	require.NoError(t, err)
 
-	// Still not "open" — we just created the coffin.
+	// Init packs the store but leaves the plaintext in place, so the tomb is
+	// open in the only sense that matters: the entries are readable. Calling
+	// that "closed" is what let `tomb close` claim success on a store it had
+	// never protected.
 	_, isOpen, err = c.Status(dir)
 	require.NoError(t, err)
-	assert.False(t, isOpen)
+	assert.True(t, isOpen, "the entries are still in plaintext, so the tomb is open")
 
 	// Remove plaintext and open.
 	require.NoError(t, os.RemoveAll(filepath.Join(dir, "github.com")))

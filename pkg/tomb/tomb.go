@@ -14,6 +14,8 @@ package tomb
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 )
@@ -141,3 +143,13 @@ func DefaultBackend() Backend {
 // coffinFileName is the name of the encrypted archive inside the store
 // directory.
 const coffinFileName = "store.coffin.age"
+
+// HasContainer reports whether a store has a tomb container at all.
+//
+// This is what distinguishes "the tomb is open" from "there is no tomb": the
+// state file is absent in both cases, and a close that cannot tell them apart
+// reports success without having protected anything.
+func HasContainer(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, coffinFileName))
+	return err == nil
+}

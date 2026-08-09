@@ -176,7 +176,16 @@ func (c *Coffin) Status(dir string) (State, bool, error) {
 	st, err := loadState(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return State{}, false, nil
+			// No state file. The store may still have a tomb: `Init` leaves
+			// one open before any state is written, and a clean `Close`
+			// removes the state but keeps the container. Whether plaintext
+			// is present is what distinguishes the two, and reading only
+			// the state file reported both as "no tomb at all".
+			if !HasContainer(dir) {
+				return State{}, false, nil
+			}
+			return State{Backend: BackendCoffin, StoreDir: dir, CoffinPath: filepath.Join(dir, coffinFileName)},
+				hasPlaintext(dir), nil
 		}
 		return State{}, false, err
 	}
@@ -206,7 +215,9 @@ func (c *Coffin) packEncrypt(dir, output string, rcp []string) error {
 
 	// Write to a temporary file, then rename for atomicity.
 	tmpOutput := output + ".writing"
-	f, err := os.OpenFile(tmpOutput, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// The path is the coffin location the caller configured, with a fixed
+	// suffix; it is not user input.
+	f, err := os.OpenFile(tmpOutput, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // a path binpass derived, not user input.
 	if err != nil {
 		return fmt.Errorf("tomb: create temp: %w", err)
 	}
@@ -390,18 +401,22 @@ func readTar(r io.Reader, dir string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
+			if err := os.MkdirAll(target, dirMode(header.Mode)); err != nil {
 				return err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(header.Mode))
+			f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode(header.Mode)) //nolint:gosec // target is checked against the store root above.
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			// The archive is age-encrypted to the user's own recipients, so
+			// reaching this code with hostile input means the attacker already
+			// holds the key. The size cap is a guard against a corrupt archive
+			// filling the disk, not against an adversary.
+			if _, err := io.Copy(f, io.LimitReader(tr, maxEntryBytes)); err != nil {
 				_ = f.Close()
 				return err
 			}
@@ -568,3 +583,24 @@ var _ Tomb = (*Coffin)(nil)
 
 // Ensure overwriteRandom fallback for non-Linux.
 var _ = overwriteRandom // used in shredDir.
+
+// maxEntryBytes caps a single extracted file. Password entries are a few
+// hundred bytes; a gigabyte is far beyond anything legitimate and stops a
+// corrupt archive from filling the disk.
+const maxEntryBytes = 1 << 30
+
+// fileMode reduces an archive's stored mode to the permission bits.
+//
+// The permissions themselves are preserved: a store deliberately made
+// group-readable must come back that way. What is dropped is setuid, setgid
+// and sticky, which have no meaning for a password file and are the only
+// part of a mode worth attacking.
+func fileMode(mode int64) os.FileMode {
+	return os.FileMode(mode) & os.ModePerm //nolint:gosec // masked to permission bits.
+}
+
+// dirMode is fileMode for directories, which must stay traversable by their
+// owner or the entries beneath them become unreachable.
+func dirMode(mode int64) os.FileMode {
+	return fileMode(mode) | 0o700
+}

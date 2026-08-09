@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -222,16 +223,16 @@ func TestCoffinCloseWithModifiedContent(t *testing.T) {
 
 func TestWatcherTimerFires(t *testing.T) {
 	setupSidecar(t)
-	closed := false
-	w := NewWatcher("/tmp/test-store", 50*time.Millisecond, func(dir string) error {
-		closed = true
+	var closed atomic.Bool
+	w := NewWatcher(t.TempDir(), 50*time.Millisecond, func(string) error {
+		closed.Store(true)
 		return nil
 	})
 	defer w.Stop()
 
 	// Wait for the timer to fire.
 	time.Sleep(100 * time.Millisecond)
-	assert.True(t, closed, "timer should have triggered close")
+	assert.True(t, closed.Load(), "timer should have triggered close")
 }
 
 func TestWatcherNoTimer(t *testing.T) {
@@ -243,9 +244,11 @@ func TestWatcherNoTimer(t *testing.T) {
 }
 
 func TestWatcherStopPreventsClose(t *testing.T) {
-	closed := false
-	w := NewWatcher("/tmp/test-store", 100*time.Millisecond, func(dir string) error {
-		closed = true
+	// The callback runs on the watcher's goroutine, so the flag it sets is
+	// shared state and has to be read as such.
+	var closed atomic.Bool
+	w := NewWatcher(t.TempDir(), 100*time.Millisecond, func(string) error {
+		closed.Store(true)
 		return nil
 	})
 
@@ -255,19 +258,19 @@ func TestWatcherStopPreventsClose(t *testing.T) {
 
 	// Wait past the timer.
 	time.Sleep(150 * time.Millisecond)
-	assert.False(t, closed, "stop should prevent close")
+	assert.False(t, closed.Load(), "stop should prevent close")
 }
 
 func TestWatcherDoubleTrigger(t *testing.T) {
-	called := 0
-	w := NewWatcher("/tmp/test-store", 10*time.Millisecond, func(dir string) error {
-		called++
+	var called atomic.Int32
+	w := NewWatcher(t.TempDir(), 10*time.Millisecond, func(string) error {
+		called.Add(1)
 		return nil
 	})
 	defer w.Stop()
 
 	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, 1, called, "close should fire exactly once")
+	assert.Equal(t, int32(1), called.Load(), "close should fire exactly once")
 }
 
 // --- DoctorCheck test ---

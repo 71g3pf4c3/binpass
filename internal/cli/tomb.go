@@ -3,8 +3,10 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -168,18 +170,31 @@ func (a *App) runTombOpen(timer time.Duration) error {
 
 	fmt.Fprintf(a.Out, "Tomb opened (%s).\n", backend)
 
-	// Start the auto-close watcher.
-	watcher := tomb.NewWatcher(a.Cfg.Dir, timer, func(dir string) error {
+	// Without a timer there is nothing to wait for: the store is open and
+	// the command's work is done. Blocking anyway, as this once did, meant
+	// `binpass tomb open` never returned to the shell and looked like a
+	// hang, and it also started a D-Bus screen-lock listener that a machine
+	// with no session bus has nothing to answer.
+	if timer <= 0 {
+		return nil
+	}
+
+	// With a timer the process must survive to close the tomb when it
+	// expires, so it stays in the foreground until then or until the user
+	// interrupts it.
+	watcher := tomb.NewWatcher(a.Cfg.Dir, timer, func(string) error {
 		fmt.Fprintf(a.Err, "Auto-closing tomb...\n")
 		return a.runTombClose(true)
 	})
+	defer watcher.Stop()
 
-	// Block until signal or watcher closes.
+	fmt.Fprintf(a.Err, "Auto-closing in %s. Press Ctrl-C to close now.\n", timer)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	<-sigCh
 
-	watcher.Stop()
 	return nil
 }
 
@@ -187,9 +202,19 @@ func (a *App) runTombOpen(timer time.Duration) error {
 func (a *App) runTombClose(force bool) error {
 	// Detect the backend from the state file.
 	backend := tomb.BackendCoffin
-	st, _, err := a.tombStatus()
+	st, isOpen, err := a.tombStatus()
 	if err == nil && st.Backend != "" {
 		backend = st.Backend
+	}
+
+	// A store with no container has nothing to close. Saying "Tomb closed"
+	// here, as this once did, tells the user their store is protected when
+	// it is sitting in plaintext exactly as before.
+	//
+	// The container is what decides this, not the state file: `tomb init`
+	// leaves a store open with a container but no state written yet.
+	if !isOpen && !tomb.HasContainer(a.Cfg.Dir) {
+		return fmt.Errorf("binpass: no tomb for this store; create one with `binpass tomb init`")
 	}
 
 	t, err := tomb.SelectBackend(backend)
@@ -279,27 +304,34 @@ func parseDuration(s string) (time.Duration, error) {
 }
 
 // parseSize parses a human-friendly size string (1G, 512M).
+//
+// The suffix is examined first. Trying a bare integer first, as this once
+// did, meant Sscanf read the leading digits of "1G" and stopped at the
+// suffix without complaint: a tomb asked to be one gigabyte was created one
+// byte long.
 func parseSize(s string) (int64, error) {
 	if s == "" {
 		return 0, nil
 	}
-	// Try as plain integer first (bytes).
-	var n int64
-	if _, err := fmt.Sscanf(s, "%d", &n); err == nil && n > 0 {
-		return n, nil
-	}
-	// Suffix-based parsing.
 	multipliers := map[byte]int64{
 		'K': 1 << 10, 'k': 1 << 10,
 		'M': 1 << 20, 'm': 1 << 20,
 		'G': 1 << 30, 'g': 1 << 30,
 	}
-	last := s[len(s)-1]
-	if mul, ok := multipliers[last]; ok {
-		var base int64
-		if _, err := fmt.Sscanf(s[:len(s)-1], "%d", &base); err == nil {
-			return base * mul, nil
-		}
+
+	digits, mul := s, int64(1)
+	if m, ok := multipliers[s[len(s)-1]]; ok {
+		digits, mul = s[:len(s)-1], m
 	}
-	return 0, fmt.Errorf("tomb: invalid size %q (use 512M, 1G, etc.)", s)
+
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("tomb: invalid size %q (use 512M, 1G, etc.)", s)
+	}
+	// A size that overflows once scaled would silently wrap to something
+	// small, which is the same class of surprise as the bug above.
+	if n > math.MaxInt64/mul {
+		return 0, fmt.Errorf("tomb: size %q is too large", s)
+	}
+	return n * mul, nil
 }

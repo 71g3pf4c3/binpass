@@ -13,13 +13,9 @@ import (
 // disk. The key file is encrypted with age/GPG, so hardware tokens work.
 //
 // Requires root or a polkit policy that grants the user access to cryptsetup.
-type LUKS struct {
-	// identities supplies age decryption keys for the key file.
-	identities IdentityFunc
-}
-
-// IdentityFunc returns age identities for decrypting the LUKS key file.
-type IdentityFunc func() ([]interface{}, error)
+// The key file is decrypted by shelling out to the configured backend rather
+// than in-process, so no identity function is held here.
+type LUKS struct{}
 
 // newLUKS returns a LUKS backend. It checks that cryptsetup is available.
 func newLUKS() (*LUKS, error) {

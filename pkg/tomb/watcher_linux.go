@@ -33,6 +33,10 @@ type Watcher struct {
 	closed bool
 	// mu guards closed.
 	mu sync.Mutex
+	// closeDone closes the done channel exactly once. A select on the
+	// channel followed by close() is not atomic: two goroutines can both
+	// find it open and both close it, which panics.
+	closeDone sync.Once
 	// cancel shuts down the D-Bus listeners and the done-closer.
 	cancel context.CancelFunc
 	// done is closed when the watcher has fully stopped.
@@ -70,18 +74,7 @@ func NewWatcher(dir string, timer time.Duration, onClose func(string) error) *Wa
 // This is the primary mechanism to ensure Stop() always returns.
 func (w *Watcher) closeOnCancel(ctx context.Context) {
 	<-ctx.Done()
-	// Use a select to avoid double-close: if triggerClose already closed
-	// done via timerLoop, this would panic. Guard with the mutex.
-	w.mu.Lock()
-	// nothing to check; close is idempotent via select on done.
-	w.mu.Unlock()
-
-	select {
-	case <-w.done:
-		// Already closed.
-	default:
-		close(w.done)
-	}
+	w.closeDone.Do(func() { close(w.done) })
 }
 
 // Stop terminates the watcher. It is safe to call after the tomb has been
@@ -104,11 +97,7 @@ func (w *Watcher) triggerClose() {
 
 	// Signal that the watcher is done before calling the potentially
 	// blocking close callback.
-	select {
-	case <-w.done:
-	default:
-		close(w.done)
-	}
+	w.closeDone.Do(func() { close(w.done) })
 
 	_ = w.onClose(w.dir)
 }

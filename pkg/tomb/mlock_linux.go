@@ -26,7 +26,8 @@ func mlockDir(dir string) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		f, err := os.Open(path)
+		// A directory entry just enumerated from the store, not user input.
+		f, err := os.Open(path) //nolint:gosec // an enumerated store entry.
 		if err != nil {
 			continue
 		}

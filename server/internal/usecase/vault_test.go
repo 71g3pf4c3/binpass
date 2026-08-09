@@ -68,7 +68,7 @@ func TestObjectRoundTrip(t *testing.T) {
 	rc, err := uc.GetObject(ctx, "user1", "b3:abc")
 	require.NoError(t, err)
 	data, _ := io.ReadAll(rc)
-	rc.Close()
+	require.NoError(t, rc.Close())
 	assert.Equal(t, "ciphertext!", string(data))
 }
 

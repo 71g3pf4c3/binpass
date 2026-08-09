@@ -1,6 +1,7 @@
 package app
 
 import (
+	"database/sql"
 	"embed"
 	"fmt"
 
@@ -8,7 +9,6 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "github.com/jackc/pgx/v5/stdlib" // register pgx database/sql driver
-	"database/sql"
 )
 
 //go:embed migrations/*.sql
@@ -24,7 +24,7 @@ func runMigrations(pgURL string) error {
 	if err != nil {
 		return fmt.Errorf("migrate: open: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	driver, err := postgres.WithInstance(db, &postgres.Config{})
 	if err != nil {

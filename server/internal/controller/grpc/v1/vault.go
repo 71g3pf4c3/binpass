@@ -152,7 +152,7 @@ func (c *VaultController) GetObject(req *binpassv1.GetObjectRequest, stream binp
 	if err != nil {
 		return toStatus(err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	buf := make([]byte, maxChunk)
 	for {

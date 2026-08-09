@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/71g3pf4c3/binpass/server/config"
 	binpassv1 "github.com/71g3pf4c3/binpass/api/gen/v1"
+	"github.com/71g3pf4c3/binpass/server/config"
 	grpcv1 "github.com/71g3pf4c3/binpass/server/internal/controller/grpc/v1"
 	httpv1 "github.com/71g3pf4c3/binpass/server/internal/controller/http/v1"
 	"github.com/71g3pf4c3/binpass/server/internal/usecase"

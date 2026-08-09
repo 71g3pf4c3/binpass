@@ -176,12 +176,6 @@ func (fakeIssuer) Issue(userID, deviceID string) (string, time.Time, error) {
 	return "access-" + userID + "-" + deviceID, time.Now().Add(time.Hour), nil
 }
 
-// plainHasher hashes by prefixing, so Login's argon2.Verify path is exercised
-// separately; here we only need deterministic hashing for Register tests.
-type plainHasher struct{}
-
-func (plainHasher) Hash(secret string) (string, error) { return "hash:" + secret, nil }
-
 // fakeManifestRepo is an in-memory ManifestRepo with CAS semantics.
 type fakeManifestRepo struct {
 	mu   sync.Mutex

@@ -53,15 +53,15 @@ func (f *FS) Put(ctx context.Context, ref string, r io.Reader) (int64, error) {
 		return 0, fmt.Errorf("blob: temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	n, err := io.Copy(tmp, r)
 	if err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return 0, fmt.Errorf("blob: copy: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return 0, err
 	}
 	if err := tmp.Close(); err != nil {
@@ -82,7 +82,8 @@ func (f *FS) Get(ctx context.Context, ref string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	fh, err := os.Open(dst)
+	// dst was resolved by f.path, which rejects anything outside the root.
+	fh, err := os.Open(dst) //nolint:gosec // path confined to the blob root.
 	if err != nil {
 		return nil, fmt.Errorf("blob: open: %w", err)
 	}

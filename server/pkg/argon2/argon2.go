@@ -12,6 +12,9 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+// maxKeyLen bounds the derived key length accepted from an encoded hash.
+const maxKeyLen = 1024
+
 // Params configures Argon2id hashing.
 type Params struct {
 	// MemoryMiB is the memory cost in mebibytes.
@@ -79,6 +82,13 @@ func Verify(secret, encoded string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("argon2: key decode: %w", err)
 	}
-	got := argon2.IDKey([]byte(secret), salt, time, memory, threads, uint32(len(want)))
+	// The encoded hash comes from storage, so its key length is not to be
+	// trusted: an absurd value would otherwise reach argon2.IDKey as a
+	// wrapped uint32.
+	if len(want) == 0 || len(want) > maxKeyLen {
+		return false, fmt.Errorf("argon2: key length %d out of range", len(want))
+	}
+	keyLen := uint32(len(want)) //nolint:gosec // bounded by maxKeyLen just above.
+	got := argon2.IDKey([]byte(secret), salt, time, memory, threads, keyLen)
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

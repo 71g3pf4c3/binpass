@@ -22,7 +22,7 @@ func TestPutGetDelete(t *testing.T) {
 	rc, err := f.Get(ctx, "user1/b3:abc")
 	require.NoError(t, err)
 	data, _ := io.ReadAll(rc)
-	rc.Close()
+	require.NoError(t, rc.Close())
 	assert.Equal(t, "ciphertext", string(data))
 
 	require.NoError(t, f.Delete(ctx, "user1/b3:abc"))

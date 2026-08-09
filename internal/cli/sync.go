@@ -188,6 +188,13 @@ func (a *App) applyActions(ctx context.Context, s interface {
 	fs.Umask = a.Cfg.Umask
 
 	for _, act := range actions {
+		// Every path here reached us through a remote listing. The
+		// transports reject an escaping path already; checking again before
+		// anything is written means a new transport cannot reintroduce the
+		// hole by forgetting to.
+		if err := remote.CheckPath(act.Path); err != nil {
+			return fmt.Errorf("sync: refusing %q: %w", act.Path, err)
+		}
 		switch act.Kind {
 		case sync.ActionPush:
 			// Local file is newer: upload to remote.

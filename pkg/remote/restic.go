@@ -211,6 +211,10 @@ func (r *ResticRemote) List(ctx context.Context) ([]File, error) {
 		if ext != ".gpg" && ext != ".age" {
 			continue
 		}
+		// A snapshot is only as trustworthy as the repository holding it.
+		if err := CheckPath(path); err != nil {
+			return nil, err
+		}
 		var modTime time.Time
 		if entry.Mtime != "" {
 			modTime, _ = time.Parse(time.RFC3339, entry.Mtime)

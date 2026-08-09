@@ -322,6 +322,10 @@ func (g *GitRemote) List(ctx context.Context) ([]File, error) {
 		if ext != ".gpg" && ext != ".age" {
 			continue
 		}
+		// A repository is under the control of whoever can push to it.
+		if err := CheckPath(path); err != nil {
+			return nil, err
+		}
 		rev, modTime, err := g.fileRev(ctx, path)
 		if err != nil {
 			rev = ""

@@ -10,7 +10,12 @@ package remote
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"path"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -171,3 +176,42 @@ const (
 	// storeDirPerm is the mode for a directory created inside the store.
 	storeDirPerm = 0o700
 )
+
+// ErrUnsafePath reports a remote path that would resolve outside the store.
+var ErrUnsafePath = errors.New("remote: unsafe path")
+
+// CheckPath reports whether a path reported by a remote is safe to join onto
+// the store root.
+//
+// Every path in a listing comes from the other side of the wire: a git
+// repository, an S3 bucket, an rclone backend. A path like
+// "../../../.ssh/authorized_keys" joined onto the store root and written
+// during a pull would let whoever controls the remote place a file anywhere
+// the user can write. Transports call this before reporting a file, so a
+// hostile listing is rejected at the boundary rather than deep inside the
+// sync engine.
+func CheckPath(p string) error {
+	if p == "" {
+		return fmt.Errorf("%w: empty", ErrUnsafePath)
+	}
+	if strings.ContainsRune(p, 0) {
+		return fmt.Errorf("%w: %q contains NUL", ErrUnsafePath, p)
+	}
+	// Absolute paths, and Windows drive letters or UNC prefixes, escape the
+	// root just as surely as "..".
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) || filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
+		return fmt.Errorf("%w: %q is absolute", ErrUnsafePath, p)
+	}
+	// A backslash separates components on Windows and is an ordinary
+	// character everywhere else, so the same string denotes two different
+	// paths depending on the host. Both readings must stay inside the store:
+	// checking only the normalised one would accept `a\b/../..`, which walks
+	// out of the store on Linux, where `a\b` is a single component.
+	for _, candidate := range []string{p, strings.ReplaceAll(p, `\`, "/")} {
+		clean := path.Clean(candidate)
+		if clean == ".." || strings.HasPrefix(clean, "../") {
+			return fmt.Errorf("%w: %q escapes the store", ErrUnsafePath, p)
+		}
+	}
+	return nil
+}

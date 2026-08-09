@@ -98,6 +98,10 @@ func (r *RcloneRemote) List(ctx context.Context) ([]File, error) {
 		if strings.HasPrefix(path, ".") {
 			continue
 		}
+		// The listing comes from the cloud backend, not from us.
+		if err := CheckPath(path); err != nil {
+			return nil, err
+		}
 		size, _ := strconv.ParseInt(parts[1], 10, 64)
 		files = append(files, File{
 			Path: path,

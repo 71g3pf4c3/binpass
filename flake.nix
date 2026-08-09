@@ -31,8 +31,8 @@
           tree
         ];
 
-        # Pickers and typing tools the contrib launchers drive. They are not
-        # needed to build or test binpass, only to exercise `binpass menu`.
+        # Pickers and typing tools `binpass menu` drives. They are not needed
+        # to build or test binpass, only to exercise the menu interactively.
         menuTools = with pkgs; [
           fzf
           rofi

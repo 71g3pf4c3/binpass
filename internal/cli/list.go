@@ -44,6 +44,7 @@ func (a *App) runListFormatted(sub, format string) error {
 	if err != nil {
 		return err
 	}
+	names = a.Guard().FilterReadable(names)
 	switch format {
 	case "plain":
 		for _, n := range names {
@@ -72,6 +73,9 @@ func (a *App) runList(_ context.Context, sub string) error {
 	if err != nil {
 		return err
 	}
+	// A restricted plugin sees a store containing exactly what it was
+	// granted, rather than an error it would have to work around.
+	names = a.Guard().FilterReadable(names)
 
 	heading := "Password Store"
 	if sub != "" {

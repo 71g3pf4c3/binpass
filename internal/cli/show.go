@@ -59,6 +59,11 @@ func (a *App) runShow(ctx context.Context, opts showOpts) error {
 	if err != nil {
 		return err
 	}
+	// Showing an entry is where plaintext leaves binpass, so it is the
+	// point a plugin's grant has to be checked.
+	if err := a.Guard().CheckDecrypt(opts.name); err != nil {
+		return err
+	}
 
 	sec, err := s.Get(opts.name)
 	if err != nil {

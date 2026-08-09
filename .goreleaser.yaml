@@ -48,8 +48,7 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
-# Distribution packages. The contrib launchers ship alongside the binary so
-# that `binpass-rofi` and friends are on PATH after a package install.
+# Distribution packages.
 nfpms:
   - id: binpass
     package_name: binpass
@@ -67,18 +66,6 @@ nfpms:
     recommends:
       - gnupg
     contents:
-      - src: contrib/binpass-rofi
-        dst: /usr/bin/binpass-rofi
-        file_info:
-          mode: 0755
-      - src: contrib/binpass-fzf
-        dst: /usr/bin/binpass-fzf
-        file_info:
-          mode: 0755
-      - src: contrib/binpass-dmenu
-        dst: /usr/bin/binpass-dmenu
-        file_info:
-          mode: 0755
       - src: LICENSE
         dst: /usr/share/doc/binpass/LICENSE
       - src: README.md

@@ -193,29 +193,35 @@ wait $clip_pid
 check "X11 clipboard restored" "X11-PREVIOUS" "$(xclip -selection clipboard -out)"
 [[ -n $wayland_display_saved ]] && export WAYLAND_DISPLAY=$wayland_display_saved
 
-# ------------------------------------------------------------------ launchers
+# --------------------------------------------------------------------- picker
 
-section "Launcher scripts"
+section "Picker"
 
 printf 'launchsecret\nusername: bob\n' | binpass insert -m apps/one >/dev/null
 
+# The picker path that `binpass menu` drives internally, and that any
+# hand-written launcher builds on: a flat list in, a chosen entry out.
 check "ls --format=plain feeds a picker" "apps/one" \
 	"$(binpass ls --format=plain | fzf --filter=apps/one | head -1)"
 
-echo "BEFORE-LAUNCHER" | wl-copy
+echo "BEFORE-PICK" | wl-copy
 entry=$(binpass ls --format=plain | fzf --filter=apps/one | head -1)
 timeout 15 binpass show --clip "$entry" >/dev/null 2>&1 &
 clip_pid=$!
 sleep 1
-check "binpass-fzf path copies the secret" "launchsecret" "$(wl-paste -n)"
+check "the picked entry reaches the clipboard" "launchsecret" "$(wl-paste -n)"
 wait $clip_pid
-check "binpass-fzf path restores the clipboard" "BEFORE-LAUNCHER" "$(wl-paste -n)"
+check "the clipboard is restored afterwards" "BEFORE-PICK" "$(wl-paste -n)"
 
-for script in binpass-rofi binpass-fzf binpass-dmenu; do
-	bash -n "/usr/local/bin/$script" \
-		&& ok "$script is syntactically valid" \
-		|| bad "$script has a syntax error"
-done
+# `binpass menu` is the built-in replacement for passmenu and rofi-pass. It
+# needs a picker binary present but must not need a wrapper script.
+menu_help=$(binpass menu --help 2>&1)
+grep -q -- "--launcher" <<<"$menu_help" \
+	&& ok "menu exposes a launcher choice" \
+	|| bad "menu has no --launcher flag" "--launcher" "$menu_help"
+grep -q -- "--type" <<<"$menu_help" \
+	&& ok "menu can type as well as copy" \
+	|| bad "menu cannot type the secret"
 
 # ----------------------------------------------------------------- completion
 
@@ -248,6 +254,78 @@ grep -q "web/site" <<<"$locked" \
 	&& ok "completion works with no identity available (never decrypts)" \
 	|| bad "completion needs a key, so it would prompt at the shell prompt"
 mv /tmp/stashed.key "$XDG_CONFIG_HOME/binpass/identities.age"
+
+# -------------------------------------------------------------------- plugins
+
+section "Plugins"
+
+plugin_dir=/tmp/plugin-bin
+mkdir -p "$plugin_dir"
+export PATH="$plugin_dir:$PATH"
+
+cat >"$plugin_dir/binpass-demo" <<'PLUG'
+#!/usr/bin/env bash
+echo "demo:$BINPASS_API:$*"
+PLUG
+cat >"$plugin_dir/binpass-cloud_sync" <<'PLUG'
+#!/usr/bin/env bash
+echo "cloud-sync:$*"
+PLUG
+cat >"$plugin_dir/binpass-fails" <<'PLUG'
+#!/usr/bin/env bash
+exit 42
+PLUG
+# A plugin that reaches back into binpass, which is the whole point of the
+# stable CLI: extensions must never parse output meant for people.
+cat >"$plugin_dir/binpass-callback" <<'PLUG'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${BINPASS_BIN:?}" "${BINPASS_STORE:?}"
+"$BINPASS_BIN" ls --format=json | tr -d ' \n'
+PLUG
+chmod +x "$plugin_dir"/binpass-*
+# Deliberately left non-executable, to prove it is reported and not run.
+printf '#!/bin/sh\necho nope\n' >"$plugin_dir/binpass-inert"
+
+check "a plugin on PATH becomes a subcommand" "demo:1:hello" "$(binpass demo hello)"
+
+# Flags belong to the plugin: binpass resolves it before parsing anything,
+# so an unknown-to-binpass flag must arrive intact rather than be rejected.
+check "plugin flags pass through untouched" "demo:1:--verbose -n 2" \
+	"$(binpass demo --verbose -n 2)"
+
+# Underscore in the file, dash in the command.
+check "multi-word plugin names resolve" "cloud-sync:now" "$(binpass cloud-sync now)"
+
+binpass fails >/dev/null 2>&1
+check "a plugin's exit status is binpass's exit status" "42" "$?"
+
+# The callback is what makes plugins useful, so it is verified end to end
+# rather than assumed from the environment being set.
+callback=$(binpass callback)
+grep -q "web/site" <<<"$callback" \
+	&& ok "a plugin can query binpass for machine-readable output" \
+	|| bad "the plugin callback returned nothing usable" '["web/site",...]' "$callback"
+
+# A plugin must never be able to take over a command that handles secrets.
+cat >"$plugin_dir/binpass-show" <<'PLUG'
+#!/usr/bin/env bash
+echo "HIJACKED"
+PLUG
+chmod +x "$plugin_dir/binpass-show"
+check "a plugin cannot shadow a builtin" "agesecret" "$(binpass show --field=password web/site)"
+
+listing=$(binpass plugin list 2>&1)
+grep -q "binpass demo" <<<"$listing" && ok "plugin list shows working plugins" \
+	|| bad "plugin list omits a working plugin" "binpass demo" "$listing"
+grep -q "not executable" <<<"$listing" \
+	&& ok "plugin list reports a plugin that cannot run" \
+	|| bad "a non-executable plugin is silently hidden" "not executable" "$listing"
+grep -q "shadowed by the builtin" <<<"$listing" \
+	&& ok "plugin list explains a shadowed builtin name" \
+	|| bad "a plugin shadowed by a builtin is not explained"
+
+rm -f "$plugin_dir/binpass-show"
 
 # --------------------------------------------------------------------- report
 

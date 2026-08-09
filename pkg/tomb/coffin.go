@@ -103,13 +103,20 @@ func (c *Coffin) Open(dir string, timer time.Duration) error {
 	mlockDir(dir)
 
 	// Write state so that doctor can find us.
+	//
+	// The PID is recorded only when a timer keeps a process alive to close
+	// the tomb. `binpass tomb open` otherwise exits immediately, so storing
+	// its PID meant every cleanly opened tomb reported itself as "stale
+	// (crash without close)" the moment the command returned.
 	s := State{
 		Backend:    BackendCoffin,
 		StoreDir:   dir,
 		CoffinPath: coffinPath,
 		OpenedAt:   time.Now(),
 		Timer:      timer,
-		PID:        os.Getpid(),
+	}
+	if timer > 0 {
+		s.PID = os.Getpid()
 	}
 	if err := saveState(dir, &s); err != nil {
 		// Roll back the unpack on state failure.

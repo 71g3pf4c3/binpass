@@ -122,7 +122,10 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	assert.True(t, isOpen)
 	assert.Equal(t, BackendCoffin, st.Backend)
 	assert.Equal(t, h.dir, st.StoreDir)
-	assert.Equal(t, os.Getpid(), st.PID)
+	// No PID is recorded without a timer: `binpass tomb open` exits at once,
+	// so a stored PID would make every clean open look like a crash.
+	assert.Zero(t, st.PID)
+	assert.False(t, st.IsStale())
 
 	// Phase 5: Close re-encrypts and shreds.
 	require.NoError(t, h.coffin.Close(h.dir, false))
@@ -492,4 +495,24 @@ func TestE2E_TarPreservesPermissions(t *testing.T) {
 		"file permissions should be preserved through tar round-trip")
 
 	_ = h.coffin.Close(h.dir, true)
+}
+
+// TestCleanOpenIsNotReportedAsACrash guards a status that told the user their
+// tomb had crashed every time it opened normally.
+//
+// The PID was recorded from `binpass tomb open`, a command that exits as soon
+// as the store is unpacked, so the process was always gone by the time anyone
+// ran `tomb status`. A warning that fires on the ordinary path trains people
+// to ignore it, which is worse than not warning at all.
+func TestCleanOpenIsNotReportedAsACrash(t *testing.T) {
+	h := newE2EHelper(t)
+
+	require.NoError(t, h.coffin.Init(h.dir, []string{h.rcp}, 0))
+	require.NoError(t, h.coffin.Close(h.dir, true))
+	require.NoError(t, h.coffin.Open(h.dir, 0))
+
+	st, err := loadState(h.dir)
+	require.NoError(t, err)
+	assert.False(t, st.IsStale(),
+		"a tomb opened without a timer must not report a crash once the command exits")
 }

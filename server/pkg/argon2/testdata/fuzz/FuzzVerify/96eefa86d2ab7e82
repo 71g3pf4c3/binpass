@@ -1,0 +1,2 @@
+go test fuzz v1
+string("$argon2id$v=0$m=0,t=111116,p=10$00$00")

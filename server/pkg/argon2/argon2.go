@@ -12,8 +12,29 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// maxKeyLen bounds the derived key length accepted from an encoded hash.
-const maxKeyLen = 1024
+// Bounds on the parameters accepted from an encoded hash. They are generous
+// enough for any sane configuration and small enough that a corrupt row
+// cannot exhaust memory or stall a login.
+const (
+	// minKeyLen is the shortest derived key that still makes a chance
+	// collision infeasible.
+	minKeyLen = 16
+	// minSaltLen is the shortest salt worth calling a salt.
+	minSaltLen = 8
+	// minMemoryKiB is the least memory cost accepted, at 8 MiB.
+	minMemoryKiB = 8 << 10
+	// maxKeyLen bounds the derived key length.
+	maxKeyLen = 1024
+	// maxSaltLen bounds the salt length.
+	maxSaltLen = 1024
+	// maxMemoryKiB bounds the memory cost at 4 GiB.
+	maxMemoryKiB = 4 << 20
+	// maxTime bounds the iteration count.
+	maxTime = 64
+	// maxWorkKiB bounds memory multiplied by iterations, at four times the
+	// cost of the default parameters.
+	maxWorkKiB = 4 * (256 << 10) * 3
+)
 
 // Params configures Argon2id hashing.
 type Params struct {
@@ -82,10 +103,39 @@ func Verify(secret, encoded string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("argon2: key decode: %w", err)
 	}
-	// The encoded hash comes from storage, so its key length is not to be
-	// trusted: an absurd value would otherwise reach argon2.IDKey as a
-	// wrapped uint32.
-	if len(want) == 0 || len(want) > maxKeyLen {
+	// Everything above was read out of the encoded hash, which comes from
+	// storage rather than from us. The lower bounds matter as much as the
+	// upper ones: argon2.IDKey panics on a zero time or threads count, and a
+	// hash naming a one-byte key matches any secret with probability 1/256,
+	// which is an authentication bypass rather than a crash.
+	if memory < minMemoryKiB {
+		return false, fmt.Errorf("argon2: memory cost %d KiB below the minimum", memory)
+	}
+	if len(salt) < minSaltLen {
+		return false, fmt.Errorf("argon2: salt length %d below the minimum", len(salt))
+	}
+	if len(want) < minKeyLen {
+		return false, fmt.Errorf("argon2: key length %d below the minimum", len(want))
+	}
+	if time == 0 || time > maxTime {
+		return false, fmt.Errorf("argon2: time cost %d out of range", time)
+	}
+	if threads == 0 {
+		return false, fmt.Errorf("argon2: parallelism must be at least 1")
+	}
+	if memory > maxMemoryKiB {
+		return false, fmt.Errorf("argon2: memory cost %d KiB out of range", memory)
+	}
+	// Memory and iterations are cheap to inflate individually but multiply
+	// into the actual work. Bounding the product is what keeps a mangled row
+	// from turning one login into a multi-second stall.
+	if work := uint64(memory) * uint64(time); work > maxWorkKiB {
+		return false, fmt.Errorf("argon2: work factor %d out of range", work)
+	}
+	if len(salt) > maxSaltLen {
+		return false, fmt.Errorf("argon2: salt length %d out of range", len(salt))
+	}
+	if len(want) > maxKeyLen {
 		return false, fmt.Errorf("argon2: key length %d out of range", len(want))
 	}
 	keyLen := uint32(len(want)) //nolint:gosec // bounded by maxKeyLen just above.

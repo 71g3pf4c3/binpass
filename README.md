@@ -18,16 +18,18 @@ resulting tree. See [Compatibility](#compatibility).
 ## Status
 
 Implemented so far: the complete pass command surface, age and GPG backends,
-one-time passwords, the built-in picker, and plugins. Sync, tomb and the
-Secret Service provider are specified in [ARCHITECTURE.md](ARCHITECTURE.md)
-but not yet written.
+one-time passwords, the built-in picker, plugins, the encrypted tomb, import
+and export, and auditing. The Secret Service provider and the full-screen TUI
+are specified in [ARCHITECTURE.md](ARCHITECTURE.md) but not yet written.
 
 | Working | Command |
 |---|---|
 | yes | `init` `ls` `show` `find` `grep` `insert` `edit` `generate` `rm` `mv` `cp` `git` `version` |
 | yes | `otp` (pass-otp), `menu` (passmenu / rofi-pass), `generate --words` (diceware) |
 | yes | `plugin` — any executable named `binpass-*` on `PATH` becomes a subcommand |
-| not yet | `sync` `tomb` `ss` `import` `audit` `tui` |
+| yes | `tomb` (pass-tomb), `doctor` |
+| yes | `import` (pass-import, 9 formats), `export` (CSV), `audit` (pass-audit), `binary` (pass-file) |
+| not yet | `ss` `tui` |
 
 ## Plugins
 
@@ -75,6 +77,82 @@ binpass insert github.com/alice
 binpass generate -c bank/tinkoff 32
 binpass show github.com/alice
 binpass otp github.com/alice
+```
+
+## Import and export
+
+Move passwords from another manager into binpass. Auto-detection means you don't
+need to know the format — just point `binpass import` at the export file.
+
+```sh
+# Import a CSV or KDBX file (format detected automatically).
+binpass import bitwarden_export.csv
+binpass import keepass.kdbx              # prompts for database password
+
+# See what would be imported without writing anything.
+binpass import --dry-run bitwarden_export.csv
+
+# Force-overwrite entries that already exist.
+binpass import --force bitwarden_export.csv
+
+# Specify the format explicitly when auto-detection fails.
+binpass import --format=1password export.csv
+
+# Handle non-UTF-8 exports (e.g. Russian LastPass).
+binpass import --encoding=windows-1251 lastpass.csv
+```
+
+Supported formats: **Bitwarden, 1Password, LastPass, Chrome, Firefox, Enpass,
+KeePass (KDBX), pass, gopass**.
+
+Export the entire store to CSV. The output contains decrypted passwords in plain
+text — delete the file after use and never commit it.
+
+```sh
+binpass export                           # to stdout
+binpass export backup.csv               # to file
+```
+
+## Audit
+
+Check the store for weak, reused, expired, and breached passwords.
+
+```sh
+# Full audit (includes HIBP breach check, requires network).
+binpass audit
+
+# Offline audit (skip the HIBP check).
+binpass audit --no-hibp
+
+# JSON output for scripting.
+binpass audit --format=json
+
+# Parallel decryption (faster, but bad for hardware tokens).
+binpass audit --parallel=4
+```
+
+The HIBP check uses the k-anonymity protocol: only the first 5 characters of the
+SHA-1 hash are sent to the API. The full password hash never leaves the machine.
+Passwords are never printed in the output — only entry names and verdicts.
+
+## Binary secrets
+
+`binpass binary` replaces `pass-file`. Binary entries are stored as base64-encoded
+`.b64` entries (gopass convention), so they are versioned, synced, and re-encrypted
+alongside text secrets.
+
+```sh
+# Store a binary file in the password store.
+binpass binary copy photo.b64 photo.jpg
+
+# Decode and write back to disk.
+binpass binary cat photo.b64 > photo.jpg
+
+# Check the SHA-256 of the decoded content.
+binpass binary sum photo.b64
+
+# Store and delete the original (like git mv).
+binpass binary move key.b64 /path/to/key.pem
 ```
 
 `binpass` reads every `PASSWORD_STORE_*` variable pass understands. The

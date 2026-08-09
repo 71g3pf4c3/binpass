@@ -13,6 +13,10 @@ import (
 // are illegal in filenames on Linux, macOS, or Windows.
 var pathInvalidRe = regexp.MustCompile(`[<>:"|?*\\]`)
 
+// dotRunRe matches two or more consecutive dots, which no store path may
+// contain: "a..b" is not traversal but is still refused by ValidatePath.
+var dotRunRe = regexp.MustCompile(`\.{2,}`)
+
 // NormalizePath converts a title and optional group from a foreign format into a
 // valid store path.
 //
@@ -29,7 +33,12 @@ func NormalizePath(group, title string) string {
 	for _, s := range segments {
 		s = strings.Map(sanitizeRune, s)
 		s = collapseWhitespace(s)
-		if s == "" || s == "." || s == ".." {
+		// Any run of dots is collapsed to one, not just a segment that is
+		// exactly "..". A title like "..00" is neither traversal nor a name
+		// ValidatePath accepts, so leaving it alone produced a path this
+		// function's own caller then rejected.
+		s = dotRunRe.ReplaceAllString(s, ".")
+		if s == "" || s == "." {
 			continue
 		}
 		parts = append(parts, s)

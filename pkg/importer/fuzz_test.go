@@ -92,14 +92,17 @@ func FuzzNormalizePath(f *testing.F) {
 	f.Add("a/b/c", "d e f")
 
 	f.Fuzz(func(t *testing.T, group, title string) {
-		// Must not panic and must produce a valid or empty result.
+		// The contract callers rely on: whatever comes out is either empty,
+		// meaning the name sanitised away to nothing, or a path the importer
+		// will accept. StorePath treats anything else as an error, so a
+		// result that fails ValidatePath is a name the importer built and
+		// then refused to use.
 		p := NormalizePath(group, title)
-		if p != "" && !ValidatePath(p) {
-			// Normalized path should be valid or empty (when fully
-			// sanitised away). It must never contain "..".
-			if strings.Contains(p, "..") {
-				t.Errorf("NormalizePath(%q, %q) = %q contains ..", group, title, p)
-			}
+		if p == "" {
+			return
+		}
+		if !ValidatePath(p) {
+			t.Errorf("NormalizePath(%q, %q) = %q, which ValidatePath rejects", group, title, p)
 		}
 	})
 }

@@ -79,6 +79,60 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o /dev/null ./cmd/binpass
 
+  # The server and the wire contract are separate Go modules, so the jobs
+  # above, which run in the root module, never see them.
+  modules:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [api, server]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: go vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+      - name: gofmt
+        working-directory: ${{ matrix.module }}
+        run: |
+          unformatted=$(gofmt -l .)
+          [ -z "$unformatted" ] || { echo "not gofmt'd:"; echo "$unformatted"; exit 1; }
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: ${{ matrix.module }}
+          args: --timeout=5m
+      - name: Tests
+        working-directory: ${{ matrix.module }}
+        run: go test -race ./...
+
+  # Fuzzing found a path traversal in the sync transports and three separate
+  # failures in the password hasher, so a short run guards every pull request.
+  # The seed corpora in testdata keep those cases as permanent regressions;
+  # this looks for the next one.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: Fuzz every target briefly
+        run: ./scripts/fuzz.sh 20
+      - name: Keep the inputs that failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failures
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore
+
   security:
     runs-on: ubuntu-latest
     steps:
@@ -91,6 +145,11 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+      - name: govulncheck (server and api)
+        run: |
+          for module in api server; do
+            (cd "$module" && govulncheck ./...)
+          done
 
   # The same suite on a plain Debian userland, against the distro's own pass.
   # This is what caught tree(1)'s locale- and TERM-dependent rendering, which

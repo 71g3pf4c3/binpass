@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/71g3pf4c3/binpass/internal/config"
@@ -72,14 +74,11 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 		return err
 	}
 
-	// Scan the local store.
-	exts := sExts(s)
-	local, err := sync.Scan(s.Dir(), base, deviceID, exts)
-	if err != nil {
-		return fmt.Errorf("sync: scan local: %w", err)
-	}
-
-	// Build the remote snapshot by listing the remote transport.
+	// List the remote before scanning locally. For the git transport the
+	// working tree and the store are the same directory, and listing pulls
+	// into it: scanning first would read the tree as it was before the pull
+	// and report every incoming entry as locally missing, which the merge
+	// engine reads as a deletion to propagate.
 	rem, err := a.buildRemote(remoteName)
 	if err != nil {
 		return err
@@ -89,6 +88,13 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 		return fmt.Errorf("sync: list remote: %w", err)
 	}
 	remoteSnap := remoteFilesToSnapshot(remoteFiles, base, deviceID)
+
+	// Scan the local store.
+	exts := sExts(s)
+	local, err := sync.Scan(s.Dir(), base, deviceID, exts)
+	if err != nil {
+		return fmt.Errorf("sync: scan local: %w", err)
+	}
 
 	// Build the Opener for HOTP auto-merge.
 	opener := sync.OpenerFunc(func(path string) (*secret.Secret, error) {
@@ -323,6 +329,14 @@ func (a *App) buildRemote(name string) (remote.Remote, error) {
 	if name == "" {
 		name = a.Cfg.Sync.DefaultRemote
 	}
+	// With exactly one remote configured there is nothing to disambiguate,
+	// and requiring default_remote to be set by hand would mean `remote add`
+	// followed by `sync` fails for every new user.
+	if name == "" && len(a.Cfg.Remotes) == 1 {
+		for only := range a.Cfg.Remotes {
+			name = only
+		}
+	}
 	if name == "" {
 		// No remote configured: fall back to the git remote in the store
 		// directory if it is a git repo.
@@ -332,7 +346,11 @@ func (a *App) buildRemote(name string) (remote.Remote, error) {
 				Dir:  a.Cfg.Dir,
 			})
 		}
-		return nil, fmt.Errorf("sync: no remote configured; set sync.default_remote in config or use --remote")
+		if len(a.Cfg.Remotes) > 1 {
+			return nil, fmt.Errorf("sync: several remotes configured (%s); choose one with --remote or set sync.default_remote",
+				strings.Join(sortedRemoteNames(a.Cfg.Remotes), ", "))
+		}
+		return nil, fmt.Errorf("sync: no remote configured; add one with `binpass remote add git origin URL`")
 	}
 
 	rc, ok := a.Cfg.Remotes[name]
@@ -342,13 +360,13 @@ func (a *App) buildRemote(name string) (remote.Remote, error) {
 
 	switch rc.Type {
 	case "git":
-		dir := rc.URL
-		if dir == "" {
-			dir = a.Cfg.Dir
-		}
+		// The store directory is the git working tree; rc.URL names where
+		// that tree pushes to. Passing the URL as the directory, as this
+		// once did, made git look for a working tree at a URL path.
 		return remote.NewGitRemote(remote.GitOptions{
 			Name: name,
-			Dir:  dir,
+			Dir:  a.Cfg.Dir,
+			URL:  rc.URL,
 		})
 	case "restic":
 		repo := rc.URL
@@ -455,4 +473,15 @@ func stripCryptoExt(path string) string {
 		return path[:len(path)-4]
 	}
 	return path
+}
+
+// sortedRemoteNames returns the configured remote names in a stable order,
+// so that an error naming the choices does not shuffle between runs.
+func sortedRemoteNames(remotes map[string]config.RemoteConfig) []string {
+	out := make([]string, 0, len(remotes))
+	for n := range remotes {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }

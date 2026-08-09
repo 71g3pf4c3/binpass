@@ -24,6 +24,7 @@ import (
 type GitRemote struct {
 	name    string
 	dir     string
+	url     string
 	gitPath string
 }
 
@@ -33,12 +34,20 @@ type GitOptions struct {
 	Name string
 	// Dir is the password store directory (the git working tree).
 	Dir string
+	// URL is where that working tree pushes to. When set, the git remote is
+	// created or corrected to point at it, so that `binpass remote add`
+	// alone is enough to make sync work.
+	URL string
 	// GitPath overrides the git binary; empty means autodetect.
 	GitPath string
 }
 
-// NewGitRemote returns a GitRemote. It validates that git is available on the
-// system and that Dir is a git working tree.
+// NewGitRemote returns a GitRemote. It initialises the store as a git working
+// tree if it is not one already, and points the named git remote at URL.
+//
+// Both steps are done here because the alternative is asking the user to run
+// `git init` and `git remote add` by hand after `binpass remote add` has
+// apparently succeeded, and then watching sync silently do nothing.
 func NewGitRemote(opts GitOptions) (*GitRemote, error) {
 	gitPath := opts.GitPath
 	if gitPath == "" {
@@ -48,11 +57,50 @@ func NewGitRemote(opts GitOptions) (*GitRemote, error) {
 			return nil, fmt.Errorf("remote/git: git not found on PATH: %w", err)
 		}
 	}
-	g := &GitRemote{name: opts.Name, dir: opts.Dir, gitPath: gitPath}
-	if _, err := g.git(context.Background(), "rev-parse", "--git-dir"); err != nil {
-		return nil, fmt.Errorf("remote/git: %q is not a git working tree: %w", opts.Dir, err)
+	g := &GitRemote{name: opts.Name, dir: opts.Dir, url: opts.URL, gitPath: gitPath}
+	ctx := context.Background()
+
+	if _, err := g.git(ctx, "rev-parse", "--git-dir"); err != nil {
+		if opts.URL == "" {
+			return nil, fmt.Errorf("remote/git: %q is not a git working tree: %w", opts.Dir, err)
+		}
+		if _, err := g.git(ctx, "init", "-q"); err != nil {
+			return nil, fmt.Errorf("remote/git: init %q: %w", opts.Dir, err)
+		}
+	}
+	if opts.URL != "" {
+		if err := g.ensureRemoteURL(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return g, nil
+}
+
+// ensureRemoteURL points the git remote at the configured URL, adding it when
+// absent and correcting it when it disagrees.
+//
+// A stale URL is corrected rather than left alone: the binpass config is where
+// the user just stated their intent, so it wins over whatever the repository
+// was configured with earlier.
+func (g *GitRemote) ensureRemoteURL(ctx context.Context) error {
+	name := g.name
+	if name == "" {
+		name = "origin"
+	}
+	current, err := g.git(ctx, "remote", "get-url", name)
+	if err != nil {
+		if _, err := g.git(ctx, "remote", "add", name, g.url); err != nil {
+			return fmt.Errorf("remote/git: remote add %s: %w", name, err)
+		}
+		return nil
+	}
+	if strings.TrimSpace(string(current)) == g.url {
+		return nil
+	}
+	if _, err := g.git(ctx, "remote", "set-url", name, g.url); err != nil {
+		return fmt.Errorf("remote/git: remote set-url %s: %w", name, err)
+	}
+	return nil
 }
 
 // Name returns the remote name.
@@ -74,32 +122,110 @@ func (g *GitRemote) Caps() Caps {
 // automatically before List and Get so the working tree reflects the
 // latest remote state.
 func (g *GitRemote) Pull(ctx context.Context) error {
-	// Check if a remote is configured.
-	if _, err := g.git(ctx, "remote"); err != nil {
-		return nil // no remote configured, skip pull.
+	if !g.hasRemote(ctx) {
+		return nil // nothing to pull from.
 	}
-	// git pull --rebase avoids merge commits.
-	if _, err := g.git(ctx, "pull", "--rebase"); err != nil {
-		// If the repo is empty or has no upstream, pull fails — that's OK.
-		if strings.Contains(err.Error(), "no remote") ||
-			strings.Contains(err.Error(), "no upstream") ||
-			strings.Contains(err.Error(), "Couldn't find remote ref") {
+	name := g.remoteName()
+
+	// Whether this repository has any history of its own decides everything
+	// below, and it must be answered before anything is committed.
+	_, headErr := g.git(ctx, "rev-parse", "HEAD")
+	fresh := headErr != nil
+
+	if _, err := g.git(ctx, "fetch", name); err != nil {
+		return fmt.Errorf("remote/git: fetch %s: %w", name, err)
+	}
+	branch, err := g.remoteHeadBranch(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	// A store that has never been committed here, against a remote that
+	// already holds one: adopt the remote's branch wholesale. This is the
+	// state every second machine starts in, and reading its empty working
+	// tree as "the remote's entries were deleted" would delete them.
+	if fresh && branch != "" {
+		if err := g.adoptRemoteBranch(ctx, name, branch); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Ordinary commands write to the store directly and know nothing about
+	// git, so by the time sync runs the working tree usually holds edits the
+	// repository has never seen. `git pull --rebase` refuses to run then,
+	// and sync would fail for anyone who had merely used binpass between
+	// syncs. Commit that work: it is the user's, and the merge engine needs
+	// it recorded to compare against the remote.
+	if err := g.commitLocalChanges(ctx); err != nil {
+		return err
+	}
+	if branch == "" {
+		return nil // the remote has no branch yet; the first push creates it.
+	}
+
+	// Rebase onto the remote branch by name. Relying on tracking information
+	// fails on a branch that was created locally and never pushed, which is
+	// what `git init` leaves behind.
+	if _, err := g.git(ctx, "rebase", name+"/"+branch); err != nil {
+		if strings.Contains(err.Error(), "Couldn't find remote ref") {
 			return nil
 		}
-		return fmt.Errorf("remote/git: pull: %w", err)
+		// Both sides changed the same entry. Git cannot merge ciphertext,
+		// so the rebase is abandoned and the remote becomes the working
+		// tree — but only after every locally-changed entry is written
+		// aside as a conflict file. Resetting first would destroy a
+		// password the user had just set, which is the one outcome a
+		// password manager may never produce.
+		if _, abortErr := g.git(ctx, "rebase", "--abort"); abortErr != nil {
+			return fmt.Errorf("remote/git: rebase onto %s/%s failed and could not be aborted: %w",
+				name, branch, err)
+		}
+		if err := g.preserveDivergedFiles(ctx, name+"/"+branch); err != nil {
+			return err
+		}
+		if _, err := g.git(ctx, "reset", "--hard", name+"/"+branch); err != nil {
+			return fmt.Errorf("remote/git: adopt %s/%s after a diverged history: %w", name, branch, err)
+		}
+		return nil
 	}
 	return nil
+}
+
+// remoteName returns the git remote to use.
+func (g *GitRemote) remoteName() string {
+	if g.name == "" {
+		return "origin"
+	}
+	return g.name
+}
+
+// remoteHeadBranch returns the branch a freshly fetched remote holds, so that
+// a new clone checks out what the other machines are actually using rather
+// than assuming a name like "main" or "master".
+func (g *GitRemote) remoteHeadBranch(ctx context.Context, remoteName string) (string, error) {
+	out, err := g.git(ctx, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"+remoteName)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		branch := strings.TrimSpace(line)
+		if branch != "" && branch != "HEAD" {
+			return branch, nil
+		}
+	}
+	return "", nil
 }
 
 // Push flushes all local commits to the configured remote. This should be
 // called after all Put/Delete/Rename operations are complete.
 func (g *GitRemote) Push(ctx context.Context) error {
-	if _, err := g.git(ctx, "remote"); err != nil {
-		return nil // no remote configured, skip push.
+	if !g.hasRemote(ctx) {
+		return nil // nothing to push to.
 	}
 	branch, err := g.currentBranch(ctx)
 	if err != nil {
-		return nil
+		return fmt.Errorf("remote/git: cannot determine the current branch: %w", err)
 	}
 	if _, err := g.git(ctx, "push", "origin", branch); err != nil {
 		// If there's no upstream yet, set it.
@@ -119,8 +245,13 @@ func (g *GitRemote) Push(ctx context.Context) error {
 // extensions. It pulls from the remote first so the working tree reflects the
 // latest remote state.
 func (g *GitRemote) List(ctx context.Context) ([]RemoteFile, error) {
-	// Pull first so we see the latest remote state.
-	_ = g.Pull(ctx)
+	// Pull first so we see the latest remote state. A failure here must not
+	// be swallowed: an empty listing is indistinguishable from "the remote
+	// has nothing", which the merge engine reads as every remote entry
+	// having been deleted.
+	if err := g.Pull(ctx); err != nil {
+		return nil, err
+	}
 
 	out, err := g.git(ctx, "ls-files", "-z")
 	if err != nil {
@@ -218,8 +349,13 @@ func (g *GitRemote) Put(ctx context.Context, path string, content io.Reader, exp
 	if _, err := g.git(ctx, "add", relPath); err != nil {
 		return "", fmt.Errorf("remote/git: add %q: %w", relPath, err)
 	}
-	if _, err := g.git(ctx, "commit", "-m", msg); err != nil {
-		return "", fmt.Errorf("remote/git: commit: %w", err)
+	// The content may already be committed: sync commits whatever ordinary
+	// commands left in the working tree before pulling, and the file is then
+	// written here with identical bytes. An empty commit is not a failure.
+	if _, err := g.git(ctx, "diff", "--cached", "--quiet"); err != nil {
+		if _, err := g.git(ctx, "commit", "-m", msg); err != nil {
+			return "", fmt.Errorf("remote/git: commit: %w", err)
+		}
 	}
 
 	rev, err := g.headRev(ctx)
@@ -243,6 +379,13 @@ func (g *GitRemote) Delete(ctx context.Context, path string, expectRev string) e
 	}
 
 	if _, err := g.git(ctx, "rm", "-f", path); err != nil {
+		// A file that is already gone is the state this was asked to reach.
+		// Failing here aborts the whole sync over an entry both sides have
+		// agreed to remove, which is how one stale state entry could block
+		// every future sync.
+		if strings.Contains(err.Error(), "did not match any files") {
+			return nil
+		}
 		return fmt.Errorf("remote/git: rm %q: %w", path, err)
 	}
 	msg := fmt.Sprintf("Remove %s from store.", stripExt(path))
@@ -283,7 +426,17 @@ func (g *GitRemote) git(ctx context.Context, args ...string) ([]byte, error) {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), string(exitErr.Stderr))
+			// Several git commands, commit among them, explain a refusal on
+			// stdout and leave stderr empty. Reporting only stderr produced
+			// errors with no message at all.
+			detail := strings.TrimSpace(string(exitErr.Stderr))
+			if detail == "" {
+				detail = strings.TrimSpace(string(out))
+			}
+			if detail == "" {
+				detail = exitErr.String()
+			}
+			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), detail)
 		}
 		return nil, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
@@ -377,4 +530,160 @@ func stripExt(path string) string {
 		return path[:len(path)-len(ext)]
 	}
 	return path
+}
+
+// hasRemote reports whether the repository has any git remote configured.
+//
+// `git remote` exits zero and prints nothing when there are none, so testing
+// the exit status alone reported success and made Push and Pull silently do
+// nothing: sync then announced it had finished without sending anything.
+func (g *GitRemote) hasRemote(ctx context.Context) bool {
+	out, err := g.git(ctx, "remote")
+	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+// commitLocalChanges commits anything in the working tree that git does not
+// yet know about, so that a rebase can proceed.
+//
+// Only store content is committed. Untracked files that belong to the store
+// format (.gpg-id, .age-recipients, .gitattributes) are included because a
+// clone without them cannot encrypt; anything else is left alone rather than
+// swept into the user's history.
+func (g *GitRemote) commitLocalChanges(ctx context.Context) error {
+	// --untracked-files=all lists the files inside a new directory rather
+	// than the directory alone. Without it a whole new subtree appears as a
+	// single "?? mail/" entry, which does not look like store content and
+	// so was skipped: every entry filed under a new folder went uncommitted
+	// and never reached the remote.
+	out, err := g.git(ctx, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("remote/git: status: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return nil
+	}
+
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		// Renames are reported as "old -> new"; the new name is what exists.
+		if i := strings.Index(path, " -> "); i >= 0 {
+			path = path[i+4:]
+		}
+		path = strings.Trim(path, `"`)
+		if path == "" || !g.belongsInStore(path) {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	args := append([]string{"add", "--"}, paths...)
+	if _, err := g.git(ctx, args...); err != nil {
+		return fmt.Errorf("remote/git: add local changes: %w", err)
+	}
+	// Nothing staged means the changes were all outside the store.
+	if _, err := g.git(ctx, "diff", "--cached", "--quiet"); err == nil {
+		return nil
+	}
+	if _, err := g.git(ctx, "commit", "-m", "Local changes made outside sync."); err != nil {
+		return fmt.Errorf("remote/git: commit local changes: %w", err)
+	}
+	return nil
+}
+
+// belongsInStore reports whether a path is store content that sync owns.
+func (g *GitRemote) belongsInStore(path string) bool {
+	switch filepath.Ext(path) {
+	case ".gpg", ".age":
+		return true
+	}
+	switch filepath.Base(path) {
+	case ".gpg-id", ".age-recipients", ".gitattributes":
+		return true
+	}
+	return false
+}
+
+// adoptRemoteBranch points a store with no history of its own at the branch
+// the remote already has.
+//
+// `binpass init` will usually have created a recipients file before the first
+// sync, and a plain checkout refuses to overwrite untracked files. Those files
+// are not lost work: they are local setup, and the remote's copy is the one
+// the other machines agree on. The branch is reset onto them instead, which
+// leaves any genuinely local entry in the working tree to be merged normally.
+func (g *GitRemote) adoptRemoteBranch(ctx context.Context, remoteName, branch string) error {
+	ref := remoteName + "/" + branch
+	if _, err := g.git(ctx, "checkout", "-B", branch, "--track", ref); err == nil {
+		return nil
+	}
+	// Move HEAD onto the remote branch without touching the working tree,
+	// then take the remote's version of the files it tracks.
+	if _, err := g.git(ctx, "checkout", "-B", branch); err != nil {
+		return fmt.Errorf("remote/git: create branch %s: %w", branch, err)
+	}
+	if _, err := g.git(ctx, "reset", "--soft", ref); err != nil {
+		return fmt.Errorf("remote/git: reset onto %s: %w", ref, err)
+	}
+	if _, err := g.git(ctx, "checkout", ref, "--", "."); err != nil {
+		return fmt.Errorf("remote/git: take %s contents: %w", ref, err)
+	}
+	if _, err := g.git(ctx, "branch", "--set-upstream-to", ref, branch); err != nil {
+		return fmt.Errorf("remote/git: track %s: %w", ref, err)
+	}
+	return nil
+}
+
+// preserveDivergedFiles copies every store entry that differs from the remote
+// into a conflict file before the working tree is reset onto that remote.
+//
+// The naming matches what `binpass conflicts` expects, so the surviving copy
+// is discoverable through the command built for it rather than being a stray
+// file the user has to find.
+func (g *GitRemote) preserveDivergedFiles(ctx context.Context, ref string) error {
+	out, err := g.git(ctx, "diff", "--name-only", ref)
+	if err != nil {
+		return fmt.Errorf("remote/git: compare against %s: %w", ref, err)
+	}
+	stamp := time.Now().UTC().Format("20060102T150405")
+
+	for _, line := range strings.Split(string(out), "\n") {
+		path := strings.TrimSpace(line)
+		if path == "" || !g.belongsInStore(path) {
+			continue
+		}
+		ext := filepath.Ext(path)
+		if ext != ".gpg" && ext != ".age" {
+			continue // recipients files are setup, not content worth keeping twice.
+		}
+		src := filepath.Join(g.dir, path)
+		data, err := os.ReadFile(src) //nolint:gosec // a path inside the store.
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("remote/git: read %q: %w", path, err)
+		}
+		dst := strings.TrimSuffix(path, ext) + ".conflict-" + g.deviceTag() + "-" + stamp + ext
+		if err := g.writeWorktree(filepath.Join(g.dir, dst), data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deviceTag names this machine in a conflict file name.
+func (g *GitRemote) deviceTag() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "local"
+	}
+	// Conflict names are parsed on dashes, so the host must not add more.
+	return strings.ReplaceAll(host, "-", "_")
 }

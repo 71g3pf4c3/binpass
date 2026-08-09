@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"text/tabwriter"
 
@@ -241,18 +242,38 @@ func writeYAML(path string, root map[string]interface{}) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
+	// The config directory does not exist until something writes to it, and
+	// `remote add` is usually the first command that does. Without this the
+	// very first remote fails on a machine that has no config yet.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
 	// Write to a temp file in the same directory, then rename.
-	dir := dirOfFile(path)
 	tmp, err := os.CreateTemp(dir, ".binpass-config-*")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
+	// The config names every remote and may carry credentials in a URL, so
+	// it is not world-readable. CreateTemp makes 0600 files, but the mode is
+	// set explicitly rather than inherited from an implementation detail.
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp: %w", err)
+	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write temp: %w", err)
+	}
+	// The rename below is not atomic with respect to a crash unless the data
+	// has reached the disk first.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp: %w", err)
@@ -262,18 +283,4 @@ func writeYAML(path string, root map[string]interface{}) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
-}
-
-// dirOfFile returns the directory component of a file path.
-func dirOfFile(path string) string {
-	lastSlash := 0
-	for i := 0; i < len(path); i++ {
-		if path[i] == '/' {
-			lastSlash = i
-		}
-	}
-	if lastSlash == 0 {
-		return "."
-	}
-	return path[:lastSlash]
 }

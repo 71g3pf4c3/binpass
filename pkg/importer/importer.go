@@ -100,8 +100,8 @@ type Importer interface {
 	Import(r io.Reader) iter.Seq2[*Entry, error]
 }
 
-// Import is a convenience that reads all entries from an importer, stopping at
-// the first error that is not attached to an entry.
+// ImportAll reads every entry from an importer, stopping at the first error
+// that is not attached to an entry.
 func ImportAll(imp Importer, r io.Reader) ([]*Entry, error) {
 	var entries []*Entry
 	for e, err := range imp.Import(r) {

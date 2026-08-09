@@ -22,7 +22,7 @@ func TestHIBPClientCheck(t *testing.T) {
 
 		// Return a matching suffix for "password" plus some noise.
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("1E4C9B93F3F0682250B6CF8331B7EE68FD8:12345\n0A0B0C0D0E0F:1\n"))
+		_, _ = w.Write([]byte("1E4C9B93F3F0682250B6CF8331B7EE68FD8:12345\n0A0B0C0D0E0F:1\n"))
 	}))
 	defer server.Close()
 
@@ -60,7 +60,7 @@ func TestHIBPClientCaching(t *testing.T) {
 	called := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called++
-		w.Write([]byte("SUFFIX1:1\n"))
+		_, _ = w.Write([]byte("SUFFIX1:1\n"))
 	}))
 	defer server.Close()
 

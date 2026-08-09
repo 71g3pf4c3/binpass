@@ -243,7 +243,7 @@ func TestStoreOverwrite(t *testing.T) {
 func TestMain(m *testing.M) {
 	// Ensure HOME is set for age identity resolution.
 	if os.Getenv("HOME") == "" {
-		os.Setenv("HOME", "/tmp")
+		_ = os.Setenv("HOME", "/tmp")
 	}
 	os.Exit(m.Run())
 }

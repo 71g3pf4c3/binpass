@@ -83,7 +83,7 @@ func TestKeePassImportWithGeneratedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	entries, err := ImportAll(imp, f)
 	if err != nil {
@@ -179,7 +179,7 @@ func TestKeePassNestedGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	entries, err := ImportAll(imp, f)
 	if err != nil {
@@ -253,7 +253,7 @@ func TestKeePassTOTPFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	entries, err := ImportAll(imp, f)
 	if err != nil {
@@ -326,7 +326,7 @@ func TestKeePassCustomFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	entries, err := ImportAll(imp, f)
 	if err != nil {
@@ -408,7 +408,7 @@ func TestKeePassAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	entries, err := ImportAll(imp, f)
 	if err != nil {
@@ -474,7 +474,7 @@ func TestKeePassAttachmentUnresolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	entries, err := ImportAll(imp, f)
 	if err != nil {

@@ -140,7 +140,7 @@ func (k *KeePassImporter) convertEntry(e *gokeepasslib.Entry, groupPath string, 
 	// Attachments (binary references in KeePass terminology). The actual
 	// binary data lives in the database's binary pool, not in the entry.
 	for _, bin := range e.Binaries {
-		actual := bin.Find(db)
+		actual := db.FindBinary(bin.Value.ID)
 		if actual == nil {
 			continue
 		}

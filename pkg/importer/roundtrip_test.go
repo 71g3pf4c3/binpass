@@ -21,7 +21,7 @@ func setupAgeStore(t *testing.T) (*store.Store, string) {
 		t.Fatalf("generate age identity: %v", err)
 	}
 	rcp := crypto.Recipient(id.Recipient().String())
-	os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
 
 	ageBackend := crypto.NewAge(dir, func() ([]age.Identity, error) {
 		return []age.Identity{id}, nil
@@ -125,7 +125,7 @@ func TestImportForceOverwrite(t *testing.T) {
 	s, _ := setupAgeStore(t)
 
 	// Write an entry first.
-	s.Set("Social/Twitter", secret.New("old-password", ""))
+	_ = s.Set("Social/Twitter", secret.New("old-password", ""))
 
 	// Import the same entry with different password.
 	csv := `folder,favorite,type,name,login_username,login_password,login_uri

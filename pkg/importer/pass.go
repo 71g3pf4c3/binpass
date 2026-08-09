@@ -62,13 +62,12 @@ func (p *PassImporter) Import(_ io.Reader) iter.Seq2[*Entry, error] {
 			}
 
 			// Strip the encryption extension.
-			entryName := rel
-			if ext := filepath.Ext(rel); ext == ".gpg" || ext == ".age" {
-				entryName = rel[:len(rel)-len(ext)]
-			} else {
+			ext := filepath.Ext(rel)
+			if ext != ".gpg" && ext != ".age" {
 				// Not an encrypted entry; skip.
 				return nil
 			}
+			entryName := rel[:len(rel)-len(ext)]
 
 			// Use forward slashes for the store path.
 			entryName = filepath.ToSlash(entryName)
@@ -82,7 +81,6 @@ func (p *PassImporter) Import(_ io.Reader) iter.Seq2[*Entry, error] {
 				return nil
 			}
 
-			ext := filepath.Ext(rel)
 			e := &Entry{
 				Path: entryName,
 				Fields: []Field{

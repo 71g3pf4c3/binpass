@@ -126,7 +126,7 @@ func FormatPlan(plans []PlanEntry) string {
 	var sb strings.Builder
 	sb.WriteString("Import plan:\n")
 	for i, p := range plans {
-		sb.WriteString(fmt.Sprintf("  %d. %s", i+1, p.StorePath))
+		fmt.Fprintf(&sb, "  %d. %s", i+1, p.StorePath)
 		if p.Conflict {
 			sb.WriteString(" [OVERWRITE]")
 		}
@@ -137,10 +137,10 @@ func FormatPlan(plans []PlanEntry) string {
 			sb.WriteString(" (totp)")
 		}
 		if p.AttachmentCount > 0 {
-			sb.WriteString(fmt.Sprintf(" (%d attachments)", p.AttachmentCount))
+			fmt.Fprintf(&sb, " (%d attachments)", p.AttachmentCount)
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(fmt.Sprintf("\nTotal: %d entries\n", len(plans)))
+	fmt.Fprintf(&sb, "\nTotal: %d entries\n", len(plans))
 	return sb.String()
 }

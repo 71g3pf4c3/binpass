@@ -144,7 +144,7 @@ func TestAuditEmptyStore(t *testing.T) {
 	dir := t.TempDir()
 	id, _ := age.GenerateX25519Identity()
 	rcp := crypto.Recipient(id.Recipient().String())
-	os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
 
 	ageBackend := crypto.NewAge(dir, func() ([]age.Identity, error) {
 		return []age.Identity{id}, nil
@@ -170,7 +170,7 @@ func TestAuditParallelDecryption(t *testing.T) {
 	dir := t.TempDir()
 	id, _ := age.GenerateX25519Identity()
 	rcp := crypto.Recipient(id.Recipient().String())
-	os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
 
 	ageBackend := crypto.NewAge(dir, func() ([]age.Identity, error) {
 		return []age.Identity{id}, nil
@@ -181,7 +181,7 @@ func TestAuditParallelDecryption(t *testing.T) {
 
 	// Write multiple entries.
 	for i := 0; i < 10; i++ {
-		s.Set("entry/"+itoa(i), secret.New("password-"+itoa(i), ""))
+		_ = s.Set("entry/"+itoa(i), secret.New("password-"+itoa(i), ""))
 	}
 
 	auditor := &Auditor{
@@ -242,10 +242,10 @@ func TestAuditWithHIBPStub(t *testing.T) {
 		prefix := strings.TrimPrefix(r.URL.Path, "/range/")
 		switch prefix {
 		case "5BAA6":
-			w.Write([]byte("1E4C9B93F3F0682250B6CF8331B7EE68FD8:12345\n"))
-			w.Write([]byte("0000000000000000000000000000000000NOISE:3\n"))
+			_, _ = w.Write([]byte("1E4C9B93F3F0682250B6CF8331B7EE68FD8:12345\n"))
+			_, _ = w.Write([]byte("0000000000000000000000000000000000NOISE:3\n"))
 		default:
-			w.Write([]byte(""))
+			_, _ = w.Write([]byte(""))
 		}
 	}))
 	defer srv.Close()

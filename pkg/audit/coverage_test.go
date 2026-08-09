@@ -260,10 +260,10 @@ func TestAuditHIBPErrorDowngrade(t *testing.T) {
 	dir := t.TempDir()
 	id, _ := age.GenerateX25519Identity()
 	rcp := crypto.Recipient(id.Recipient().String())
-	os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
 	ageBackend := crypto.NewAge(dir, func() ([]age.Identity, error) { return []age.Identity{id}, nil })
 	s, _ := store.New(store.Options{Dir: dir, Backends: []crypto.Crypto{ageBackend}, Default: ageBackend})
-	s.Set("test", secret.New("password", ""))
+	_ = s.Set("test", secret.New("password", ""))
 
 	auditor := &Auditor{
 		Store:      s,
@@ -294,11 +294,11 @@ func TestAuditParallelWithDecryptionError(t *testing.T) {
 	dir := t.TempDir()
 	id, _ := age.GenerateX25519Identity()
 	rcp := crypto.Recipient(id.Recipient().String())
-	os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, ".age-recipients"), []byte(rcp.String()+"\n"), 0600)
 	ageBackend := crypto.NewAge(dir, func() ([]age.Identity, error) { return []age.Identity{id}, nil })
 	s, _ := store.New(store.Options{Dir: dir, Backends: []crypto.Crypto{ageBackend}, Default: ageBackend})
-	s.Set("a", secret.New("pw1", ""))
-	s.Set("b", secret.New("pw2", ""))
+	_ = s.Set("a", secret.New("pw1", ""))
+	_ = s.Set("b", secret.New("pw2", ""))
 
 	// Remove the identity so decryption fails.
 	// Actually, the identity resolver is a closure that returns the key.

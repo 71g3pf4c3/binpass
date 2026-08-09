@@ -115,7 +115,7 @@ The entry name must end in ".b64". The source file is not modified.
 			if err != nil {
 				return err
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			return binary.Store(s, name, f)
 		},
@@ -161,12 +161,17 @@ This is equivalent to ` + "`binpass binary copy`" + ` followed by removing the s
 			if err != nil {
 				return err
 			}
-			defer f.Close()
+			// Closed explicitly below and again on every error path; the
+			// second close is harmless and the first is required because
+			// Windows refuses to remove an open file.
+			defer func() { _ = f.Close() }()
 
 			if err := binary.Store(s, name, f); err != nil {
 				return err
 			}
-			f.Close() // close before removing (Windows)
+			if err := f.Close(); err != nil {
+				return err
+			}
 			return os.Remove(path)
 		},
 	}

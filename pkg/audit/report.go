@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -33,13 +34,12 @@ func sha1Suffix(hash string) string {
 	return hash[5:]
 }
 
-// itoa converts a non-negative integer to its decimal string.
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return itoa(n/10) + string(rune('0'+n%10))
-}
+// itoa converts an integer to its decimal string.
+//
+// A hand-rolled version stood here, recursing and building runes by
+// arithmetic. It handled no negative number and the compiler could not tell
+// its rune conversion was in range.
+func itoa(n int) string { return strconv.Itoa(n) }
 
 // sortEntries sorts audit results by severity (critical first), then by name.
 func sortEntries(entries []EntryResult) {
@@ -78,10 +78,10 @@ func FormatHuman(r *Report) string {
 	if len(critical) > 0 {
 		sb.WriteString("CRITICAL — leaked or trivially guessable passwords:\n")
 		for _, e := range critical {
-			sb.WriteString(fmt.Sprintf("  %s\n", e.Name))
+			fmt.Fprintf(&sb, "  %s\n", e.Name)
 			for _, f := range e.Findings {
 				if f.Severity == Critical {
-					sb.WriteString(fmt.Sprintf("    - %s\n", f.Detail))
+					fmt.Fprintf(&sb, "    - %s\n", f.Detail)
 				}
 			}
 		}
@@ -91,10 +91,10 @@ func FormatHuman(r *Report) string {
 	if len(warnings) > 0 {
 		sb.WriteString("WARNING — weak or reused passwords:\n")
 		for _, e := range warnings {
-			sb.WriteString(fmt.Sprintf("  %s\n", e.Name))
+			fmt.Fprintf(&sb, "  %s\n", e.Name)
 			for _, f := range e.Findings {
 				if f.Severity == Warning {
-					sb.WriteString(fmt.Sprintf("    - %s\n", f.Detail))
+					fmt.Fprintf(&sb, "    - %s\n", f.Detail)
 				}
 			}
 		}
@@ -104,21 +104,21 @@ func FormatHuman(r *Report) string {
 	if len(info) > 0 {
 		sb.WriteString("INFO — expired passwords:\n")
 		for _, e := range info {
-			sb.WriteString(fmt.Sprintf("  %s\n", e.Name))
+			fmt.Fprintf(&sb, "  %s\n", e.Name)
 			for _, f := range e.Findings {
 				if f.Severity == Info {
-					sb.WriteString(fmt.Sprintf("    - %s\n", f.Detail))
+					fmt.Fprintf(&sb, "    - %s\n", f.Detail)
 				}
 			}
 		}
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("Total: %d | Audited: %d | Critical: %d | Warning: %d | Info: %d | Clean: %d\n",
-		r.Stats.Total, r.Stats.Audited, r.Stats.Critical, r.Stats.Warning, r.Stats.Info, r.Stats.Clean))
+	fmt.Fprintf(&sb, "Total: %d | Audited: %d | Critical: %d | Warning: %d | Info: %d | Clean: %d\n",
+		r.Stats.Total, r.Stats.Audited, r.Stats.Critical, r.Stats.Warning, r.Stats.Info, r.Stats.Clean)
 
 	if len(r.Skipped) > 0 {
-		sb.WriteString(fmt.Sprintf("\nSkipped: %d entries could not be decrypted\n", len(r.Skipped)))
+		fmt.Fprintf(&sb, "\nSkipped: %d entries could not be decrypted\n", len(r.Skipped))
 	}
 
 	return sb.String()

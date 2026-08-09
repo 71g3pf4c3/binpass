@@ -248,6 +248,8 @@ func TestGitRemote_PushPull(t *testing.T) {
 	storeDir2 := filepath.Join(tmp, "store2")
 	require.NoError(t, os.MkdirAll(storeDir2, 0o755))
 	runGit(t, storeDir2, "clone", bareDir, ".")
+	// A clone inherits no author, and the host may have no global identity.
+	configureGit(t, storeDir2, "Test", "test@binpass.dev")
 	data, err := os.ReadFile(filepath.Join(storeDir2, "sites", "example.gpg"))
 	require.NoError(t, err)
 	assert.Equal(t, "content", string(data))

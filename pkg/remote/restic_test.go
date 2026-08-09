@@ -273,32 +273,39 @@ func TestResticRemote_Forget(t *testing.T) {
 // TestResticRemote_NewResticRemoteValidation tests that NewResticRemote
 // validates its inputs.
 func TestResticRemote_NewResticRemoteValidation(t *testing.T) {
+	// An explicit path stands in for the binary, so that the argument
+	// checks are exercised on machines without restic installed.
+	const resticPath = "/nonexistent/restic"
+
 	// Missing repo.
 	_, err := NewResticRemote(ResticOptions{
-		Name:     "test",
-		Repo:     "",
-		Password: "pw",
-		StoreDir: t.TempDir(),
+		Name:       "test",
+		Repo:       "",
+		Password:   "pw",
+		StoreDir:   t.TempDir(),
+		ResticPath: resticPath,
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "repo is required")
 
 	// Missing store dir.
 	_, err = NewResticRemote(ResticOptions{
-		Name:     "test",
-		Repo:     "/tmp/repo",
-		Password: "pw",
-		StoreDir: "",
+		Name:       "test",
+		Repo:       "/tmp/repo",
+		Password:   "pw",
+		StoreDir:   "",
+		ResticPath: resticPath,
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "store directory is required")
 
 	// Non-existent store dir.
 	_, err = NewResticRemote(ResticOptions{
-		Name:     "test",
-		Repo:     "/tmp/repo",
-		Password: "pw",
-		StoreDir: "/nonexistent/path/that/does/not/exist",
+		Name:       "test",
+		Repo:       "/tmp/repo",
+		Password:   "pw",
+		StoreDir:   "/nonexistent/path/that/does/not/exist",
+		ResticPath: resticPath,
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "store directory")

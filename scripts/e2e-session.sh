@@ -193,29 +193,35 @@ wait $clip_pid
 check "X11 clipboard restored" "X11-PREVIOUS" "$(xclip -selection clipboard -out)"
 [[ -n $wayland_display_saved ]] && export WAYLAND_DISPLAY=$wayland_display_saved
 
-# ------------------------------------------------------------------ launchers
+# --------------------------------------------------------------------- picker
 
-section "Launcher scripts"
+section "Picker"
 
 printf 'launchsecret\nusername: bob\n' | binpass insert -m apps/one >/dev/null
 
+# The picker path that `binpass menu` drives internally, and that any
+# hand-written launcher builds on: a flat list in, a chosen entry out.
 check "ls --format=plain feeds a picker" "apps/one" \
 	"$(binpass ls --format=plain | fzf --filter=apps/one | head -1)"
 
-echo "BEFORE-LAUNCHER" | wl-copy
+echo "BEFORE-PICK" | wl-copy
 entry=$(binpass ls --format=plain | fzf --filter=apps/one | head -1)
 timeout 15 binpass show --clip "$entry" >/dev/null 2>&1 &
 clip_pid=$!
 sleep 1
-check "binpass-fzf path copies the secret" "launchsecret" "$(wl-paste -n)"
+check "the picked entry reaches the clipboard" "launchsecret" "$(wl-paste -n)"
 wait $clip_pid
-check "binpass-fzf path restores the clipboard" "BEFORE-LAUNCHER" "$(wl-paste -n)"
+check "the clipboard is restored afterwards" "BEFORE-PICK" "$(wl-paste -n)"
 
-for script in binpass-rofi binpass-fzf binpass-dmenu; do
-	bash -n "/usr/local/bin/$script" \
-		&& ok "$script is syntactically valid" \
-		|| bad "$script has a syntax error"
-done
+# `binpass menu` is the built-in replacement for passmenu and rofi-pass. It
+# needs a picker binary present but must not need a wrapper script.
+menu_help=$(binpass menu --help 2>&1)
+grep -q -- "--launcher" <<<"$menu_help" \
+	&& ok "menu exposes a launcher choice" \
+	|| bad "menu has no --launcher flag" "--launcher" "$menu_help"
+grep -q -- "--type" <<<"$menu_help" \
+	&& ok "menu can type as well as copy" \
+	|| bad "menu cannot type the secret"
 
 # ----------------------------------------------------------------- completion
 
@@ -320,12 +326,6 @@ grep -q "shadowed by the builtin" <<<"$listing" \
 	|| bad "a plugin shadowed by a builtin is not explained"
 
 rm -f "$plugin_dir/binpass-show"
-
-# The launcher scripts shipped in contrib are named binpass-*, so they are
-# plugins whether or not that was the intent: `binpass fzf` must reach them.
-grep -q "binpass fzf" <<<"$(binpass plugin list 2>&1)" \
-	&& ok "contrib launchers are discoverable as plugins" \
-	|| bad "the contrib launchers are not visible to plugin discovery"
 
 # --------------------------------------------------------------------- report
 

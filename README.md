@@ -114,16 +114,10 @@ have to parse the tree output:
 binpass ls --format=plain | rofi -dmenu -i -p pass
 ```
 
-That one line is the core of `rofi-pass`. The scripts in [`contrib/`](contrib/)
-build on it:
-
-| Script | What it does |
-|---|---|
-| [`binpass-rofi`](contrib/binpass-rofi) | Two-step rofi menu: pick an entry, then copy / type / autofill / OTP |
-| [`binpass-fzf`](contrib/binpass-fzf) | Terminal picker with a preview pane that masks the password |
-| [`binpass-dmenu`](contrib/binpass-dmenu) | Minimal passmenu replacement, works on X11 and Wayland |
-
-A complete rofi-pass equivalent, in full:
+That one line is the core of `rofi-pass`. If `binpass menu` does not do what
+you want, a complete rofi-pass equivalent is short enough to keep in your
+dotfiles. Name it `binpass-rofi`, put it on your `PATH`, and it becomes
+`binpass rofi`:
 
 ```bash
 #!/usr/bin/env bash
@@ -147,6 +141,10 @@ esac
 The upstream `rofi-pass` needs about 900 lines to do this, because pass gives
 it nothing to build on: it walks the store itself, parses human-readable
 output and drives `gpg` by hand.
+
+binpass ships no launcher scripts of its own. `binpass menu` covers what they
+did, and anything it does not cover is a plugin you write in a dozen lines
+rather than a script this repository has to keep working on four desktops.
 
 Copying always restores the clipboard's previous contents afterwards, and only
 if the secret is still there, so it never clobbers something you copied in the

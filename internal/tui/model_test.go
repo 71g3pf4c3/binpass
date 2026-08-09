@@ -411,7 +411,7 @@ func TestModelDelete(t *testing.T) {
 	_ = updated.(Model)
 
 	// Simulate enter key.
-	m2 := Model(m)
+	m2 := m
 	m2.confirmFocus = 0
 	m2.confirmAction = "delete"
 	m2.confirmTarget = "entry1"

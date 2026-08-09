@@ -156,10 +156,15 @@ func NewNoopBackend(storeDir string) *NoopBackend {
 	return &NoopBackend{dir: storeDir}
 }
 
+// Log reports no history, since a store without a repository has none.
 func (n *NoopBackend) Log(string, LogOption) ([]Commit, error) { return nil, nil }
+
+// Show reports that no revision can be read.
 func (n *NoopBackend) Show(string, string) ([]byte, error) {
 	return nil, fmt.Errorf("vcs: not a git repository")
 }
+
+// Dir returns the store directory.
 func (n *NoopBackend) Dir() string { return n.dir }
 
 // DetectBackend returns a GitBackend if the store directory contains a .git
@@ -174,6 +179,8 @@ func DetectBackend(storeDir string) Backend {
 // isGitRepo reports whether dir contains a .git entry.
 func isGitRepo(dir string) bool {
 	// Quick check: .git can be a directory (standard) or a file (worktree).
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
+	// The only variable is the store directory, which git receives as a
+	// separate argument and never interprets as a command.
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--git-dir") //nolint:gosec // a directory path, passed as an argument.
 	return cmd.Run() == nil
 }

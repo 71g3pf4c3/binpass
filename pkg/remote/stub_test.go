@@ -20,7 +20,7 @@ func TestMemRemote_PutGet(t *testing.T) {
 
 	rc, gotRev, err := m.Get(ctx, "a.gpg")
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	data, err := io.ReadAll(rc)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(data))
@@ -87,7 +87,7 @@ func TestMemRemote_Rename(t *testing.T) {
 
 	rc, _, err := m.Get(ctx, "new.gpg")
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	data, _ := io.ReadAll(rc)
 	assert.Equal(t, "data", string(data))
 }

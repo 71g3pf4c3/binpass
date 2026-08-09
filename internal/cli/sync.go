@@ -52,7 +52,7 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	deviceID, err := db.DeviceID()
 	if err != nil {
@@ -218,7 +218,7 @@ func (a *App) applyActions(ctx context.Context, s interface {
 				return fmt.Errorf("sync: pull %q from remote: %w", act.Path, err)
 			}
 			data, err := io.ReadAll(rc)
-			rc.Close()
+			_ = rc.Close()
 			if err != nil {
 				return fmt.Errorf("sync: read remote %q: %w", act.Path, err)
 			}
@@ -257,7 +257,7 @@ func (a *App) applyActions(ctx context.Context, s interface {
 					return fmt.Errorf("sync: pull conflict remote %q: %w", act.Path, err)
 				}
 				remoteData, err := io.ReadAll(rc)
-				rc.Close()
+				_ = rc.Close()
 				if err != nil {
 					return fmt.Errorf("sync: read conflict remote %q: %w", act.Path, err)
 				}
@@ -395,7 +395,7 @@ func (a *App) buildRemote(name string) (remote.Remote, error) {
 			Remote: remotePath,
 		})
 	default:
-		return remote.RemoteFromConfig(rc.Type, map[string]string{
+		return remote.FromConfig(rc.Type, map[string]string{
 			"name":   name,
 			"url":    rc.URL,
 			"folder": rc.Folder,
@@ -425,10 +425,10 @@ func sExts(s interface{ Dir() string }) []string {
 // remoteFilesToSnapshot converts a list of RemoteFile into a Snapshot. It
 // preserves existing version vectors from the base for files that have not
 // changed.
-func remoteFilesToSnapshot(files []remote.RemoteFile, base sync.Snapshot, deviceID sync.DeviceID) sync.Snapshot {
+func remoteFilesToSnapshot(files []remote.File, base sync.Snapshot, deviceID sync.DeviceID) sync.Snapshot {
 	snap := make(sync.Snapshot, len(files))
 	for _, f := range files {
-		vv := sync.VersionVector{}
+		var vv sync.VersionVector
 		if b, ok := base[f.Path]; ok {
 			vv = b.Version.Clone()
 		} else {

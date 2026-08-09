@@ -167,7 +167,7 @@ func (r *ResticRemote) Push(ctx context.Context) error {
 // List returns all .gpg and .age files in the latest snapshot. It queries the
 // restic repository via "restic ls latest --json" and records the snapshot ID as
 // the revision for conditional writes.
-func (r *ResticRemote) List(ctx context.Context) ([]RemoteFile, error) {
+func (r *ResticRemote) List(ctx context.Context) ([]File, error) {
 	if err := r.ensureInit(ctx); err != nil {
 		return nil, err
 	}
@@ -185,7 +185,7 @@ func (r *ResticRemote) List(ctx context.Context) ([]RemoteFile, error) {
 		return nil, fmt.Errorf("remote/restic: ls: %w", err)
 	}
 
-	var files []RemoteFile
+	var files []File
 	for _, line := range bytes.Split(out, []byte{'\n'}) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
@@ -215,7 +215,7 @@ func (r *ResticRemote) List(ctx context.Context) ([]RemoteFile, error) {
 		if entry.Mtime != "" {
 			modTime, _ = time.Parse(time.RFC3339, entry.Mtime)
 		}
-		files = append(files, RemoteFile{
+		files = append(files, File{
 			Path:    path,
 			Size:    entry.Size,
 			ModTime: modTime,
@@ -309,7 +309,7 @@ func (r *ResticRemote) Rename(_ context.Context, from, to string) error {
 	fromAbs := filepath.Join(r.storeDir, from)
 	toAbs := filepath.Join(r.storeDir, to)
 
-	if err := os.MkdirAll(filepath.Dir(toAbs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(toAbs), storeDirPerm); err != nil {
 		return fmt.Errorf("remote/restic: mkdir for rename %q: %w", to, err)
 	}
 	if err := os.Rename(fromAbs, toAbs); err != nil {
@@ -358,10 +358,10 @@ func (r *ResticRemote) Restore(ctx context.Context, snapshotID, targetDir string
 	}
 	// Restore to a staging area first.
 	staging := targetDir + ".staging"
-	if err := os.MkdirAll(staging, 0o755); err != nil {
+	if err := os.MkdirAll(staging, storeDirPerm); err != nil {
 		return fmt.Errorf("remote/restic: mkdir staging %q: %w", staging, err)
 	}
-	defer os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging) }()
 
 	args := r.buildArgs("restore", snapshotID, "--target", staging)
 	if _, err := r.run(ctx, args); err != nil {
@@ -396,7 +396,11 @@ func (r *ResticRemote) Restore(ctx context.Context, snapshotID, targetDir string
 		srcDir = candidate
 	} else {
 		// Fallback: walk staging to find a directory matching storeBase.
-		filepath.Walk(staging, func(path string, info os.FileInfo, walkErr error) error {
+		//
+		// A failure here must not be ignored: srcDir would stay at its
+		// initial value and the restore would copy the wrong tree over the
+		// store.
+		if err := filepath.Walk(staging, func(path string, info os.FileInfo, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
@@ -405,7 +409,9 @@ func (r *ResticRemote) Restore(ctx context.Context, snapshotID, targetDir string
 				return filepath.SkipAll
 			}
 			return nil
-		})
+		}); err != nil {
+			return fmt.Errorf("remote/restic: locate %q in the restored snapshot: %w", storeBase, err)
+		}
 	}
 
 	// Copy from srcDir to targetDir.
@@ -441,7 +447,9 @@ func (r *ResticRemote) buildArgs(cmd string, extra ...string) []string {
 
 // run executes a restic command and returns its stdout.
 func (r *ResticRemote) run(ctx context.Context, args []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, r.resticPath, args...)
+	// A fixed binary with arguments assembled by buildArgs; the repository
+	// and store paths are operands, never a command line to be parsed.
+	cmd := exec.CommandContext(ctx, r.resticPath, args...) //nolint:gosec // fixed binary, arguments built internally.
 	cmd.Dir = r.storeDir
 
 	// Build environment: inherit + RESTIC_PASSWORD + extra env.
@@ -569,10 +577,10 @@ func isDotfile(path string) bool {
 // creating parent directories as needed. This mirrors GitRemote.writeWorktree.
 func resticWriteWorktree(absPath string, data []byte) error {
 	dir := filepath.Dir(absPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, storeDirPerm); err != nil {
 		return fmt.Errorf("remote/restic: mkdir %q: %w", dir, err)
 	}
-	if err := os.WriteFile(absPath, data, 0o644); err != nil {
+	if err := os.WriteFile(absPath, data, storeFilePerm); err != nil {
 		return fmt.Errorf("remote/restic: write %q: %w", absPath, err)
 	}
 	return nil
@@ -603,14 +611,14 @@ func resticMoveAll(srcDir, dstDir string) error {
 			return nil
 		}
 		dstPath := filepath.Join(dstDir, rel)
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dstPath), storeDirPerm); err != nil {
 			return err
 		}
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path comes from walking the snapshot we restored.
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dstPath, data, 0o644)
+		return os.WriteFile(dstPath, data, storeFilePerm) //nolint:gosec // dstPath is joined under dstDir.
 	})
 }
 

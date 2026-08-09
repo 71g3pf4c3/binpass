@@ -50,12 +50,12 @@ func (m *MemRemote) Name() string { return m.name }
 func (m *MemRemote) Caps() Caps { return m.caps }
 
 // List returns all stored files.
-func (m *MemRemote) List(_ context.Context) ([]RemoteFile, error) {
+func (m *MemRemote) List(_ context.Context) ([]File, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []RemoteFile
+	var out []File
 	for path, f := range m.files {
-		out = append(out, RemoteFile{
+		out = append(out, File{
 			Path:    path,
 			Size:    int64(len(f.data)),
 			ModTime: f.modTime,

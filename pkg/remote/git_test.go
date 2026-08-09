@@ -30,7 +30,7 @@ func TestGitRemote_Integration(t *testing.T) {
 		Dir:  storeDir,
 	})
 	require.NoError(t, err)
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 
 	// Caps should report git capabilities.
 	caps := g.Caps()
@@ -58,7 +58,7 @@ func TestGitRemote_Integration(t *testing.T) {
 	// Get the file back.
 	rc, rev, err := g.Get(ctx, "github.com/alice.gpg")
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	assert.Equal(t, rev1, rev)
 
 	// Put a second file in a subdirectory.
@@ -128,7 +128,7 @@ func TestGitRemote_PassCompatible(t *testing.T) {
 		Dir:  storeDir,
 	})
 	require.NoError(t, err)
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 
 	// Put a file via GitRemote.
 	_, err = g.Put(ctx, "sites/example.gpg", bytes.NewReader([]byte("test-content")), "")
@@ -228,7 +228,7 @@ func TestGitRemote_PushPull(t *testing.T) {
 
 	g, err := NewGitRemote(GitOptions{Name: "origin", Dir: storeDir})
 	require.NoError(t, err)
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 
 	// Name and Lock.
 	assert.Equal(t, "origin", g.Name())
@@ -255,7 +255,7 @@ func TestGitRemote_PushPull(t *testing.T) {
 	// Make a change in the second store.
 	g2, err := NewGitRemote(GitOptions{Name: "origin", Dir: storeDir2})
 	require.NoError(t, err)
-	defer g2.Close()
+	defer func() { _ = g2.Close() }()
 
 	_, err = g2.Put(ctx, "sites/example.gpg", bytes.NewReader([]byte("updated")), rev)
 	require.NoError(t, err)
@@ -265,7 +265,7 @@ func TestGitRemote_PushPull(t *testing.T) {
 	require.NoError(t, g.Pull(ctx))
 	rc, newRev, err := g.Get(ctx, "sites/example.gpg")
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(rc)
 	assert.Equal(t, "updated", buf.String())
@@ -286,7 +286,7 @@ func TestGitRemote_DeleteAndRename(t *testing.T) {
 
 	g, err := NewGitRemote(GitOptions{Name: "origin", Dir: storeDir})
 	require.NoError(t, err)
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 
 	// Put two files.
 	_, err = g.Put(ctx, "sites/a.gpg", bytes.NewReader([]byte("aaa")), "")
@@ -333,7 +333,7 @@ func TestRemoteFromConfig(t *testing.T) {
 	runGit(t, tmp, "add", ".gitattributes")
 	runGit(t, tmp, "commit", "-m", "init")
 
-	r, err := RemoteFromConfig("git", map[string]string{
+	r, err := FromConfig("git", map[string]string{
 		"name": "test",
 		"dir":  tmp,
 	})
@@ -342,6 +342,6 @@ func TestRemoteFromConfig(t *testing.T) {
 	assert.Equal(t, "test", r.Name())
 
 	// Unknown type.
-	_, err = RemoteFromConfig("ftp", map[string]string{})
+	_, err = FromConfig("ftp", map[string]string{})
 	assert.Error(t, err)
 }

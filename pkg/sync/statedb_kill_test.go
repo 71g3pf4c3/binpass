@@ -59,7 +59,7 @@ func TestStateDB_WALRecoveryAfterKill(t *testing.T) {
 	// Step 4: Reopen the database. WAL replay must restore consistency.
 	db2, err := OpenStateDB(dir)
 	require.NoError(t, err)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	// Verify that the WAL entries were replayed correctly.
 	base, err := db2.LoadBase()

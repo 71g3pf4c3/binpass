@@ -160,7 +160,7 @@ func isConflictFile(name string) bool {
 }
 
 // conflictToOriginal converts a conflict file name back to the original path.
-// "github.com/alice.conflict-thinkpad-20260808T142233.gpg" → "github.com/alice.gpg"
+// "github.com/alice.conflict-thinkpad-20260808T142233.gpg" → "github.com/alice.gpg".
 func conflictToOriginal(name string) string {
 	if !isConflictFile(name) {
 		return name

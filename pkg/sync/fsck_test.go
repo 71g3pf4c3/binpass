@@ -18,7 +18,7 @@ func TestFsck_CleanStore(t *testing.T) {
 
 	db, err := OpenStateDB(stateDir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	results, err := Fsck(storeDir, stateDir, db)
 	require.NoError(t, err)
@@ -35,7 +35,7 @@ func TestFsck_UntrackedFile(t *testing.T) {
 
 	db, err := OpenStateDB(stateDir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	results, err := Fsck(storeDir, stateDir, db)
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func TestFsck_OrphanedState(t *testing.T) {
 
 	db, err := OpenStateDB(stateDir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Put a file in state.db that doesn't exist on disk.
 	fs := &FileState{
@@ -84,7 +84,7 @@ func TestFsck_SizeDrift(t *testing.T) {
 
 	db, err := OpenStateDB(stateDir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Record different size in state.db.
 	fs := &FileState{
@@ -118,7 +118,7 @@ func TestFsck_StateInStore(t *testing.T) {
 
 	db, err := OpenStateDB(stateDir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	results, err := Fsck(storeDir, stateDir, db)
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestFsck_MissingRecipients(t *testing.T) {
 
 	db, err := OpenStateDB(stateDir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	results, err := Fsck(storeDir, stateDir, db)
 	require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestFsck_ConflictFileForOrphan(t *testing.T) {
 
 	db, err := OpenStateDB(stateDir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Put an orphaned entry whose conflict file exists.
 	fs := &FileState{
@@ -200,7 +200,7 @@ func TestFsck_HashDrift(t *testing.T) {
 
 	db, err := OpenStateDB(stateDir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Record the file in state.db with the same size but different hash.
 	// Compute the hash of "original content".

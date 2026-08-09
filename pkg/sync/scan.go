@@ -100,7 +100,7 @@ func Scan(storeDir string, base Snapshot, device DeviceID, exts []string) (Snaps
 		}
 
 		// File changed or new. Build a new FileState.
-		vv := VersionVector{}
+		var vv VersionVector
 		if base, ok := base[rel]; ok {
 			// Existing file that changed: increment the local device counter.
 			vv = base.Version.Increment(device, 1)

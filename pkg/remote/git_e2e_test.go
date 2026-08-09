@@ -55,11 +55,11 @@ func TestGitRemote_TwoClientSync(t *testing.T) {
 	// Both create GitRemotes.
 	alice, err := NewGitRemote(GitOptions{Name: "origin", Dir: aliceDir})
 	require.NoError(t, err)
-	defer alice.Close()
+	defer func() { _ = alice.Close() }()
 
 	bob, err := NewGitRemote(GitOptions{Name: "origin", Dir: bobDir})
 	require.NoError(t, err)
-	defer bob.Close()
+	defer func() { _ = bob.Close() }()
 
 	// Alice adds a file and pushes.
 	rev1, err := alice.Put(ctx, "sites/example.gpg", bytes.NewReader([]byte("alice-initial")), "")
@@ -139,11 +139,11 @@ func TestGitRemote_NewFileOnBothSides(t *testing.T) {
 
 	alice, err := NewGitRemote(GitOptions{Name: "origin", Dir: aliceDir})
 	require.NoError(t, err)
-	defer alice.Close()
+	defer func() { _ = alice.Close() }()
 
 	bob, err := NewGitRemote(GitOptions{Name: "origin", Dir: bobDir})
 	require.NoError(t, err)
-	defer bob.Close()
+	defer func() { _ = bob.Close() }()
 
 	// Alice adds a file.
 	_, err = alice.Put(ctx, "bank/tinkoff.gpg", bytes.NewReader([]byte("alice-bank")), "")

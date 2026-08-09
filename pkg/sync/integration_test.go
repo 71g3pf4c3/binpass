@@ -192,7 +192,7 @@ func TestIntegration_FullSyncCycle(t *testing.T) {
 		Name: "test",
 		Caps: remote.Caps{Atomic: true, History: true, Rename: true},
 	})
-	defer rem.Close()
+	defer func() { _ = rem.Close() }()
 
 	deviceA := DeviceID("laptop")
 
@@ -232,10 +232,10 @@ func TestIntegration_FullSyncCycle(t *testing.T) {
 // remoteFilesToSnapshot converts a list of RemoteFile into a Snapshot.
 // This mirrors the CLI helper and is duplicated here to avoid importing
 // the CLI package from tests.
-func remoteFilesToSnapshot(files []remote.RemoteFile, base Snapshot, deviceID DeviceID) Snapshot {
+func remoteFilesToSnapshot(files []remote.File, base Snapshot, deviceID DeviceID) Snapshot {
 	snap := make(Snapshot, len(files))
 	for _, f := range files {
-		vv := VersionVector{}
+		var vv VersionVector
 		if b, ok := base[f.Path]; ok {
 			vv = b.Version.Clone()
 		} else {

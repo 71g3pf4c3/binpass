@@ -64,7 +64,7 @@ func (r *RcloneRemote) Caps() Caps {
 }
 
 // List returns all .gpg and .age files on the remote.
-func (r *RcloneRemote) List(ctx context.Context) ([]RemoteFile, error) {
+func (r *RcloneRemote) List(ctx context.Context) ([]File, error) {
 	// rclone lsf --format "ps" --separator "\t" remote:path
 	out, err := r.rclone(ctx, "lsf",
 		"--format", "ps",
@@ -79,7 +79,7 @@ func (r *RcloneRemote) List(ctx context.Context) ([]RemoteFile, error) {
 		return nil, nil
 	}
 
-	var files []RemoteFile
+	var files []File
 	for _, line := range bytes.Split(out, []byte{'\n'}) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
@@ -99,7 +99,7 @@ func (r *RcloneRemote) List(ctx context.Context) ([]RemoteFile, error) {
 			continue
 		}
 		size, _ := strconv.ParseInt(parts[1], 10, 64)
-		files = append(files, RemoteFile{
+		files = append(files, File{
 			Path: path,
 			Size: size,
 			Rev:  fmt.Sprintf("%d", size), // Use size as weak rev when no ETag available.
@@ -143,7 +143,9 @@ func (r *RcloneRemote) Put(ctx context.Context, path string, content io.Reader, 
 
 	// Write to a temp file for rclone copyto (rclone cannot read from stdin for copyto).
 	// Use rclone rcat instead which reads from stdin.
-	cmd := exec.CommandContext(ctx, r.rclonePath, "rcat", remotePath)
+	// A fixed binary; remotePath is the configured remote plus a store
+	// path, passed as a single operand.
+	cmd := exec.CommandContext(ctx, r.rclonePath, "rcat", remotePath) //nolint:gosec // fixed binary, arguments built internally.
 	cmd.Stdin = bytes.NewReader(data)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("remote/rclone: put %q: %s: %w", path, out, err)
@@ -193,7 +195,7 @@ func (r *RcloneRemote) Close() error { return nil }
 
 // rclone executes an rclone command and returns its stdout.
 func (r *RcloneRemote) rclone(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, r.rclonePath, args...)
+	cmd := exec.CommandContext(ctx, r.rclonePath, args...) //nolint:gosec // fixed binary, arguments built internally.
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("rclone %s: %s: %w", strings.Join(args, " "), out, err)

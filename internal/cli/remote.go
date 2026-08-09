@@ -75,21 +75,6 @@ func newRemoteListCmd(app *App) *cobra.Command {
 	}
 }
 
-// remoteConfigYAML is the on-disk structure for the sync.remotes section.
-// We read/write the entire config file to avoid clobbering other keys.
-type remoteConfigYAML struct {
-	Sync *struct {
-		Remotes map[string]struct {
-			Type            string `yaml:"type,omitempty"`
-			URL             string `yaml:"url,omitempty"`
-			Folder          string `yaml:"folder,omitempty"`
-			SignCommits     bool   `yaml:"sign_commits,omitempty"`
-			Password        string `yaml:"password,omitempty"`
-			PasswordCommand string `yaml:"password_command,omitempty"`
-		} `yaml:"remotes,omitempty"`
-	} `yaml:"sync,omitempty"`
-}
-
 // runRemoteAdd persists a remote to the config file under sync.remotes.<name>.
 func (a *App) runRemoteAdd(remoteType, name string, extra ...string) error {
 	validTypes := map[string]bool{
@@ -168,7 +153,7 @@ func (a *App) runRemoteList() error {
 // and writes it back. Creates the file if it does not exist.
 func upsertRemoteYAML(path, name string, rc config.RemoteConfig) error {
 	root := make(map[string]interface{})
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := os.ReadFile(path); err == nil { //nolint:gosec // path is the resolved binpass config file.
 		_ = yaml.Unmarshal(data, &root)
 	}
 
@@ -212,7 +197,7 @@ func upsertRemoteYAML(path, name string, rc config.RemoteConfig) error {
 // and writes it back.
 func deleteRemoteYAML(path, name string) error {
 	root := make(map[string]interface{})
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := os.ReadFile(path); err == nil { //nolint:gosec // path is the resolved binpass config file.
 		_ = yaml.Unmarshal(data, &root)
 	}
 

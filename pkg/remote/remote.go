@@ -38,8 +38,8 @@ type Caps struct {
 	Watch bool
 }
 
-// RemoteFile is a file listed by a Remote transport.
-type RemoteFile struct {
+// File is a file listed by a Remote transport.
+type File struct {
 	// Path is the store-relative path, for example "github.com/alice.gpg".
 	Path string
 	// Size is the file size in bytes.
@@ -65,7 +65,7 @@ type Remote interface {
 
 	// List returns all files currently on the remote. The sync engine uses
 	// this to build a remote snapshot.
-	List(ctx context.Context) ([]RemoteFile, error)
+	List(ctx context.Context) ([]File, error)
 
 	// Get downloads the file at path. It returns the content, the current
 	// revision, and any error.
@@ -105,10 +105,10 @@ type NoopUnlock struct{}
 // Unlock does nothing.
 func (NoopUnlock) Unlock(_ context.Context) error { return nil }
 
-// RemoteFromConfig creates a Remote from a type string and a map of options.
+// FromConfig creates a Remote from a type string and a map of options.
 // Supported types: "git", "restic", "s3", "gdrive", "yandex", "webdav".
 // Cloud remotes (s3, gdrive, yandex, webdav) are backed by rclone.
-func RemoteFromConfig(remoteType string, opts map[string]string) (Remote, error) {
+func FromConfig(remoteType string, opts map[string]string) (Remote, error) {
 	switch remoteType {
 	case "git":
 		name := opts["name"]
@@ -158,3 +158,16 @@ type errUnknownRemote string
 func (e errUnknownRemote) Error() string {
 	return "remote: unknown type " + string(e)
 }
+
+// Permissions for anything a transport writes into the password store.
+//
+// pass creates entries with a 077 umask, and so does pkg/storage. A transport
+// writing the same files at 0644 would quietly widen access to every entry it
+// synchronised: the ciphertext of a whole store, readable by any other user
+// on the machine.
+const (
+	// storeFilePerm is the mode for an entry written into the store.
+	storeFilePerm = 0o600
+	// storeDirPerm is the mode for a directory created inside the store.
+	storeDirPerm = 0o700
+)

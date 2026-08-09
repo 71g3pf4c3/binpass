@@ -204,3 +204,30 @@ func TestPushWithoutARemoteIsNotSilentlySkipped(t *testing.T) {
 	assert.False(t, r.hasRemote(context.Background()),
 		"a repository with no remotes must not be reported as having one")
 }
+
+// TestSyncedEntriesArePrivate guards the permissions of everything a
+// transport writes.
+//
+// pass creates entries with a 077 umask. A transport writing them at 0644
+// would silently widen access to every entry it synchronised, handing the
+// ciphertext of the whole store to any other user on the machine. Nothing
+// about that failure is visible in normal use.
+func TestSyncedEntriesArePrivate(t *testing.T) {
+	url := bareRepo(t)
+
+	alice := newMachine(t, "alice", url)
+	alice.push(t, "web/site.age", "secret")
+
+	bob := newMachine(t, "bob", url)
+	require.Equal(t, []string{"web/site.age"}, bob.paths(t))
+
+	fi, err := os.Stat(filepath.Join(bob.dir, "web", "site.age"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm(),
+		"a synced entry must be no more readable than one binpass wrote itself")
+
+	di, err := os.Stat(filepath.Join(bob.dir, "web"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), di.Mode().Perm(),
+		"and neither must the directory holding it")
+}

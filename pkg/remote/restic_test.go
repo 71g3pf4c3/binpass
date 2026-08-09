@@ -32,7 +32,7 @@ func TestResticRemote_Integration(t *testing.T) {
 		StoreDir: storeDir,
 	})
 	require.NoError(t, err)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Caps should report restic capabilities.
 	caps := r.Caps()
@@ -68,7 +68,7 @@ func TestResticRemote_Integration(t *testing.T) {
 	// Get the file back.
 	rc, getRev, err := r.Get(ctx, "sites/example.gpg")
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(rc)
 	assert.Equal(t, "encrypted-data", buf.String())
@@ -148,7 +148,7 @@ func TestResticRemote_ConditionalWrite(t *testing.T) {
 		StoreDir: storeDir,
 	})
 	require.NoError(t, err)
-	defer r1.Close()
+	defer func() { _ = r1.Close() }()
 
 	// Client 1: Put + Push.
 	_, err = r1.Put(ctx, "sites/a.gpg", bytes.NewReader([]byte("aaa")), "")
@@ -164,7 +164,7 @@ func TestResticRemote_ConditionalWrite(t *testing.T) {
 		StoreDir: storeDir2,
 	})
 	require.NoError(t, err)
-	defer r2.Close()
+	defer func() { _ = r2.Close() }()
 
 	// Client 2: List to get the snapshot rev.
 	files, err := r2.List(ctx)
@@ -207,7 +207,7 @@ func TestResticRemote_PutConditionalConflict(t *testing.T) {
 		StoreDir: storeDir,
 	})
 	require.NoError(t, err)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Create initial state.
 	_, err = r.Put(ctx, "sites/a.gpg", bytes.NewReader([]byte("aaa")), "")
@@ -249,7 +249,7 @@ func TestResticRemote_Forget(t *testing.T) {
 		StoreDir: storeDir,
 	})
 	require.NoError(t, err)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Create 3 snapshots.
 	for i := 0; i < 3; i++ {

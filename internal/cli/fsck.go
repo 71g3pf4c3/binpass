@@ -33,7 +33,7 @@ func (a *App) runFsck() error {
 	if err != nil {
 		return fmt.Errorf("fsck: open state db: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	results, err := sync.Fsck(storeDir, stateDir, db)
 	if err != nil {

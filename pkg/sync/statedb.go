@@ -32,7 +32,6 @@ import (
 // concurrent opens, and the intended usage is one StateDB per binpass process.
 type StateDB struct {
 	db  *bolt.DB
-	mu  sync.Mutex
 	dir string
 	wal *wal
 }

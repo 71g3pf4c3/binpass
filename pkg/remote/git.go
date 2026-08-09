@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,7 +74,45 @@ func NewGitRemote(opts GitOptions) (*GitRemote, error) {
 			return nil, err
 		}
 	}
+	if err := g.ensurePrivate(ctx); err != nil {
+		return nil, err
+	}
 	return g, nil
+}
+
+// ensurePrivate restricts every store file in the working tree to its owner.
+//
+// Files arriving through checkout are created by git, which applies the
+// user's umask: on a machine with the common 022 that leaves world-readable
+// entries, handing the ciphertext of every synchronised password to any other
+// account. core.sharedRepository does not help, since it governs the
+// repository's own files rather than the checked-out tree, so the modes are
+// set directly.
+func (g *GitRemote) ensurePrivate(_ context.Context) error {
+	return filepath.WalkDir(g.dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Name() == ".git" && d.IsDir() {
+			return filepath.SkipDir
+		}
+		want := os.FileMode(storeFilePerm)
+		if d.IsDir() {
+			want = storeDirPerm
+		} else if !g.belongsInStore(path) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm() == want {
+			return nil
+		}
+		// The worktree is a private directory owned by this process; there is
+		// no window for another user to swap a path for a symlink.
+		return os.Chmod(path, want) //nolint:gosec // walk over our own private worktree.
+	})
 }
 
 // ensureRemoteURL points the git remote at the configured URL, adding it when
@@ -244,12 +283,17 @@ func (g *GitRemote) Push(ctx context.Context) error {
 // List returns all tracked files in the working tree that match the store
 // extensions. It pulls from the remote first so the working tree reflects the
 // latest remote state.
-func (g *GitRemote) List(ctx context.Context) ([]RemoteFile, error) {
+func (g *GitRemote) List(ctx context.Context) ([]File, error) {
 	// Pull first so we see the latest remote state. A failure here must not
 	// be swallowed: an empty listing is indistinguishable from "the remote
 	// has nothing", which the merge engine reads as every remote entry
 	// having been deleted.
 	if err := g.Pull(ctx); err != nil {
+		return nil, err
+	}
+	// Checkout created these files with git's umask, so tighten them before
+	// anything is reported as present.
+	if err := g.ensurePrivate(ctx); err != nil {
 		return nil, err
 	}
 
@@ -262,7 +306,7 @@ func (g *GitRemote) List(ctx context.Context) ([]RemoteFile, error) {
 	}
 	// -z uses NUL as separator.
 	paths := bytes.Split(out, []byte{0})
-	var files []RemoteFile
+	var files []File
 	for _, p := range paths {
 		p = bytes.TrimSpace(p)
 		if len(p) == 0 {
@@ -284,7 +328,7 @@ func (g *GitRemote) List(ctx context.Context) ([]RemoteFile, error) {
 			modTime = time.Time{}
 		}
 		size, _ := g.fileSize(ctx, path)
-		files = append(files, RemoteFile{
+		files = append(files, File{
 			Path:    path,
 			Size:    size,
 			ModTime: modTime,
@@ -420,7 +464,10 @@ func (g *GitRemote) Close() error { return nil }
 
 // git runs a git command in the store directory and returns its stdout.
 func (g *GitRemote) git(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, g.gitPath, args...)
+	// The binary is resolved once from PATH and the arguments are built by
+	// this package; entry paths reach git as operands after "--" or as
+	// pathspecs, never as a command.
+	cmd := exec.CommandContext(ctx, g.gitPath, args...) //nolint:gosec // fixed binary, arguments built internally.
 	cmd.Dir = g.dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -484,7 +531,7 @@ func (g *GitRemote) fileSize(ctx context.Context, path string) (int64, error) {
 		return 0, err
 	}
 	var size int64
-	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &size)
+	_, _ = fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &size)
 	return size, nil
 }
 
@@ -502,10 +549,11 @@ func (g *GitRemote) isNewFile(ctx context.Context, path string) (bool, error) {
 // stages the file.
 func (g *GitRemote) writeWorktree(absPath string, data []byte) error {
 	dir := filepath.Dir(absPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, storeDirPerm); err != nil {
 		return fmt.Errorf("remote/git: mkdir %q: %w", dir, err)
 	}
-	if err := os.WriteFile(absPath, data, 0o644); err != nil {
+	// absPath was resolved against the worktree root by the caller.
+	if err := os.WriteFile(absPath, data, storeFilePerm); err != nil { //nolint:gosec // path confined to the worktree.
 		return fmt.Errorf("remote/git: write %q: %w", absPath, err)
 	}
 	return nil
@@ -513,7 +561,7 @@ func (g *GitRemote) writeWorktree(absPath string, data []byte) error {
 
 // gitCommitMsg returns the commit message matching pass's format.
 // New file:  "Add given password for <name> to store." (pass: cmd_insert)
-// Edit:      "Edit password for <name> using binpass." (pass: cmd_edit uses $EDITOR)
+// Edit:      "Edit password for <name> using binpass." (pass: cmd_edit uses $EDITOR).
 func gitCommitMsg(path string, isNew bool) string {
 	name := stripExt(path)
 	if isNew {

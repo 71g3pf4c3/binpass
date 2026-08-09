@@ -14,7 +14,7 @@ func TestStateDB_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenStateDB(dir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Empty base.
 	base, err := db.LoadBase()
@@ -52,7 +52,7 @@ func TestStateDB_UpdateDeleteFile(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenStateDB(dir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Save initial state.
 	snap := Snapshot{
@@ -92,7 +92,7 @@ func TestStateDB_DeviceID(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenStateDB(dir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	id, err := db.DeviceID()
 	require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestStateDB_LastSync(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenStateDB(dir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ts, err := db.LastSync()
 	require.NoError(t, err)
@@ -150,7 +150,7 @@ func TestStateDB_WALReplay(t *testing.T) {
 	// Reopen: WAL replay should apply the pending entry.
 	db2, err := OpenStateDB(dir)
 	require.NoError(t, err)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	base, err := db2.LoadBase()
 	require.NoError(t, err)
@@ -177,7 +177,7 @@ func TestStateDB_ParallelOps(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenStateDB(dir)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Concurrent file updates should serialise through bbolt.
 	done := make(chan struct{})

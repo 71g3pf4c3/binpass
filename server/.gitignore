@@ -1,6 +1,0 @@
-/bin/
-/dist/
-coverage.out
-*.out
-*.test
-.env

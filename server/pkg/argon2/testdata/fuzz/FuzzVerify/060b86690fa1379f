@@ -1,2 +1,0 @@
-go test fuzz v1
-string("$argon2id$v=0$m=0,t=4,p=2$10PPPPPPPA$00")

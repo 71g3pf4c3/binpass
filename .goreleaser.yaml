@@ -48,6 +48,27 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
+# Keyless signing through Sigstore: the signature is tied to this workflow's
+# OIDC identity, so verification needs no key distributed out of band.
+#
+#   cosign verify-blob checksums.txt \
+#     --signature checksums.txt.sig --certificate checksums.txt.pem \
+#     --certificate-identity-regexp 'https://github.com/71g3pf4c3/binpass/.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#
+# Signing the checksum file covers every artefact listed in it.
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
 # Distribution packages.
 nfpms:
   - id: binpass

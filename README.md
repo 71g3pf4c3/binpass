@@ -229,6 +229,30 @@ Copying always restores the clipboard's previous contents afterwards, and only
 if the secret is still there, so it never clobbers something you copied in the
 meantime.
 
+## Hiding the store
+
+Encryption hides what an entry contains. It does not hide that
+`bank/savings` exists, and file names travel to whatever you sync with.
+`binpass tomb` packs the whole store into one encrypted archive:
+
+```sh
+binpass tomb init            # pack the store; nothing is removed yet
+binpass tomb close           # hide everything
+
+ls -a ~/.password-store
+# .  ..  .age-recipients  store.coffin.age
+
+binpass tomb open --timer=1h # work with it; closes itself after an hour
+```
+
+The archive is encrypted to the store's own recipients, so a hardware token
+that already unlocks your entries unlocks the tomb, with no second password
+to manage. On Linux, locking the screen or suspending closes it.
+
+An open tomb is an ordinary directory, and closing it cannot truly erase the
+plaintext on flash storage. [docs/tomb.md](docs/tomb.md) is explicit about
+both, and covers auto-close, crash recovery, and syncing a closed tomb.
+
 ## Storage format
 
 Identical to pass. The first line is the password, everything after it is free
@@ -503,6 +527,15 @@ it.
 
 **Not supported.** pass extensions written in bash that source pass's internals.
 Everything they do is available natively; see ARCHITECTURE.md §5.
+
+## Guides
+
+| Guide | Covers |
+|---|---|
+| [docs/sync-remotes.md](docs/sync-remotes.md) | Setting up every transport: git, restic, S3, Google Drive, Yandex.Disk, WebDAV. A two-machine walkthrough, conflict resolution, what each provider can see. |
+| [docs/tomb.md](docs/tomb.md) | Hiding the store: backends, auto-close, crash recovery, syncing a closed tomb, and what the tomb does not protect. |
+| [docs/plugins.md](docs/plugins.md) | Writing plugins, the environment they receive, manifests and capabilities, and where the security boundary actually is. |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | The specification the implementation follows, including the parts not built yet. |
 
 ## Development
 

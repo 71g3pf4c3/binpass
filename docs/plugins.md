@@ -266,9 +266,31 @@ binpass audit-usernames
 ```
 
 This one needs `decrypt: true` because it inspects fields. Drop that line and
-the plugin still runs, but every `show` is refused — which is exactly what
-you want if you are reviewing someone else's plugin and are not yet convinced
-it deserves your passwords.
+every `show` is refused:
+
+```
+plugin: denied by capabilities: plugin "audit-usernames" did not request
+decrypt, so it cannot read secrets
+```
+
+Which is exactly what you want when reviewing someone else's plugin and you
+are not yet convinced it deserves your passwords.
+
+Note what the script above does with that refusal: `show ... >/dev/null 2>&1`
+swallows it, so a denied entry looks identical to one that genuinely has no
+username, and the plugin reports nonsense with a straight face. Distinguish
+the two — a plugin that cannot tell "forbidden" from "absent" will mislead
+whoever runs it:
+
+```bash
+if out=$("$BINPASS_BIN" show --field=username "$entry" 2>&1); then
+    : # has one
+elif [[ "$out" == *"denied by capabilities"* ]]; then
+    echo "refused: $entry (grant decrypt to audit this)" >&2
+else
+    printf 'no username: %s\n' "$entry"
+fi
+```
 
 ---
 

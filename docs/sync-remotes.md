@@ -23,6 +23,133 @@ automatically when the transport reports `WeakAtomic` capability.
 
 ---
 
+## 0. Two machines, end to end
+
+The common case, start to finish. Everything below was run as written.
+
+### 0.1 The first machine
+
+```sh
+# A store that already has entries in it.
+binpass init --age age1...
+binpass insert github.com/alice
+
+# Make it a git repository. Set an identity first: git refuses to commit
+# without one, and the failure surfaces later as a confusing sync error.
+cd ~/.password-store
+git init
+git config user.email you@example.com
+git config user.name "Your Name"
+
+binpass remote add git origin git@github.com:you/password-store.git
+binpass sync
+# push   github.com/alice.age
+#   uploading github.com/alice.age
+#   pushing to remote...
+```
+
+### 0.2 The second machine
+
+**Clone the repository; do not run `binpass init`.**
+
+```sh
+git clone git@github.com:you/password-store.git ~/.password-store
+cd ~/.password-store
+git config user.email you@example.com
+git config user.name "Your Name"
+
+binpass remote add git origin git@github.com:you/password-store.git
+binpass sync
+binpass show github.com/alice
+# secret1
+```
+
+`binpass init` on the second machine would write a fresh `.age-recipients`
+and leave you with two stores that disagree about who they are encrypted to.
+Cloning brings the recipients file along with the entries, which is what you
+want.
+
+Running `binpass sync` into an empty directory does not work either:
+
+```
+Error: password store is empty. Try "binpass init".
+```
+
+The store has to exist before it can be synchronised. Clone it.
+
+**Your key does not travel with the repository**, and it must not: the
+repository holds ciphertext only. Copy the identity file to the second
+machine yourself, over a channel you trust:
+
+```sh
+# On the first machine.
+age -p -o identity.age ~/.local/share/binpass/identities.age   # passphrase-wrapped
+# ... move identity.age across, then on the second machine:
+age -d -o ~/.local/share/binpass/identities.age identity.age
+chmod 600 ~/.local/share/binpass/identities.age
+```
+
+A hardware token avoids this step entirely: plug it into either machine and
+nothing secret ever has to be copied.
+
+### 0.3 Day to day
+
+```sh
+binpass sync              # both directions: pull, merge, push
+binpass sync --dry-run    # show the plan, change nothing
+```
+
+### 0.4 When both machines changed the same entry
+
+Nothing is overwritten and nothing is lost. The remote version keeps the
+original name, and your local one is saved beside it:
+
+```
+push   github.com/alice.age
+push   github.com/alice.conflict-thinkpad-20260810T204032.age
+```
+
+```sh
+binpass conflicts list
+# github.com/alice.conflict-thinkpad-20260810T204032  (conflict of github.com/alice)
+
+# Compare them. Passwords are masked unless you ask.
+binpass conflicts diff github.com/alice.conflict-thinkpad-20260810T204032
+# --- github.com/alice.conflict-thinkpad-20260810T204032 (local)
+# +++ github.com/alice (remote)
+# - ***********
+# + ************
+
+binpass conflicts diff --show-secrets github.com/alice.conflict-thinkpad-20260810T204032
+```
+
+Then pick one:
+
+```sh
+# Keep what this machine had; it goes back under the original name.
+binpass conflicts resolve github.com/alice.conflict-... --strategy=local
+
+# Keep what the other machine had; the conflict file is dropped.
+binpass conflicts resolve github.com/alice.conflict-... --strategy=remote
+
+# Decide later.
+binpass conflicts resolve github.com/alice.conflict-... --strategy=both
+```
+
+Sync again afterwards so the other machine sees the resolution.
+
+### 0.5 Checking the store is sound
+
+```sh
+binpass fsck
+```
+
+Reports entries the sync database does not know about, orphaned state, and —
+as an error — a `state.db` that ended up inside the store. A warning about an
+untracked file is normal right after you add an entry and before you sync.
+
+---
+
 ## 1. git
 
 The default. If your store is already a git repository (and most pass users'

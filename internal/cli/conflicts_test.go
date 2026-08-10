@@ -56,7 +56,7 @@ func TestConflictsDiffOnAMissingEntry(t *testing.T) {
 	assert.ErrorContains(t, err, "cannot read conflict files")
 }
 
-func TestConflictsResolveLocalRemovesTheRemoteVersion(t *testing.T) {
+func TestConflictsResolveLocalRestoresTheOriginalName(t *testing.T) {
 	app := newTestApp(t)
 	app.set(t, "alice", "remote-secret\n")
 	app.set(t, "alice.conflict-thinkpad-20260808T142233", "local-secret\n")
@@ -65,8 +65,14 @@ func TestConflictsResolveLocalRemovesTheRemoteVersion(t *testing.T) {
 
 	s, err := app.Store()
 	require.NoError(t, err)
-	assert.False(t, s.Exists("alice"))
-	assert.True(t, s.Exists("alice.conflict-thinkpad-20260808T142233"))
+	// Keeping the local version means it is reachable under the name the
+	// user actually types, not left behind as a conflict file.
+	assert.False(t, s.Exists("alice.conflict-thinkpad-20260808T142233"))
+	require.True(t, s.Exists("alice"))
+
+	sec, err := s.Get("alice")
+	require.NoError(t, err)
+	assert.Equal(t, "local-secret", sec.Password())
 }
 
 func TestConflictsResolveRemoteRemovesTheConflictFile(t *testing.T) {

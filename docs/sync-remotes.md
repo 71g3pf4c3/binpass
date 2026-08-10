@@ -610,9 +610,9 @@ sync:
 
 ### State directory
 
-The sync state database is stored at `$XDG_STATE_HOME/binpass/sync/state.db`
-(default `~/.local/state/binpass/sync/state.db`). This directory is **always
-outside the password store**. If state.db were inside the store:
+The sync state database is stored at `$XDG_STATE_HOME/binpass/state.db`
+(default `~/.local/state/binpass/state.db`), or wherever `BINPASS_STATE_DIR`
+points. This directory is **always outside the password store**. If state.db were inside the store:
 
 1. It would be committed to git, mixing device-specific state with the shared
    store.

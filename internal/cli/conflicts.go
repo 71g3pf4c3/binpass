@@ -138,10 +138,18 @@ func (a *App) runConflictsResolve(path, strategy string) error {
 
 	switch strategy {
 	case "local":
-		// Keep the local (conflict) file, remove the remote (original).
+		// Keep the local version, which means putting it back under the
+		// original name. Deleting the remote copy and stopping would leave
+		// the entry reachable only as "alice.conflict-thinkpad-2026...",
+		// which is not what "keep the local one" means to anyone.
 		original := conflictToOriginal(path)
-		fmt.Fprintf(a.Out, "Resolving %s: keeping local, removing %s.\n", path, original)
-		return s.Remove(original)
+		fmt.Fprintf(a.Out, "Resolving %s: keeping local as %s.\n", path, original)
+		if s.Exists(original) {
+			if err := s.Remove(original); err != nil {
+				return err
+			}
+		}
+		return s.Move(path, original)
 	case "remote":
 		// Keep the remote (original) file, remove the conflict.
 		fmt.Fprintf(a.Out, "Resolving %s: keeping remote, removing %s.\n", originalFromConflict(path), path)

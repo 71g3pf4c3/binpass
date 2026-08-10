@@ -5,6 +5,7 @@ package tomb
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -223,20 +224,23 @@ func DoctorCheck() string {
 		defer func() { _ = sysConn.Close() }()
 	}
 
-	result := "D-Bus: "
+	// Joining the parts rather than appending them keeps the separators
+	// right: concatenation produced "logind suspendno screensaver detected"
+	// on a machine with logind but no screensaver.
+	var parts []string
 	if gnome {
-		result += "GNOME screensaver, "
+		parts = append(parts, "GNOME screensaver")
 	}
 	if fd {
-		result += "freedesktop screensaver, "
+		parts = append(parts, "freedesktop screensaver")
 	}
 	if sysConn != nil {
-		result += "logind suspend"
+		parts = append(parts, "logind suspend")
 	}
 	if !gnome && !fd {
-		result += "no screensaver detected (timer-only auto-close)"
+		parts = append(parts, "no screensaver detected (timer-only auto-close)")
 	}
-	return result
+	return "D-Bus: " + strings.Join(parts, ", ")
 }
 
 // FormatWatcherStatus returns a human-readable description of the watcher

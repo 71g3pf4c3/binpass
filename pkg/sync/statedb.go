@@ -20,7 +20,7 @@ import (
 //
 // # Location
 //
-// The database lives at $XDG_DATA_HOME/binpass/sync/state.db, never inside the
+// The database lives at $XDG_STATE_HOME/binpass/state.db, never inside the
 // password store. If the state leaked into the store it would end up in git
 // history and on cloud drives, and `pass git status` would show noise.
 //
@@ -318,7 +318,7 @@ func (s *StateDB) replayWAL() error {
 
 // ErrStateInStore reports that the state database was found inside the
 // password store, which would leak device-specific data through git and cloud.
-var ErrStateInStore = errors.New("sync: state.db is inside the password store; move it to XDG_DATA_HOME/binpass/sync")
+var ErrStateInStore = errors.New("sync: state.db is inside the password store; move it to XDG_STATE_HOME/binpass")
 
 // CheckStateLocation verifies that the state database is not inside the
 // password store directory. This is a prerequisite for `binpass fsck`.

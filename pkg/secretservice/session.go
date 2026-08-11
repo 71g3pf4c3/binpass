@@ -187,11 +187,18 @@ func padToPrime(n *big.Int) []byte {
 // added when the input is already aligned, so that unpadding is never
 // ambiguous.
 func padPKCS7(b []byte, blockSize int) []byte {
+	// PKCS#7 cannot express a pad longer than 255, and AES blocks are 16, so
+	// this is unreachable — but the padding byte is what the other side
+	// trusts to find the end of the plaintext, and a silently truncated
+	// count would corrupt every secret rather than fail loudly.
+	if blockSize <= 0 || blockSize > 255 {
+		panic("secretservice: block size out of range for PKCS#7")
+	}
 	n := blockSize - len(b)%blockSize
 	out := make([]byte, len(b)+n)
 	copy(out, b)
 	for i := len(b); i < len(out); i++ {
-		out[i] = byte(n)
+		out[i] = byte(n) //nolint:gosec // n is in 1..blockSize, bounded above.
 	}
 	return out
 }

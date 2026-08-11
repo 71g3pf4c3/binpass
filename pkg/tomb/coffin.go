@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"filippo.io/age"
@@ -444,8 +445,11 @@ func hasPlaintext(dir string) bool {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		// Dotfiles and the coffin file are expected even when closed.
-		if name[0] == '.' || name == coffinFileName {
+		// Dotfiles and any backend's own container are expected even when
+		// closed. Counting the LUKS image as plaintext made every closed
+		// LUKS store look open, and made `init` try to seed a container
+		// with itself.
+		if name[0] == '.' || name == coffinFileName || name == luksImageName || name == luksKeyName {
 			continue
 		}
 		return true
@@ -548,7 +552,11 @@ func isWithin(root, path string) bool {
 	if err != nil {
 		return false
 	}
-	return rel == "." || (len(rel) > 0 && rel[0] != '.'-1 && rel[0] != '.')
+	// Only ".." escapes. Rejecting every path whose first byte is a dot, as
+	// this once did, also rejected ".age-recipients" — a legitimate entry
+	// that merely starts with the same character as the traversal it was
+	// meant to catch.
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // splitLines splits on newlines, keeping empty lines (they are filtered later).

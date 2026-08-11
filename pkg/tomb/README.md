@@ -12,7 +12,7 @@ visible at rest. Three backends provide different trade-offs:
 | LUKS | Linux | Yes | dm-crypt container. Plaintext only in kernel mapping. |
 | Sparsebundle | macOS | No | Encrypted APFS sparse bundle. |
 
-Coffin is the default everywhere. LUKS and sparsebundle are stubs returning
+Coffin is the default everywhere; LUKS is implemented and opt-in. Sparsebundle is a stub returning
 `ErrNotImplemented`.
 
 ## State machine
@@ -50,7 +50,7 @@ Uninitialised ──Init──▶ Closed ──Open──▶ Open ──Close─
 | `mlock_other.go` | `mlockDir`: no-op |
 | `pid_unix.go` | `pidIsDead` via `syscall.Kill(pid, 0)` |
 | `pid_windows.go` | `pidIsDead`: always returns false (conservative) |
-| `luks_linux.go` | LUKS stub: checks cryptsetup on PATH, returns `ErrNotImplemented` |
+| `luks_linux.go` | LUKS backend: drives cryptsetup, mkfs and mount; key file encrypted to the store recipients |
 | `luks_other.go` | LUKS stub: returns `ErrUnsupported` |
 | `sparsebundle_darwin.go` | Sparsebundle stub: checks hdiutil, returns `ErrNotImplemented` |
 | `sparsebundle_other.go` | Sparsebundle stub: returns `ErrUnsupported` |
@@ -190,8 +190,8 @@ run. On signal, `watcher.Stop()` is called to clean up D-Bus connections.
   wear-leveling may remap the physical block. No guarantee of physical
   destruction. The CLI prints a warning on close.
 - **Plaintext exposure window**: the coffin backend cannot avoid having plaintext
-  on disk during the session. Use LUKS (when implemented) for stronger
-  guarantees.
+  on disk during the session. Use LUKS for stronger guarantees: dm-crypt keeps
+  the plaintext in the kernel mapping only.
 - **No filesystem lock**: concurrent Open calls from two processes can race.
   `O_EXCL` provides partial protection (second unpack fails on existing files),
   but the state file may end up inconsistent. Single-user local tool assumption
@@ -249,7 +249,7 @@ Key test scenarios:
 | `mlock_other.go` | — | ✅ | ✅ |
 | `pid_unix.go` | ✅ | ✅ | — |
 | `pid_windows.go` | — | — | ✅ |
-| `luks_linux.go` | ✅ | — | — |
+| `luks_linux.go` | ✅ | — | — |  <!-- unit tests fake the command runner; the real cycle runs in Dockerfile.luks -->
 | `luks_other.go` | — | ✅ | ✅ |
 | `sparsebundle_darwin.go` | — | ✅ | — |
 | `sparsebundle_other.go` | ✅ | — | ✅ |

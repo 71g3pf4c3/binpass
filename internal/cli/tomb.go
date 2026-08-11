@@ -155,9 +155,10 @@ func (a *App) runTombOpen(timer time.Duration) error {
 		return err
 	}
 
-	// Wire up identity resolution for coffin.
-	if c, ok := t.(*tomb.Coffin); ok {
-		c.SetIdentities(a.identities)
+	// Both backends decrypt something with the store's identities: coffin
+	// the archive, LUKS the container key.
+	if ia, ok := t.(tomb.IdentityAware); ok {
+		ia.SetIdentities(a.identities)
 	}
 
 	if err := t.Open(a.Cfg.Dir, timer); err != nil {
@@ -285,13 +286,34 @@ func (a *App) tombRecipients() ([]string, error) {
 	return out, nil
 }
 
-// tombStatus is a helper that loads the tomb state.
+// tombStatus loads the tomb state, asking the backend the store actually
+// uses.
+//
+// Asking coffin unconditionally, as this once did, meant a LUKS store was
+// reported as having no tomb: coffin looks for an archive that is not there,
+// and `close` then refused to close a container that was wide open.
 func (a *App) tombStatus() (tomb.State, bool, error) {
-	t, err := tomb.SelectBackend(tomb.BackendCoffin)
+	backend, ok := tomb.DetectBackend(a.Cfg.Dir)
+	if !ok {
+		// No container on disk. The state file still decides whether one is
+		// open, because a LUKS tomb keeps its image inside the mount.
+		backend = a.tombBackendFromState()
+	}
+	t, err := tomb.SelectBackend(backend)
 	if err != nil {
 		return tomb.State{}, false, err
 	}
 	return t.Status(a.Cfg.Dir)
+}
+
+// tombBackendFromState reads the backend recorded when the tomb was opened,
+// falling back to coffin when nothing is recorded.
+func (a *App) tombBackendFromState() tomb.Backend {
+	st, err := tomb.LoadState(a.Cfg.Dir)
+	if err != nil || st.Backend == "" {
+		return tomb.BackendCoffin
+	}
+	return st.Backend
 }
 
 // parseDuration parses a human-friendly duration string (30m, 1h, 2h30m).

@@ -179,7 +179,7 @@ Four states: `open`, `closed`, `not initialised`, and
 | Backend | Platform | Root needed | Status |
 |---|---|---|---|
 | `coffin` | Linux, macOS, Windows | no | **Working**, the default |
-| `luks` | Linux | yes (or polkit) | **Not implemented** |
+| `luks` | Linux | yes (or polkit) | **Working** |
 | `sparsebundle` | macOS | no | **Not implemented** |
 
 ### 4.1 Coffin
@@ -194,36 +194,60 @@ Its weakness is honest and structural: while the tomb is open, plaintext
 lives in a directory. tmpfs, `mlock`, and auto-close narrow the window; they
 do not remove it.
 
-### 4.2 LUKS and sparsebundle
+### 4.2 LUKS
 
-Both are **defined but not implemented**. `binpass tomb init --type=luks`
-returns `tomb: backend not yet implemented`.
-
-LUKS is worth having because it closes exactly the gap coffin cannot: with
-dm-crypt, decrypted data exists only in the kernel's mapping and never lands
-in a file. The cost is root (or a polkit rule) and Linux-only.
-
-If you want that today, run binpass inside a LUKS volume you manage yourself:
+A dm-crypt container, driven through the external `cryptsetup` binary. It
+closes the gap coffin cannot: decrypted data exists only in the kernel's
+mapping and never lands in a file, so there is no plaintext directory to
+shred and no window where one is sitting on disk.
 
 ```sh
-# One-time setup, as root.
-truncate -s 1G /var/lib/binpass.img
-cryptsetup luksFormat /var/lib/binpass.img
-cryptsetup luksOpen /var/lib/binpass.img binpass
-mkfs.ext4 /dev/mapper/binpass
-mkdir -p /mnt/binpass && mount /dev/mapper/binpass /mnt/binpass
-chown "$USER" /mnt/binpass
-
-# Point binpass at it.
-export PASSWORD_STORE_DIR=/mnt/binpass/store
-
-# When done.
-umount /mnt/binpass && cryptsetup luksClose binpass
+sudo binpass tomb init --type=luks --size=1G
+sudo binpass tomb open
+# ... use the store ...
+sudo binpass tomb close
 ```
 
-This gives you the dm-crypt guarantee now, at the price of managing the
-container yourself. binpass neither knows nor cares that its store sits on a
-mount.
+**`init` moves your entries into the container.** After it finishes, the
+store directory holds `store.luks`, `store.luks.key.age`, and your dotfiles;
+the entries themselves are inside the container and only appear when it is
+mounted.
+
+The container key is random and never typed by you — it is stored in
+`store.luks.key.age`, encrypted to the store's own age recipients. Unlocking
+the tomb is therefore an ordinary age decryption, and a YubiKey that already
+unlocks your entries unlocks the container too. There is no second passphrase
+to remember, and the key never touches the disk in the clear: it is handed to
+`cryptsetup` on stdin, never as a file and never as an argument.
+
+`--size` is fixed at creation and the file is sparse, so `--size=10G` costs
+only what you actually store. The minimum is 16M.
+
+#### Running it without sudo every time
+
+`cryptsetup`, `mount` and `umount` need root. Rather than running all of
+binpass as root, grant just those three:
+
+```sh
+# /etc/sudoers.d/binpass-tomb   (visudo -f, not an editor)
+you ALL=(root) NOPASSWD: /usr/sbin/cryptsetup, /usr/bin/mount, /usr/bin/umount
+```
+
+Understand what that grants before you do it: unrestricted `mount` is close
+to root itself. On a single-user machine that is often an acceptable trade;
+on a shared one it is not, and `sudo binpass tomb open` is the honest answer.
+
+#### Compatibility with pass-tomb
+
+Not compatible. `pass-tomb` uses `tomb(1)`, which has its own container
+format and key handling; this is plain LUKS2 with an age-encrypted key file.
+Existing tombs are not opened by binpass, and the ARCHITECTURE note claiming
+otherwise (§7.1) is aspirational rather than describing this implementation.
+
+### 4.3 Sparsebundle
+
+**Not implemented.** `binpass tomb init --type=sparsebundle` returns
+`tomb: backend not yet implemented`. Use coffin on macOS.
 
 ---
 
@@ -406,17 +430,22 @@ Someone who takes the disk, or the provider you sync with, sees
 | | `pass-tomb` | `binpass tomb` |
 |---|---|---|
 | Platform | Linux | Linux, macOS, Windows |
-| Needs root | yes (LUKS) | no (coffin) |
-| Dependencies | `tomb`, `cryptsetup`, `pinentry` | none |
+| Needs root | yes | only for `--type=luks` |
+| Dependencies | `tomb`, `cryptsetup`, `pinentry` | none for coffin, `cryptsetup` for LUKS |
 | Key | separate GPG-encrypted tomb key | your existing store recipients |
 | Hardware tokens | via GPG smartcard | any age recipient, including plugins |
 | Auto-close | `tomb slam` on demand | timer + screen lock + suspend |
 | Crash detection | none | stale state reported by `status`/`doctor` |
-| Isolation while open | dm-crypt mapping | directory in tmpfs |
+| Isolation while open | dm-crypt mapping | dm-crypt with LUKS, tmpfs with coffin |
 
-The trade is deliberate: coffin gives up dm-crypt's in-kernel isolation and
-gets portability, no root, and one key to manage instead of two. When LUKS
-lands, both options will be available.
+Both trades are available: coffin gives up dm-crypt's in-kernel isolation for
+portability and no root, LUKS takes it back at the cost of being Linux-only
+and needing privileges. Either way there is one key to manage rather than
+two, because the container key is encrypted to the store's own recipients.
+
+Existing `pass-tomb` containers are **not** readable by binpass: they are
+`tomb(1)` volumes with their own format and key handling, while
+`--type=luks` creates plain LUKS2.
 
 ---
 
@@ -424,13 +453,37 @@ lands, both options will be available.
 
 ### `tomb: backend not yet implemented`
 
-You asked for `--type=luks` or `--type=sparsebundle`. Only `coffin` is built.
-See [§4.2](#42-luks-and-sparsebundle) for running under LUKS yourself.
+You asked for `--type=sparsebundle`, which is not built. Use coffin, or LUKS
+on Linux.
 
-On a machine without `cryptsetup` installed you will see
-`tomb: cryptsetup not found on PATH` first, because the backend checks its
-tooling before anything else. Installing cryptsetup gets you the
-"not yet implemented" message instead — the feature is still absent.
+### `tomb: cryptsetup not found on PATH`
+
+The LUKS backend needs it:
+
+```sh
+sudo apt install cryptsetup-bin e2fsprogs      # Debian, Ubuntu
+sudo dnf install cryptsetup e2fsprogs          # Fedora
+nix-shell -p cryptsetup e2fsprogs              # Nix
+```
+
+### `tomb: this backend requires root or polkit`
+
+`cryptsetup` cannot open `/dev/mapper/control` as an ordinary user. Run the
+command with `sudo`, or grant the three binaries it needs — see
+[§4.2](#42-luks).
+
+### `tomb: the kernel has no usable dm-crypt (try: modprobe dm_crypt)`
+
+The device mapper is not available. On a normal system `sudo modprobe
+dm_crypt` fixes it; inside a container the image must be run with
+`--privileged`, and inside a VM the kernel must have dm-crypt at all.
+
+### `tomb: the key file does not unlock this container`
+
+`store.luks.key.age` does not match `store.luks`. Usually one of the two was
+restored from a backup without the other; they are a pair and must be copied
+together. Without the matching key file the container cannot be opened, by
+anyone, including you.
 
 ### `tomb init: specify --recipient or initialise the store first`
 

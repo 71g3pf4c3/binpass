@@ -1,0 +1,38 @@
+# LUKS integration image for binpass.
+#
+# The LUKS backend drives cryptsetup, mkfs and mount, none of which work
+# without root and a kernel with dm-crypt. The unit tests fake the command
+# runner and therefore prove only that the right arguments are built; this
+# image is where the backend meets the real tools.
+#
+# Must be run privileged, with the device mapper available:
+#
+#   docker build -f Dockerfile.luks -t binpass-luks .
+#   docker run --rm --privileged binpass-luks
+#
+# On a host whose kernel lacks dm_crypt the tests skip rather than fail, since
+# a missing kernel module is not a defect in this code.
+FROM golang:1.26-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	cryptsetup-bin \
+	e2fsprogs \
+	kmod \
+	mount \
+	util-linux \
+	age \
+	&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0
+ENV BINPASS_CONFIG=/nonexistent.yaml
+
+# dm_crypt is often built in rather than loadable; failing to load it is not
+# fatal, and the tests skip themselves if the device mapper is unusable.
+CMD ["sh", "-c", "modprobe dm_crypt 2>/dev/null || true; go test ./pkg/tomb/ -run 'LUKS|Tomb' -v -count=1"]

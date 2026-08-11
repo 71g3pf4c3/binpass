@@ -235,7 +235,22 @@ func TestLUKSOpenUnlocksAndMounts(t *testing.T) {
 	assert.Equal(t, BackendLUKS, st.Backend)
 	assert.Equal(t, mapperName(dir), st.MapperName)
 	assert.Equal(t, 30*time.Minute, st.Timer)
-	assert.Equal(t, os.Getpid(), st.PID)
+	assert.Equal(t, os.Getpid(), st.PID, "a timed open leaves a process to close it")
+}
+
+func TestLUKSOpenWithoutATimerRecordsNoPID(t *testing.T) {
+	l, _, rcp := newTestLUKS(t)
+	dir := storeWithState(t)
+	require.NoError(t, l.Init(dir, []string{rcp}, 64<<20))
+
+	require.NoError(t, l.Open(dir, 0))
+
+	// Without a timer the command returns immediately, so recording its PID
+	// would make `status` call every cleanly opened tomb a crash.
+	st, err := LoadState(dir)
+	require.NoError(t, err)
+	assert.Zero(t, st.PID)
+	assert.False(t, st.IsStale())
 }
 
 func TestLUKSOpenWithoutAContainer(t *testing.T) {

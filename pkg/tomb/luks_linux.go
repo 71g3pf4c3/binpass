@@ -311,7 +311,13 @@ func (l *LUKS) Open(dir string, timer time.Duration) error {
 		MapperName: mapper,
 		OpenedAt:   time.Now(),
 		Timer:      timer,
-		PID:        os.Getpid(),
+	}
+	// Only a timer keeps a process alive to close the tomb later. Recording
+	// the PID otherwise made every cleanly opened tomb report itself as
+	// "stale (crash without close)" the moment the command returned, which
+	// is the same bug coffin already had.
+	if timer > 0 {
+		st.PID = os.Getpid()
 	}
 	if err := saveState(dir, st); err != nil {
 		_, _ = l.run("umount", nil, dir)

@@ -32,18 +32,25 @@ func stateDir(storeDir string) string {
 	return filepath.Join(home, ".local", "share", "binpass")
 }
 
+// storeHash is a short, stable digest of a store's absolute path.
+//
+// It gives every store its own state file and its own dm-crypt mapper name,
+// so two stores open at once neither overwrite each other's state nor collide
+// in /dev/mapper.
+func storeHash(storeDir string) string {
+	abs, err := filepath.Abs(storeDir)
+	if err != nil {
+		abs = storeDir
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(abs)))[:16]
+}
+
 // statePath returns the full path to the state file for a given store.
 // The state file is keyed by a SHA-256 hash of the store's absolute path to
 // avoid collisions when multiple stores share the same directory basename
 // (e.g. ~/work/pass and ~/personal/pass both have basename "pass").
 func statePath(storeDir string) string {
-	dir := stateDir(storeDir)
-	abs, err := filepath.Abs(storeDir)
-	if err != nil {
-		abs = storeDir
-	}
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(abs)))[:16]
-	return filepath.Join(dir, hash+"-"+stateFileName)
+	return filepath.Join(stateDir(storeDir), storeHash(storeDir)+"-"+stateFileName)
 }
 
 // loadState reads the tomb state for the given store. Returns an error
@@ -84,6 +91,12 @@ func saveState(storeDir string, st *State) error {
 	}
 	return nil
 }
+
+// LoadState reads the recorded state for a store, if any.
+//
+// The CLI needs this to choose a backend before it has one: which backend to
+// ask depends on what was opened, and that is only written down here.
+func LoadState(storeDir string) (*State, error) { return loadState(storeDir) }
 
 // RemoveState deletes the state file for a store. Called on successful close.
 func RemoveState(storeDir string) error {

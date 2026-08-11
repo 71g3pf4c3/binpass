@@ -126,6 +126,20 @@ jobs:
           docker build -f Dockerfile.test -t binpass-test .
           docker run --rm binpass-test
 
+  # The LUKS backend drives cryptsetup, mkfs and mount. The unit tests fake
+  # the command runner and prove only that the right arguments are built;
+  # this is where the backend meets the real tools, which needs a privileged
+  # container and a kernel with dm-crypt.
+  luks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: LUKS integration tests
+        run: |
+          sudo modprobe dm_crypt
+          docker build -f Dockerfile.luks -t binpass-luks .
+          docker run --rm --privileged binpass-luks
+
   nix:
     runs-on: ubuntu-latest
     steps:

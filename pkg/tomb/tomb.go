@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/71g3pf4c3/binpass/pkg/crypto"
 )
 
 // Backend names the container type.
@@ -105,6 +107,16 @@ type Tomb interface {
 	Name() Backend
 }
 
+// IdentityAware is implemented by backends that decrypt something with the
+// store's age identities: the coffin archive, or the LUKS container key.
+//
+// Callers wire identities through this rather than by type-asserting each
+// backend, so that a backend added later cannot quietly end up without them.
+type IdentityAware interface {
+	// SetIdentities configures the resolver used for decryption.
+	SetIdentities(fn crypto.IdentityFunc)
+}
+
 // SelectBackend picks the best available backend for the current OS. The caller
 // can override with an explicit choice.
 func SelectBackend(want Backend) (Tomb, error) {
@@ -144,12 +156,43 @@ func DefaultBackend() Backend {
 // directory.
 const coffinFileName = "store.coffin.age"
 
+// Names of the files a LUKS tomb keeps beside the store. They are declared
+// here rather than in the Linux-only file because DetectBackend identifies a
+// LUKS store on any OS, even where it cannot be opened.
+const (
+	// luksImageName is the container holding the encrypted filesystem.
+	luksImageName = "store.luks"
+	// luksKeyName is the container's key file, itself encrypted to the
+	// store's age recipients.
+	luksKeyName = "store.luks.key.age"
+)
+
 // HasContainer reports whether a store has a tomb container at all.
 //
 // This is what distinguishes "the tomb is open" from "there is no tomb": the
 // state file is absent in both cases, and a close that cannot tell them apart
 // reports success without having protected anything.
 func HasContainer(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, coffinFileName))
-	return err == nil
+	_, ok := DetectBackend(dir)
+	return ok
+}
+
+// DetectBackend reports which backend a store's container belongs to.
+//
+// The container on disk is the authority, not the state file: `tomb init`
+// leaves no state behind, and a clean close removes it, so after either one
+// the file is the only evidence of which backend was chosen.
+func DetectBackend(dir string) (Backend, bool) {
+	for _, c := range []struct {
+		file    string
+		backend Backend
+	}{
+		{coffinFileName, BackendCoffin},
+		{luksImageName, BackendLUKS},
+	} {
+		if _, err := os.Stat(filepath.Join(dir, c.file)); err == nil {
+			return c.backend, true
+		}
+	}
+	return "", false
 }

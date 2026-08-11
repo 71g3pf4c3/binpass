@@ -1,0 +1,36 @@
+# The binpass Secret Service provider.
+#
+# Only one program can own org.freedesktop.secrets, so this conflicts with
+# gnome-keyring's own unit rather than racing it: two providers taking turns
+# would mean secrets stored in one and looked up in the other.
+[Unit]
+Description=binpass Secret Service provider
+Documentation=https://github.com/71g3pf4c3/binpass/blob/main/docs/secret-service.md
+Conflicts=gnome-keyring-daemon.service
+After=dbus.socket
+Requires=dbus.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/binpass ss serve
+Restart=on-failure
+RestartSec=2
+
+# The provider hands out passwords; it has no business writing outside the
+# store or reaching anything else on the machine.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# The store lives in the user's home, so it must stay writable; the value is
+# false rather than read-write, which ProtectHome does not accept.
+ProtectHome=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=default.target

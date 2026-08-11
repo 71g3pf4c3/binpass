@@ -162,6 +162,7 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newRemoteCmd(app),
 		newConflictsCmd(app),
 		newFsckCmd(app),
+		newSSCmd(app),
 		newCompletionCmd(app),
 		newPluginCmd(app),
 		newVersionCmd(app, version, commit, buildDate),

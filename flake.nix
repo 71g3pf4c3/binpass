@@ -35,7 +35,7 @@
 
           # Hash of the fetched module set. null would mean "the source
           # vendors its dependencies", which this repository does not.
-          vendorHash = "sha256-szHslzVzRtGcMJ1IXHh08wIrpjqTtkSc5pXKuraiMaM=";
+          vendorHash = "sha256-bwVRF+oNrQH2aD98soPStWzSJD7p4FaBrGm8NlHHH1I=";
 
           env.CGO_ENABLED = 0;
           ldflags = [
@@ -63,6 +63,20 @@
               --bash <($out/bin/binpass completion bash) \
               --zsh <($out/bin/binpass completion zsh) \
               --fish <($out/bin/binpass completion fish)
+
+            # The Secret Service provider is started by the bus on demand, so
+            # the activation file has to name the installed binary rather
+            # than /usr/bin.
+            # postInstall runs from the build subdirectory, so the unit
+            # files are taken from the source rather than the working tree.
+            install -Dm444 "$src/share/systemd/binpass-ss.service" \
+              "$out/share/systemd/user/binpass-ss.service"
+            install -Dm444 "$src/share/dbus/org.freedesktop.secrets.service" \
+              "$out/share/dbus-1/services/org.freedesktop.secrets.service"
+            substituteInPlace \
+              "$out/share/systemd/user/binpass-ss.service" \
+              "$out/share/dbus-1/services/org.freedesktop.secrets.service" \
+              --replace-fail /usr/bin/binpass "$out/bin/binpass"
           '';
 
           meta = {

@@ -122,6 +122,32 @@ in
       default = true;
     };
 
+    secretService = {
+      enable = lib.mkEnableOption ''
+        the Secret Service provider, so that programs using the system
+        keyring read their secrets from the password store
+      '';
+
+      takeover = lib.mkOption {
+        type = lib.types.enum [
+          "refuse"
+          "wait"
+          "replace"
+        ];
+        default = "refuse";
+        description = ''
+          What to do when another program already owns
+          `org.freedesktop.secrets`.
+
+          Only one provider can hold that name, and the usual holder is
+          gnome-keyring. `refuse` leaves it alone and fails, which is the
+          safe default: two providers taking turns would mean secrets stored
+          in one and looked up in the other. Mask the competitor instead —
+          `binpass ss doctor` prints the commands.
+        '';
+      };
+    };
+
     tomb = {
       enable = lib.mkEnableOption ''
         a user service that opens the tomb on login and closes it on logout
@@ -178,6 +204,27 @@ in
     programs.bash.enable = lib.mkIf cfg.enableBashIntegration (lib.mkDefault true);
     programs.zsh.enable = lib.mkIf cfg.enableZshIntegration (lib.mkDefault true);
     programs.fish.enable = lib.mkIf cfg.enableFishIntegration (lib.mkDefault true);
+
+    systemd.user.services.binpass-ss = lib.mkIf (cfg.secretService.enable && pkgs.stdenv.isLinux) {
+      Unit = {
+        Description = "binpass Secret Service provider";
+        Documentation = "https://github.com/71g3pf4c3/binpass/blob/main/docs/secret-service.md";
+        # Not "After": only one of the two can own the name, so they must not
+        # both be running.
+        Conflicts = [ "gnome-keyring-daemon.service" ];
+        After = [ "dbus.socket" ];
+        Requires = [ "dbus.socket" ];
+      };
+
+      Service = {
+        Type = "simple";
+        ExecStart = "${lib.getExe cfg.package} ss serve --takeover=${cfg.secretService.takeover}";
+        Restart = "on-failure";
+        RestartSec = 2;
+      };
+
+      Install.WantedBy = [ "default.target" ];
+    };
 
     systemd.user.services.binpass-tomb = lib.mkIf (cfg.tomb.enable && pkgs.stdenv.isLinux) {
       Unit = {

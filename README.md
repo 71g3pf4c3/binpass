@@ -19,8 +19,8 @@ resulting tree. See [Compatibility](#compatibility).
 
 Implemented so far: the complete pass command surface, age and GPG backends,
 one-time passwords, the built-in picker, plugins, the encrypted tomb, import
-and export, auditing, and the full-screen TUI. The Secret Service provider is
-specified in [ARCHITECTURE.md](ARCHITECTURE.md) but not yet written.
+and export, auditing, the full-screen TUI, and the Secret Service provider
+that lets it stand in for gnome-keyring.
 
 | Working | Command |
 |---|---|
@@ -31,7 +31,7 @@ specified in [ARCHITECTURE.md](ARCHITECTURE.md) but not yet written.
 | yes | `import` (pass-import, 9 formats), `export` (CSV), `audit` (pass-audit), `binary` (pass-file) |
 | yes | `sync` `remote` `conflicts` `fsck` |
 | yes | `tui` (full-screen browser), `history` (git revisions of an entry) |
-| not yet | `ss` (Secret Service provider) |
+| yes | `ss` — serve the store as the system keyring (org.freedesktop.secrets) |
 
 ## Plugins
 
@@ -359,6 +359,40 @@ clearing decrypted secrets from memory.
 reads commit metadata only and decrypts nothing, so no password can be
 revealed by it.
 
+## The system keyring
+
+Chrome, VS Code, NetworkManager and Evolution keep their secrets in the
+system keyring rather than asking you. `binpass ss` serves that keyring —
+`org.freedesktop.secrets` on Linux — from your password store, so those
+programs read from the store you already back up and hold the keys to.
+
+```sh
+binpass ss doctor    # who owns the keyring now, and how to take it over
+binpass ss serve
+```
+
+```sh
+printf 'hunter2' | secret-tool store --label='GitHub' server github.com username alice
+secret-tool lookup server github.com username alice
+# hunter2
+
+binpass show secret-service/login/4f3c…
+# hunter2
+# label: GitHub
+# attr.server: github.com
+# attr.username: alice
+```
+
+Items are ordinary pass entries, so anything a browser writes stays readable
+by hand.
+
+The attributes — `server`, `username`, `application` — are a complete map of
+your accounts, and `pass-secret-service` stores them in plaintext beside the
+ciphertext. Here they live inside the encrypted file, with lookup going
+through an index of keyed hashes, so the list of what you have accounts with
+never reaches whatever you sync to. [docs/secret-service.md](docs/secret-service.md)
+explains how that works and what it still leaks.
+
 ## Storage format
 
 Identical to pass. The first line is the password, everything after it is free
@@ -641,6 +675,7 @@ Everything they do is available natively; see ARCHITECTURE.md §5.
 | [docs/sync-remotes.md](docs/sync-remotes.md) | Setting up every transport: git, restic, S3, Google Drive, Yandex.Disk, WebDAV. A two-machine walkthrough, conflict resolution, what each provider can see. |
 | [docs/tomb.md](docs/tomb.md) | Hiding the store: backends, auto-close, crash recovery, syncing a closed tomb, and what the tomb does not protect. |
 | [docs/plugins.md](docs/plugins.md) | Writing plugins, the environment they receive, manifests and capabilities, and where the security boundary actually is. |
+| [docs/secret-service.md](docs/secret-service.md) | Standing in for gnome-keyring: replacing it, how items are stored, the blind attribute index, and the access policy. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The specification the implementation follows, including the parts not built yet. |
 
 ## Development

@@ -126,6 +126,18 @@ jobs:
           docker build -f Dockerfile.test -t binpass-test .
           docker run --rm binpass-test
 
+  # The Secret Service provider is only useful if real clients can talk to
+  # it, so this runs secret-tool from libsecret — what Chrome, VS Code and
+  # NetworkManager use underneath — against it over a real session bus.
+  secret-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secret Service integration tests
+        run: |
+          docker build -f Dockerfile.ss -t binpass-ss .
+          docker run --rm binpass-ss
+
   # The LUKS backend drives cryptsetup, mkfs and mount. The unit tests fake
   # the command runner and prove only that the right arguments are built;
   # this is where the backend meets the real tools, which needs a privileged

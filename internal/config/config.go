@@ -61,6 +61,42 @@ type Config struct {
 	// os.Stderr and is overridden by the TUI layer so that bubbletea
 	// rendering is not interleaved with error messages.
 	ErrWriter io.Writer
+
+	// Sync holds the synchronisation configuration.
+	Sync SyncConfig
+	// Remotes holds the configured remote transports, keyed by name.
+	Remotes map[string]RemoteConfig
+}
+
+// SyncConfig holds the synchronisation settings.
+type SyncConfig struct {
+	// Auto controls automatic synchronisation: "off", "on-change", "interval".
+	Auto string
+	// Conflict controls the default conflict resolution strategy:
+	// "keep-both", "interactive", "prefer-remote", "prefer-local".
+	Conflict string
+	// DefaultRemote is the name of the remote to use when --remote is not
+	// specified.
+	DefaultRemote string
+}
+
+// RemoteConfig describes a single remote transport.
+type RemoteConfig struct {
+	// Type is the transport type: "git", "restic", "drive", "yandex", "webdav", "s3".
+	Type string
+	// URL is the remote URL (for git: repo path, for restic: repo path,
+	// for webdav/s3: endpoint, for drive/yandex: remote name).
+	URL string
+	// Folder is the remote folder (for drive, yandex).
+	Folder string
+	// SignCommits enables GPG-signed commits (git only).
+	SignCommits bool
+	// Password is the restic repository password (restic only).
+	// Prefer PasswordCommand for production.
+	Password string
+	// PasswordCommand is a shell command that prints the restic password
+	// to stdout (restic only, preferred over Password).
+	PasswordCommand string
 }
 
 // Default returns the configuration pass would use with no environment set.
@@ -76,6 +112,11 @@ func Default() Config {
 		XSelection:            "clipboard",
 		NoColor:               os.Getenv("NO_COLOR") != "",
 		ErrWriter:             os.Stderr,
+		Sync: SyncConfig{
+			Auto:     "off",
+			Conflict: "keep-both",
+		},
+		Remotes: make(map[string]RemoteConfig),
 	}
 }
 
@@ -140,6 +181,16 @@ func applyEnv(cfg *Config) {
 			cfg.Default = b
 		}
 	}
+	// Sync env overrides.
+	if v := os.Getenv("BINPASS_SYNC_AUTO"); v != "" {
+		cfg.Sync.Auto = v
+	}
+	if v := os.Getenv("BINPASS_SYNC_CONFLICT"); v != "" {
+		cfg.Sync.Conflict = v
+	}
+	if v := os.Getenv("BINPASS_SYNC_DEFAULT_REMOTE"); v != "" {
+		cfg.Sync.DefaultRemote = v
+	}
 }
 
 // lookup reads a setting from BINPASS_<name>, falling back to
@@ -168,4 +219,23 @@ func expand(path string) string {
 		}
 	}
 	return path
+}
+
+// StateDir returns the directory for sync state.db and other mutable
+// binpass state. This is always outside the password store to prevent
+// leaking state to git remotes or cloud storage.
+//
+// Precedence: BINPASS_STATE_DIR env > XDG_STATE_HOME/binpass > ~/.local/state/binpass.
+func StateDir() string {
+	if v := os.Getenv("BINPASS_STATE_DIR"); v != "" {
+		return expand(v)
+	}
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "binpass")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".local", "state", "binpass")
+	}
+	return filepath.Join(home, ".local", "state", "binpass")
 }

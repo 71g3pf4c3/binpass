@@ -30,6 +30,22 @@ func configDir() string {
 	return filepath.Join(home, ".config")
 }
 
+// DataDir returns $XDG_DATA_HOME/binpass, the sidecar directory for state
+// that must never end up inside the store: plugins, their grants, and caches.
+func DataDir() string {
+	if d := os.Getenv("BINPASS_DATA_DIR"); d != "" {
+		return d
+	}
+	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+		return filepath.Join(d, "binpass")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "binpass")
+}
+
 // applyFile overlays the YAML config file onto cfg. A missing file is not an
 // error: binpass is fully usable with no configuration at all.
 func applyFile(cfg *Config) error {
@@ -69,6 +85,38 @@ func applyFile(cfg *Config) error {
 	}
 	if n := v.GetInt("generate.length"); n > 0 {
 		cfg.GeneratedLength = n
+	}
+	if s := v.GetString("sync.auto"); s != "" {
+		cfg.Sync.Auto = s
+	}
+	if s := v.GetString("sync.conflict"); s != "" {
+		cfg.Sync.Conflict = s
+	}
+	if s := v.GetString("sync.default_remote"); s != "" {
+		cfg.Sync.DefaultRemote = s
+	}
+
+	// Remotes: sync.remotes.<name>.type, .url, .folder, .sign_commits.
+	remotesKey := "sync.remotes"
+	if v.IsSet(remotesKey) {
+		remotes := v.GetStringMap(remotesKey)
+		if cfg.Remotes == nil {
+			cfg.Remotes = make(map[string]RemoteConfig, len(remotes))
+		}
+		for name := range remotes {
+			prefix := remotesKey + "." + name + "."
+			rc := RemoteConfig{
+				Type:            v.GetString(prefix + "type"),
+				URL:             v.GetString(prefix + "url"),
+				Folder:          v.GetString(prefix + "folder"),
+				SignCommits:     v.GetBool(prefix + "sign_commits"),
+				Password:        v.GetString(prefix + "password"),
+				PasswordCommand: v.GetString(prefix + "password_command"),
+			}
+			if rc.Type != "" {
+				cfg.Remotes[name] = rc
+			}
+		}
 	}
 	return nil
 }

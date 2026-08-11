@@ -60,6 +60,9 @@ func (a *App) runGenerate(ctx context.Context, name string, length int, opts gen
 	if err != nil {
 		return err
 	}
+	if err := a.Guard().CheckWrite(name); err != nil {
+		return err
+	}
 	exists := s.Exists(name)
 	if exists && !opts.force && !opts.inPlace {
 		ok, err := a.confirm(fmt.Sprintf("An entry already exists for %s. Overwrite it?", name))

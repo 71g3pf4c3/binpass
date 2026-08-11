@@ -7,11 +7,55 @@ on:
       - "v*"
 
 permissions:
-  contents: write   # create the GitHub release and upload assets
+  contents: read
 
 jobs:
-  goreleaser:
+  # A tag is not a promise that the tree is good: it can be pushed from a
+  # branch CI never ran, or from a machine where the tests were skipped.
+  # Nothing is published until the same suite that guards a pull request has
+  # passed on the exact commit being released.
+  verify:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Install the reference implementation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pass gnupg tree age
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Tests with race detector
+        run: go test -race ./...
+
+      - name: Fuzz targets against their seed corpora
+        run: go test ./... -run '^Fuzz' -count=1
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      # A release built from a tree whose go.mod needs tidying is not the tree
+      # anyone reviewed.
+      - name: go mod tidy is a no-op
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  goreleaser:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub release and upload assets
+      id-token: write   # keyless signing with cosign
+      attestations: write   # build provenance for the artefacts
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,7 +69,13 @@ jobs:
       - name: Install syft (SBOM generation)
         uses: anchore/sbom-action/download-syft@v0
 
+      # Signatures are what let someone verify a download came from this
+      # workflow rather than from whoever compromised the release page.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Run GoReleaser
+        id: goreleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -33,3 +83,16 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Provenance ties each binary to this workflow, this commit, and these
+      # inputs, so a rebuilt or swapped artefact does not verify.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/*.apk
+            dist/checksums.txt

@@ -16,6 +16,7 @@ import (
 	"github.com/71g3pf4c3/binpass/internal/config"
 	"github.com/71g3pf4c3/binpass/pkg/crypto"
 	"github.com/71g3pf4c3/binpass/pkg/identity"
+	"github.com/71g3pf4c3/binpass/pkg/plugin"
 	"github.com/71g3pf4c3/binpass/pkg/store"
 )
 
@@ -29,6 +30,9 @@ type App struct {
 	Err io.Writer
 	// In is where interactive input is read from.
 	In io.Reader
+	// Version is the binpass version, which plugins are told so that they
+	// can adapt to the binary they were launched by.
+	Version string
 
 	// storeOnce guards lazy store construction.
 	storeOnce sync.Once
@@ -36,6 +40,24 @@ type App struct {
 	cachedStore *store.Store
 	// storeErr is the error from building the store, if any.
 	storeErr error
+
+	// guardOnce guards lazy guard construction.
+	guardOnce sync.Once
+	// cachedGuard enforces plugin capabilities on store access.
+	cachedGuard *plugin.Guard
+}
+
+// Guard returns the capability guard for this invocation.
+//
+// It is unrestricted for a binpass the user ran themselves, and carries a
+// plugin's grant when binpass was invoked through BINPASS_BIN by a plugin
+// that declared one. Commands consult it before touching the store.
+func (a *App) Guard() *plugin.Guard {
+	a.guardOnce.Do(func() {
+		caps, name, restricted := plugin.ActiveCapabilities(os.Getenv)
+		a.cachedGuard = plugin.NewGuard(name, caps, restricted)
+	})
+	return a.cachedGuard
 }
 
 // NewApp returns an App bound to the process streams.

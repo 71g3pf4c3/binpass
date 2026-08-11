@@ -1,0 +1,29 @@
+# Test image for binpass.
+#
+# Runs the suite on a plain Debian userland with the real pass(1) installed, so
+# that the compatibility tests are checked against the same binary users have,
+# rather than against a NixOS-specific build.
+FROM golang:1.26-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	pass \
+	gnupg \
+	age \
+	git \
+	tree \
+	fzf \
+	&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# Dependencies are fetched first so that editing source does not refetch them.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0
+# The suite must not inherit any store configuration from the environment.
+ENV BINPASS_CONFIG=/nonexistent.yaml
+
+CMD ["go", "test", "./..."]

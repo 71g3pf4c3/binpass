@@ -79,6 +79,28 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o /dev/null ./cmd/binpass
 
+  # Fuzzing found a path traversal in the sync transports and three separate
+  # failures in the password hasher, so a short run guards every pull request.
+  # The seed corpora in testdata keep those cases as permanent regressions;
+  # this looks for the next one.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: Fuzz every target briefly
+        run: ./scripts/fuzz.sh 20
+      - name: Keep the inputs that failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failures
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore
+
   security:
     runs-on: ubuntu-latest
     steps:
@@ -103,6 +125,20 @@ jobs:
         run: |
           docker build -f Dockerfile.test -t binpass-test .
           docker run --rm binpass-test
+
+  # The LUKS backend drives cryptsetup, mkfs and mount. The unit tests fake
+  # the command runner and prove only that the right arguments are built;
+  # this is where the backend meets the real tools, which needs a privileged
+  # container and a kernel with dm-crypt.
+  luks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: LUKS integration tests
+        run: |
+          sudo modprobe dm_crypt
+          docker build -f Dockerfile.luks -t binpass-luks .
+          docker run --rm --privileged binpass-luks
 
   nix:
     runs-on: ubuntu-latest

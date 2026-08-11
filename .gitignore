@@ -3,7 +3,12 @@
 coverage.out
 coverage.filtered
 *.out
+# Compiled test binaries from `go test -c`.
 *.test
+# ...which must not swallow the test image, as it silently did: both CI
+# pipelines build this file, so a fresh clone failed while the developer's
+# working copy passed.
+!Dockerfile.test
 .env
 result
 result-*

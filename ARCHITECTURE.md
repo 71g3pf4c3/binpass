@@ -269,8 +269,8 @@ binpass plugin audit
 |---|---|---|
 | `pass-otp` | `binpass otp` | HOTP-счётчик синхронизируется корректно (§8.5), `--watch`, YubiKey OATH, QR |
 | `pass-update` | `binpass update` | Массовая ротация по маске, интеграция с рецептами (§4.1), политика длины из конфига |
-| `pass-audit` | `binpass audit` | HIBP по k-anonymity, слабые/переиспользованные/просроченные, zxcvbn-оценка, вывод JSON |
-| `pass-import` | `binpass import` | 60+ форматов: KeePass, Bitwarden, 1Password, LastPass, Chrome, Firefox, Enpass, pass, gopass. Плюс `binpass export` |
+| `pass-audit` | `binpass audit` | HIBP по k-anonymity (5-символьный SHA-1 префикс, полный хеш не покидает машину, кеш ответов в памяти, `--no-hibp` для offline), слабые через zxcvbn (score < 2), переиспользованные через SHA-1 хеш-группы, просроченные через `expire:`/`expires:`/`expiry:` поля (RFC 3339, ISO, европейский формат, относительные "Nd"), severity buckets mutually exclusive (Critical + Warning + Info + Clean = Audited), `--format=json`, `--parallel`, пароли никогда не выводятся |
+| `pass-import` | `binpass import` | 9 форматов: KeePass KDBX (gokeepasslib, вложенные группы, TOTP, custom fields, attachments → `name.b64`), Bitwarden CSV, 1Password CSV, LastPass CSV (http://sn placeholder, CP1251 decode), Chrome CSV, Firefox CSV (URL→domain fallback), Enpass CSV (Recycle Bin filter), pass/gopass (ciphertext copy для re-encrypt). Автоопределение по содержимому (`Registry.Detect`), `--dry-run` (`Plan`/`FormatPlan`), `--force` для overwrite, `--format` для explicit selection, `--encoding` для non-UTF-8, BOM strip (UTF-8/UTF-16 LE/BE), multiline CSV fields, path normalisation + traversal reject (`ValidatePath`), dedup (`DeduplicatePaths`), KDBX password с TTY (`readSecret`, no echo). Плюс `binpass export` (CSV, WARNING о plaintext) |
 | `pass-tomb` / `pass-coffin` | `binpass tomb` | Кроссплатформенно (§7) |
 | `pass-file` | `binpass binary` | Стрим без буферизации в память, `sum`, детект бинарности |
 | `pass-genphrase` | `binpass generate --words=5` | Diceware, EFF-словари, несколько языков |
@@ -290,6 +290,118 @@ binpass plugin audit
 * `binpass qr <name>` — QR для переноса на телефон.
 * `binpass fill` — вывод в формате для автозаполнения (`--format=json`).
 * `binpass watch` — реакция на изменения стора (для интеграций).
+
+### 5.1 import/export: модель данных и ограничения
+
+Импорт — двухфазный процесс: **Detect → Import → Plan → WriteEntries**. Разделение
+планирования и записи делает `--dry-run` естественным: Plan не мутирует стор.
+
+**Importer interface:**
+
+```
+Name() string                     — для --format и вывода
+Detect(io.Reader) bool            — автоопределение по содержимому (не по расширению)
+Import(io.Reader) iter.Seq2[Entry, error]  — потоковая конвертация
+```
+
+**Entry** — промежуточное представление. Содержит Title, Group, Path, Password,
+Username, URL, Notes, TOTPURI, Fields, Attachments. Экспорт маппит Entry на store path
+(через NormalizePath + ValidatePath) и pass-format secret (через ToSecret).
+
+**Registry** — список всех импортёров, с Detect/DetectReader (прочитает peek-буфер и
+вернёт Reader обратно) и ByName (для --format).
+
+**Критичные инварианты:**
+
+1. `ValidatePath` reject'ит `../`, пустые сегменты, leading `/`. Нормализация
+   через `NormalizePath` делает best-effort санитизацию, но финальный check —
+   перед записью.
+2. KDBX password — только с TTY (`readSecret`, no echo), никогда из argv (§3).
+3. TOTP-секреты приводятся к `otpauth://`: raw base32 → `otpauth://totp/...`,
+   уже готовый URI — passthrough.
+4. Attachments → отдельные записи `name.b64` с base64-encoded content (gopass convention, §1).
+5. CSV reader обрабатывает BOM (UTF-8, UTF-16 LE/BE), non-UTF-8 encoding
+   (auto-detect CP1251/ISO-8859-1 или `--encoding`), multiline fields.
+6. `DeduplicatePaths` — индекс-based, первый occurrence сохраняет имя, последующие
+   получают `-2`, `-3` suffix. Mutually exclusive с store-level conflict detection.
+7. `Plan` проверяет conflicts (entry exists in store) **до** записи. `WriteEntries`
+   с `force=false` — skip при conflict, с `force=true` — overwrite.
+8. Export — plaintext CSV. WARNING в Long description команды.
+
+**Ограничения текущей реализации:**
+
+* 9 форматов (не 60+). Расширение — добавление Importer implementations.
+* Pass/gopass importer копирует ciphertext как attachment для re-encrypt, не
+  расшифровывает. Для корректного re-encrypt нужен source store's crypto backend.
+* Export выводит `sec.Body()` (включая structured fields) в notes-колонку CSV.
+  Для чистого экспорта — только Notes-часть body.
+
+### 5.2 audit: модель проверок и вывод
+
+Audit — **decrypt-all-then-check**. Расшифровка всего стора — обязательный шаг;
+при аппаратном ключе это N касаний токена. `--parallel` включает concurrent decryption,
+но не является default при обнаружении hardware token.
+
+**Четыре проверки:**
+
+| Проверка | Severity | Механизм |
+|---|---|---|
+| Leaked (HIBP) | Critical | k-anonymity: SHA-1 → 5-char prefix → API → suffix comparison. Full hash не покидает машину. Cache in memory. `--no-hibp` = noopHIBP |
+| Weak | Warning | zxcvbn score < 2 |
+| Reused | Warning | SHA-1 hash grouping across entries |
+| Expired | Info | `expire:`/`expires:`/`expiry:` fields, RFC 3339 / ISO / European / relative "Nd" |
+
+**Severity buckets mutually exclusive:** entry contributes to worst severity only.
+Critical + Warning + Info + Clean = Audited. Это гарантирует, что entry с
+Critical + Warning не засчитывается дважды.
+
+**HIBP error handling:** при ошибке HIBP (network, 5xx) — downgrade to Warning
+("HIBP check failed"), не Critical (не можем подтвердить leak).
+
+**Вывод:**
+
+* `--format=text` (default): grouped by severity, entry names + findings.
+  Passwords never appear.
+* `--format=json`: structured `Report` (entries, skipped, stats). Passwords never appear.
+* Exit code non-zero при Critical findings (CI gate).
+
+**HIBPClient:**
+
+```
+NewHIBPClient()          — production: api.pwnedpasswords.com/range/
+noopHIBP                  — offline (--no-hibp)
+HIBPClient.Check(ctx, pw) — cache by prefix, mutex-protected
+```
+
+Кеш — in-memory, key = 5-char prefix. Один API call на уникальный prefix,
+повторные passwords с тем же prefix — cache hit.
+
+### 5.3 binary: бинарные секреты
+
+Заменяет `pass-file`. Бинарные записи — обычные зашифрованные записи с именем,
+заканчивающимся на `.b64`, содержимое которых — base64-кодированные исходные данные.
+Совместимо с gopass.
+
+**Команды:**
+
+| Команда | Действие |
+|---|---|
+| `binpass binary cat <name>` | Декодировать и вывести в stdout |
+| `binpass binary sum <name>` | SHA-256 декодированных данных |
+| `binpass binary copy <name> <file>` | Закодировать файл в base64 и сохранить (оригинал остаётся) |
+| `binpass binary move <name> <file>` | То же, но удалить оригинал |
+
+**Потоковость:** Cat и Sum декодируют base64 через `io.Copy` — полный decoded
+контент не буферизуется. Store кодирует за один проход, но результирующая
+base64-строка должна поместиться в память (ограничение crypto-слоя).
+
+**Критичные инварианты:**
+
+1. Запись без суффикса `.b64` — `ErrNotBinary`.
+2. `Store` с `force=false` спрашивает подтверждение при перезаписи (CLI level).
+3. `DetectBinary` — эвристика для отображения (single-line base64), не для
+   security decisions.
+4. Аттачменты из KDBX-импорта (§5.1) используют тот же формат `name.b64`.
 
 ---
 
@@ -721,8 +833,9 @@ pkg/
     keychain/           macOS Security.framework
     wincred/            Windows CredRead/CredWrite, DPAPI
     integrations/       git, docker, ssh/sudo askpass, k8s, aws, netrc, exec
-  importer/             60+ форматов
-  audit/                HIBP k-anonymity, zxcvbn, дубликаты
+  importer/             9 форматов (KDBX, Bitwarden, 1Password, LastPass, Chrome, Firefox, Enpass, pass, gopass); Registry, Entry, Plan/WriteEntries, csvReadAll (BOM/encoding/multiline), NormalizePath/ValidatePath/DeduplicatePaths
+  audit/                HIBP k-anonymity (5-char prefix, in-memory cache, noopHIBP для offline), zxcvbn strength, SHA-1 reuse detection, expiry (RFC 3339/ISO/European/relative), FormatHuman (severity grouping), JSON output, parallel decryption
+  binary/               .b64 entries (gopass convention): Cat (streaming base64 decode), Sum (SHA-256), Store (base64 encode), DetectBinary, IsBinary
   pwgen/  clip/  tmpfile/
 ```
 
@@ -833,7 +946,7 @@ sync:
 |---|---|---|
 | **M0** | Дерево, `crypto/gpg` + `crypto/age`, ядро CLI, `version` | Golden-тесты против pass зелёные |
 | **M1** | `identity`: age-plugin протокол, YubiKey PIV, FIDO2, агент | `binpass identity test` проходит на реальном токене |
-| **M2** | `otp`, `binary`, `audit`, `import/export`, `generate --words` | Паритет с pass-otp / pass-audit / pass-import подтверждён тестами |
+| **M2** | `otp`, `binary`, `audit`, `import/export`, `generate --words` | Паритет с pass-otp / pass-audit / pass-import подтверждён тестами. **Все пять компонентов реализованы:** otp (main), generate --words (main), binary (pkg/binary, 19 tests), audit (pkg/audit, 96.2%), import/export (pkg/importer, 89.5%, 9 форматов, e2e 43/43) |
 | **M3** | Движок sync, state.db, VV, конфликты, remote `git` | Два клиента, оффлайн-конфликт, корректное разрешение |
 | **M4** | rclone: Drive + Yandex с встроенным OAuth, WebDAV, S3, locking | Интеграционные тесты на всех транспортах |
 | **M5** | `tomb`: coffin везде, LUKS на Linux, sparsebundle на macOS | Автозакрытие по screenlock работает на трёх ОС |

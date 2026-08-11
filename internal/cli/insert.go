@@ -39,6 +39,9 @@ func (a *App) runInsert(_ context.Context, name string, multiline, echo, force b
 	if err != nil {
 		return err
 	}
+	if err := a.Guard().CheckWrite(name); err != nil {
+		return err
+	}
 	if !force && s.Exists(name) {
 		ok, err := a.confirm(fmt.Sprintf("An entry already exists for %s. Overwrite it?", name))
 		if err != nil {

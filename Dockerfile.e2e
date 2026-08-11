@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	pass gnupg age git tree \
 	wl-clipboard xclip xsel xvfb sway libwayland-server0 \
 	fzf dmenu bash-completion zsh fish \
-	ca-certificates \
+	python3 ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -27,7 +27,6 @@ ENV BINPASS_CONFIG=/nonexistent.yaml
 ENV XDG_RUNTIME_DIR=/tmp/xdg-runtime
 
 RUN install -d -m 0700 "$XDG_RUNTIME_DIR" \
-	&& go build -o /usr/local/bin/binpass ./cmd/binpass \
-	&& install -m 0755 contrib/binpass-rofi contrib/binpass-fzf contrib/binpass-dmenu /usr/local/bin/
+	&& go build -o /usr/local/bin/binpass ./cmd/binpass
 
 CMD ["/src/scripts/e2e-session.sh"]

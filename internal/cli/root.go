@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/71g3pf4c3/binpass/internal/config"
 	"github.com/spf13/cobra"
@@ -17,9 +22,33 @@ func Execute(version, commit, buildDate string) int {
 		return 1
 	}
 	app := NewApp(cfg)
+	app.Version = version
 
 	root := newRootCmd(app, version, commit, buildDate)
+
+	// Plugins are dispatched before cobra parses anything. A plugin's flags
+	// are its own, and cobra would reject `binpass foo --bar` as an unknown
+	// flag long before the plugin could be told about it. This is the same
+	// order kubectl uses, and for the same reason.
+	if handled, err := app.dispatchPlugin(context.Background(), root, os.Args[1:]); handled {
+		if err == nil {
+			return 0
+		}
+		var exit *exitError
+		if errors.As(err, &exit) {
+			return exit.code
+		}
+		fmt.Fprintln(app.Err, err)
+		return 1
+	}
+
 	if err := root.Execute(); err != nil {
+		// A plugin's own exit status passes through untouched, so that a
+		// script wrapping `binpass foo` can tell what foo decided.
+		var exit *exitError
+		if errors.As(err, &exit) {
+			return exit.code
+		}
 		// Cobra has already printed usage errors; ours are printed here.
 		if !isUsageError(err) {
 			fmt.Fprintln(app.Err, err)
@@ -38,10 +67,52 @@ func isUsageError(err error) bool {
 	return ok
 }
 
+// exitError carries a specific process exit code up to Execute.
+type exitError struct{ code int }
+
+// Error describes the exit code.
+func (e *exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+
+// exitCode extracts the exit status from a failed command, if it has one.
+func exitCode(err error) (int, bool) {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode(), true
+	}
+	return 0, false
+}
+
+// programName returns the name binpass was invoked under.
+//
+// Installing a `pass` that runs binpass is a supported way to adopt it, and a
+// program that answers "binpass" to `pass --help` tells the user the command
+// they typed does not exist. Completions are worse: cobra names its generated
+// functions after this, so a script generated as "binpass" and installed as
+// "pass" completes the wrong command.
+//
+// Anything unexpected falls back to binpass rather than echoing argv[0]: a
+// symlink named `--help` should not be able to choose what the help text
+// says.
+func programName() string {
+	// Both separators, not just the host's: a Windows path reaching this on
+	// any other OS would otherwise keep its directories and match nothing.
+	arg0 := os.Args[0]
+	if i := strings.LastIndexAny(arg0, `/\`); i >= 0 {
+		arg0 = arg0[i+1:]
+	}
+	name := strings.TrimSuffix(filepath.Base(arg0), ".exe")
+	switch name {
+	case "pass", "binpass":
+		return name
+	default:
+		return "binpass"
+	}
+}
+
 // newRootCmd assembles the command tree.
 func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "binpass",
+		Use:   programName(),
 		Short: "A pass(1)-compatible password manager",
 		// pass prints its own diagnostics; cobra's extra noise would break
 		// output compatibility.
@@ -49,7 +120,9 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
 		// Bare `binpass` is `binpass ls`, and `binpass foo` is `binpass show
-		// foo`, exactly as pass dispatches.
+		// foo`, exactly as pass dispatches. A plugin gets the name first,
+		// so that `binpass foo` reaches binpass-foo when one exists; an
+		// entry named foo is still reachable as `binpass show foo`.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return app.runList(cmd.Context(), "")
@@ -60,7 +133,7 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 	root.PersistentFlags().StringVar(&app.Cfg.Dir, "store", app.Cfg.Dir, "password store directory")
 	root.PersistentFlags().StringVar(&app.Cfg.Identity, "identity", app.Cfg.Identity, "age identity file")
 
-	root.ValidArgsFunction = app.completeEntriesAndDirs
+	root.ValidArgsFunction = app.completeRootArg
 
 	root.AddCommand(
 		newInitCmd(app),
@@ -79,7 +152,18 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newTUICmd(app),
 		newOTPCmd(app),
 		newHistoryCmd(app),
+		newTombCmd(app),
+		newDoctorCmd(app),
+		newBinaryCmd(app),
+		newImportCmd(app),
+		newExportCmd(app),
+		newAuditCmd(app),
+		newSyncCmd(app),
+		newRemoteCmd(app),
+		newConflictsCmd(app),
+		newFsckCmd(app),
 		newCompletionCmd(app),
+		newPluginCmd(app),
 		newVersionCmd(app, version, commit, buildDate),
 	)
 	registerCompletions(app, root)
@@ -92,7 +176,7 @@ func registerCompletions(app *App, root *cobra.Command) {
 	// Commands taking exactly one existing entry.
 	entryCommands := []string{"show", "edit", "otp", "generate", "history"}
 	// Commands taking an entry or a subfolder, possibly twice.
-	treeCommands := []string{"ls", "list", "rm", "remove", "delete", "mv", "rename", "cp", "copy", "insert"}
+	treeCommands := []string{"ls", "list", "rm", "remove", "delete", "mv", "rename", "cp", "copy", "insert", "import", "export", "audit", "binary"}
 
 	for _, c := range root.Commands() {
 		name := c.Name()

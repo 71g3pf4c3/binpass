@@ -47,7 +47,13 @@ func (a *App) runGrep(_ context.Context, pattern string, ignoreCase bool) error 
 	if err != nil {
 		return err
 	}
+	// grep decrypts the whole store, so a restricted plugin sees only the
+	// entries it was granted. Filtering rather than refusing keeps grep
+	// useful to a plugin scoped to one subtree.
 	for _, m := range matches {
+		if err := a.Guard().CheckDecrypt(m.Name); err != nil {
+			continue
+		}
 		dir, base := filepath.Split(m.Name)
 		fmt.Fprintf(a.Out, "\033[94m%s\033[1m%s\033[0m:\n", dir, base)
 		for _, line := range m.Lines {
@@ -77,6 +83,13 @@ func newEditCmd(app *App) *cobra.Command {
 func (a *App) runEdit(ctx context.Context, name string) error {
 	s, err := a.requireStore()
 	if err != nil {
+		return err
+	}
+	// Editing both reveals the plaintext and replaces it, so it needs both.
+	if err := a.Guard().CheckDecrypt(name); err != nil {
+		return err
+	}
+	if err := a.Guard().CheckWrite(name); err != nil {
 		return err
 	}
 	var original []byte

@@ -29,6 +29,11 @@ func (a *App) runRemove(name string, recursive, force bool) error {
 	if err != nil {
 		return err
 	}
+	// Deleting is a write, and the destructive kind: a plugin scoped to
+	// read must not be able to empty the store.
+	if err := a.Guard().CheckWrite(name); err != nil {
+		return err
+	}
 	isDir := s.IsDir(name)
 	if isDir && !recursive {
 		return fmt.Errorf("Error: %s is a directory.", name) //nolint:revive,staticcheck // pass's exact wording.

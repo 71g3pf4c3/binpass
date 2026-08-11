@@ -64,6 +64,75 @@ nix run github:71g3pf4c3/binpass
 nix develop            # dev shell with go, gpg, pass, age, rofi, fzf
 ```
 
+### NixOS and home-manager
+
+The flake ships an overlay and a module for each.
+
+```nix
+{
+  inputs.binpass.url = "github:71g3pf4c3/binpass";
+
+  # NixOS
+  outputs = { nixpkgs, binpass, ... }: {
+    nixosConfigurations.laptop = nixpkgs.lib.nixosSystem {
+      modules = [
+        binpass.nixosModules.default
+        {
+          nixpkgs.overlays = [ binpass.overlays.default ];
+          programs.binpass = {
+            enable = true;
+            replacePass = true;              # install it as `pass` too
+            extraPackages = [ pkgs.rclone ]; # transports are external binaries
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+```nix
+# home-manager
+{
+  imports = [ binpass.homeModules.default ];
+
+  programs.binpass = {
+    enable = true;
+    replacePass = true;
+    storeDir = "~/.password-store";
+    identityFile = "~/.local/share/binpass/identities.age";
+
+    settings = {
+      crypto.default = "age";
+      generate.length = 25;
+      sync = {
+        default_remote = "origin";
+        remotes.origin = {
+          type = "git";
+          url = "git@github.com:you/password-store.git";
+        };
+      };
+    };
+
+    tomb = {
+      enable = true;   # a user service that closes the tomb on logout
+      timer = "1h";
+    };
+  };
+}
+```
+
+`replacePass` installs binpass under the name `pass`, with completions
+generated for that name. The binary answers to whichever name it was invoked
+under, so `pass --help` says `pass` and tab completion completes `pass` —
+scripts and browser extensions calling `pass` keep working against the same
+store. It is off by default, because shadowing a command nobody asked to have
+shadowed is not a decision a module should make quietly.
+
+`settings` is written to the Nix store, which every user on the machine can
+read. Keep secrets out of it: for a restic repository password use
+`sync.remotes.<name>.password_command` and have it read from somewhere else.
+
 ## Quick start
 
 ```sh

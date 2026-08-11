@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/71g3pf4c3/binpass/internal/config"
 	"github.com/spf13/cobra"
@@ -80,10 +82,37 @@ func exitCode(err error) (int, bool) {
 	return 0, false
 }
 
+// programName returns the name binpass was invoked under.
+//
+// Installing a `pass` that runs binpass is a supported way to adopt it, and a
+// program that answers "binpass" to `pass --help` tells the user the command
+// they typed does not exist. Completions are worse: cobra names its generated
+// functions after this, so a script generated as "binpass" and installed as
+// "pass" completes the wrong command.
+//
+// Anything unexpected falls back to binpass rather than echoing argv[0]: a
+// symlink named `--help` should not be able to choose what the help text
+// says.
+func programName() string {
+	// Both separators, not just the host's: a Windows path reaching this on
+	// any other OS would otherwise keep its directories and match nothing.
+	arg0 := os.Args[0]
+	if i := strings.LastIndexAny(arg0, `/\`); i >= 0 {
+		arg0 = arg0[i+1:]
+	}
+	name := strings.TrimSuffix(filepath.Base(arg0), ".exe")
+	switch name {
+	case "pass", "binpass":
+		return name
+	default:
+		return "binpass"
+	}
+}
+
 // newRootCmd assembles the command tree.
 func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "binpass",
+		Use:   programName(),
 		Short: "A pass(1)-compatible password manager",
 		// pass prints its own diagnostics; cobra's extra noise would break
 		// output compatibility.

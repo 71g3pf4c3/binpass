@@ -19,8 +19,8 @@ resulting tree. See [Compatibility](#compatibility).
 
 Implemented so far: the complete pass command surface, age and GPG backends,
 one-time passwords, the built-in picker, plugins, the encrypted tomb, import
-and export, and auditing. The Secret Service provider and the full-screen TUI
-are specified in [ARCHITECTURE.md](ARCHITECTURE.md) but not yet written.
+and export, auditing, and the full-screen TUI. The Secret Service provider is
+specified in [ARCHITECTURE.md](ARCHITECTURE.md) but not yet written.
 
 | Working | Command |
 |---|---|
@@ -30,7 +30,8 @@ are specified in [ARCHITECTURE.md](ARCHITECTURE.md) but not yet written.
 | yes | `tomb` (pass-tomb), `doctor` |
 | yes | `import` (pass-import, 9 formats), `export` (CSV), `audit` (pass-audit), `binary` (pass-file) |
 | yes | `sync` `remote` `conflicts` `fsck` |
-| not yet | `ss` `tui` |
+| yes | `tui` (full-screen browser), `history` (git revisions of an entry) |
+| not yet | `ss` (Secret Service provider) |
 
 ## Plugins
 
@@ -321,6 +322,42 @@ to manage. On Linux, locking the screen or suspending closes it.
 An open tomb is an ordinary directory, and closing it cannot truly erase the
 plaintext on flash storage. [docs/tomb.md](docs/tomb.md) is explicit about
 both, and covers auto-close, crash recovery, and syncing a closed tomb.
+
+## Interactive browser
+
+`binpass tui` is a full-screen session for browsing and editing the store.
+
+```sh
+binpass tui
+```
+
+```
+▾ bank/
+  savings
+▾ github.com/
+  alice
+binpass     q:quit  /:search  n:new  enter:open  h:collapse  E:expand-all  C:collapse-all  j/k:nav
+```
+
+Navigating the tree decrypts nothing: entries are opened on demand, so
+browsing never triggers a hardware-token touch. An opened entry masks its
+password until you ask for it:
+
+```
+▸ github.com/alice
+  pass: ••••••••
+  url: https://github.com
+  username: alice
+binpass               p:toggle  c:copy  o:otp  d:delete  r:rename  g:generate  y:history  esc:back
+```
+
+It runs on the alternate screen, so nothing that was displayed survives in
+scrollback, and the session locks itself after five minutes of inactivity,
+clearing decrypted secrets from memory.
+
+`binpass history ENTRY` lists the git revisions that touched an entry. It
+reads commit metadata only and decrypts nothing, so no password can be
+revealed by it.
 
 ## Storage format
 

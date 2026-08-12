@@ -31,7 +31,8 @@ that lets it stand in for gnome-keyring.
 | yes | `import` (pass-import, 9 formats), `export` (CSV), `audit` (pass-audit), `binary` (pass-file) |
 | yes | `sync` `remote` `conflicts` `fsck` |
 | yes | `tui` (full-screen browser), `history` (git revisions of an entry) |
-| yes | `ss` — serve the store as the system keyring (org.freedesktop.secrets) |
+| yes | `ss` — serve the store as the system keyring (org.freedesktop.secrets), Linux |
+| yes | `keychain` — import from and export to the macOS Keychain |
 
 ## Plugins
 
@@ -676,6 +677,7 @@ Everything they do is available natively; see ARCHITECTURE.md §5.
 | [docs/tomb.md](docs/tomb.md) | Hiding the store: backends, auto-close, crash recovery, syncing a closed tomb, and what the tomb does not protect. |
 | [docs/plugins.md](docs/plugins.md) | Writing plugins, the environment they receive, manifests and capabilities, and where the security boundary actually is. |
 | [docs/secret-service.md](docs/secret-service.md) | Standing in for gnome-keyring: replacing it, how items are stored, the blind attribute index, and the access policy. |
+| [docs/macos.md](docs/macos.md) | What works on macOS and what does not: the sparse bundle tomb, screen-lock auto-close, Keychain import and export, launchd, and what has never been run on a Mac. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The specification the implementation follows, including the parts not built yet. |
 
 ## Development

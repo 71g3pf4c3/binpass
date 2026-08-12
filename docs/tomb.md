@@ -180,7 +180,7 @@ Four states: `open`, `closed`, `not initialised`, and
 |---|---|---|---|
 | `coffin` | Linux, macOS, Windows | no | **Working**, the default |
 | `luks` | Linux | yes (or polkit) | **Working** |
-| `sparsebundle` | macOS | no | **Not implemented** |
+| `sparsebundle` | macOS | no | **Working** |
 
 ### 4.1 Coffin
 
@@ -246,8 +246,21 @@ otherwise (§7.1) is aspirational rather than describing this implementation.
 
 ### 4.3 Sparsebundle
 
-**Not implemented.** `binpass tomb init --type=sparsebundle` returns
-`tomb: backend not yet implemented`. Use coffin on macOS.
+An encrypted APFS disk image driven through `hdiutil`, on macOS. Like LUKS it
+keeps the plaintext in a mounted filesystem rather than a directory that has
+to be shredded afterwards; unlike LUKS it needs no root, because macOS lets
+an ordinary user attach a disk image.
+
+```sh
+binpass tomb init --type=sparsebundle --size=1G
+```
+
+The image's passphrase is random, never seen by the user, and stored
+age-encrypted beside it — the same arrangement LUKS uses, so a hardware token
+that unlocks the store unlocks the image.
+
+See [macos.md](macos.md) for the rest, including what has not been run on a
+real Mac.
 
 ---
 
@@ -453,8 +466,9 @@ Existing `pass-tomb` containers are **not** readable by binpass: they are
 
 ### `tomb: backend not yet implemented`
 
-You asked for `--type=sparsebundle`, which is not built. Use coffin, or LUKS
-on Linux.
+No backend returns this any more: coffin, LUKS and sparsebundle are all
+built. Asking for one the current OS does not have reports that instead —
+LUKS is Linux-only and sparsebundle is macOS-only.
 
 ### `tomb: cryptsetup not found on PATH`
 

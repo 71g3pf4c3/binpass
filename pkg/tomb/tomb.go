@@ -156,6 +156,17 @@ func DefaultBackend() Backend {
 // directory.
 const coffinFileName = "store.coffin.age"
 
+// Names of the files a sparse bundle tomb keeps beside the store. Declared
+// here for the same reason as the LUKS ones: DetectBackend identifies a
+// store on any OS, including one it cannot open.
+const (
+	// bundleName is the encrypted sparse bundle.
+	bundleName = "store.sparsebundle"
+	// bundleKeyName is the bundle's passphrase, encrypted to the store's
+	// age recipients.
+	bundleKeyName = "store.sparsebundle.key.age"
+)
+
 // Names of the files a LUKS tomb keeps beside the store. They are declared
 // here rather than in the Linux-only file because DetectBackend identifies a
 // LUKS store on any OS, even where it cannot be opened.
@@ -189,6 +200,7 @@ func DetectBackend(dir string) (Backend, bool) {
 	}{
 		{coffinFileName, BackendCoffin},
 		{luksImageName, BackendLUKS},
+		{bundleName, BackendSparseBundle},
 	} {
 		if _, err := os.Stat(filepath.Join(dir, c.file)); err == nil {
 			return c.backend, true

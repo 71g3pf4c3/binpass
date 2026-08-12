@@ -449,7 +449,9 @@ func hasPlaintext(dir string) bool {
 		// closed. Counting the LUKS image as plaintext made every closed
 		// LUKS store look open, and made `init` try to seed a container
 		// with itself.
-		if name[0] == '.' || name == coffinFileName || name == luksImageName || name == luksKeyName {
+		if name[0] == '.' || name == coffinFileName ||
+			name == luksImageName || name == luksKeyName ||
+			name == bundleName || name == bundleKeyName {
 			continue
 		}
 		return true

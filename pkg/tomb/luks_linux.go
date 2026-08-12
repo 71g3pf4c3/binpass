@@ -3,18 +3,15 @@
 package tomb
 
 import (
-	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"filippo.io/age"
 	"github.com/71g3pf4c3/binpass/pkg/crypto"
 )
 
@@ -46,11 +43,6 @@ type LUKS struct {
 	runner commandRunner
 }
 
-// commandRunner executes an external command with optional stdin, returning
-// its combined output. It exists so that argument construction and error
-// handling can be tested without root, a loop device, or cryptsetup.
-type commandRunner func(name string, stdin []byte, args ...string) ([]byte, error)
-
 // newLUKS returns a LUKS backend. It checks that cryptsetup is available.
 func newLUKS() (*LUKS, error) {
 	if _, err := exec.LookPath("cryptsetup"); err != nil {
@@ -65,19 +57,6 @@ func (l *LUKS) SetIdentities(fn crypto.IdentityFunc) { l.identities = fn }
 
 // Name returns BackendLUKS.
 func (l *LUKS) Name() Backend { return BackendLUKS }
-
-// execRunner runs a command for real, feeding it stdin when given.
-//
-// The key file is passed this way rather than as a path or an argument:
-// a temporary file would put the decrypted key on disk, and an argument would
-// publish it in /proc to every process on the machine.
-func execRunner(name string, stdin []byte, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...) //nolint:gosec // callers pass fixed binaries and arguments built here.
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
-	}
-	return cmd.CombinedOutput()
-}
 
 // run executes a command through the configured runner.
 func (l *LUKS) run(name string, stdin []byte, args ...string) ([]byte, error) {
@@ -118,17 +97,6 @@ func classifyLUKSError(name string, out []byte, err error) error {
 		return fmt.Errorf("tomb: %s: %w", name, err)
 	}
 	return fmt.Errorf("tomb: %s: %w: %s", name, err, firstLine(out))
-}
-
-// firstLine returns the first non-empty line of command output, which is
-// where cryptsetup puts the actual reason.
-func firstLine(out []byte) string {
-	for _, line := range strings.Split(string(out), "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 // mapperName derives the dm-crypt mapper name for a store.
@@ -387,33 +355,6 @@ func (l *LUKS) Status(dir string) (State, bool, error) {
 	return *st, true, nil
 }
 
-// writeEncryptedKey encrypts the container key to the store's recipients.
-func writeEncryptedKey(path string, key []byte, rcp []string) error {
-	recipients, err := crypto.ParseAgeRecipients(toRecipients(rcp))
-	if err != nil {
-		return fmt.Errorf("tomb: container key: %w", err)
-	}
-
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // a path binpass derived, not user input.
-	if err != nil {
-		return fmt.Errorf("tomb: create key file: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	w, err := age.Encrypt(f, recipients...)
-	if err != nil {
-		return fmt.Errorf("tomb: encrypt container key: %w", err)
-	}
-	if _, err := w.Write(key); err != nil {
-		_ = w.Close()
-		return fmt.Errorf("tomb: encrypt container key: %w", err)
-	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("tomb: encrypt container key: %w", err)
-	}
-	return f.Sync()
-}
-
 // readEncryptedKey decrypts the container key.
 func (l *LUKS) readEncryptedKey(path string) ([]byte, error) {
 	if l.identities == nil {
@@ -426,103 +367,7 @@ func (l *LUKS) readEncryptedKey(path string) ([]byte, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("tomb: %w", crypto.ErrNoIdentity)
 	}
-
-	f, err := os.Open(path) //nolint:gosec // path is constructed from dir + constant.
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("tomb: container key file is missing: %s", path)
-		}
-		return nil, fmt.Errorf("tomb: open key file: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	r, err := age.Decrypt(f, ids...)
-	if err != nil {
-		return nil, fmt.Errorf("tomb: decrypt container key: %w", err)
-	}
-	key, err := io.ReadAll(io.LimitReader(r, luksKeySize*2))
-	if err != nil {
-		return nil, fmt.Errorf("tomb: read container key: %w", err)
-	}
-	if len(key) == 0 {
-		return nil, errors.New("tomb: container key file is empty")
-	}
-	return key, nil
-}
-
-// createSparseFile creates a file that reports size bytes but occupies only
-// the blocks actually written.
-func createSparseFile(path string, size int64) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // a path binpass derived, not user input.
-	if err != nil {
-		return fmt.Errorf("tomb: create container: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	if err := f.Truncate(size); err != nil {
-		return fmt.Errorf("tomb: size container: %w", err)
-	}
-	return nil
-}
-
-// copyTree copies the contents of src into dst, skipping the named entries.
-func copyTree(src, dst string, skip ...string) error {
-	skipSet := make(map[string]bool, len(skip))
-	for _, s := range skip {
-		skipSet[s] = true
-	}
-
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		if skipSet[rel] {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		target := filepath.Join(dst, rel)
-		// A symlink in the store could otherwise walk the copy out of the
-		// container and write wherever it points.
-		if !isWithin(dst, target) {
-			return fmt.Errorf("tomb: refusing to copy %q outside the container", rel)
-		}
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o700)
-		}
-		if !d.Type().IsRegular() {
-			// Sockets and devices have no business in a password store,
-			// and copying them into the container would be a way to smuggle
-			// something odd past the next reader.
-			return nil
-		}
-		data, err := os.ReadFile(path) //nolint:gosec // walking the store binpass was pointed at.
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o600) //nolint:gosec // target checked against the container root above.
-	})
-}
-
-// zero overwrites a key in memory once it is no longer needed. It is not a
-// guarantee — Go may have copied the slice — but leaving the key sitting in a
-// live buffer for the rest of the process is worse.
-func zero(b []byte) {
-	for i := range b {
-		b[i] = 0
-	}
+	return readEncryptedKey(path, ids)
 }
 
 // Compile-time interface check.

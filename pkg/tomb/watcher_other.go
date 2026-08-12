@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package tomb
 
@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// Watcher monitors OS events for auto-close. On non-Linux, only the timer
-// is available. Platform-specific screen lock detection (IOKit on macOS,
-// WinAPI on Windows) will be added in a follow-up.
+// Watcher monitors OS events for auto-close. On platforms without screen
+// lock detection only the timer is available; Linux uses D-Bus and macOS
+// polls the window server, so this is the Windows and BSD path.
 type Watcher struct {
 	dir     string
 	timer   time.Duration

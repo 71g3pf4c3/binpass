@@ -89,3 +89,28 @@ func TestStoreContentIgnoresTheDirectoryItIsIn(t *testing.T) {
 	assert.True(t, remote.IsTombContainer("sub/store.luks"))
 	assert.True(t, remote.IsBlockContainer("sub/store.sparsebundle"))
 }
+
+// TestRelativeToHandlesAStoreRestoredElsewhere covers the path that broke a
+// restore. restic snapshots hold absolute paths, and the machine restoring a
+// store rarely keeps it where the machine that made the backup did.
+func TestRelativeToHandlesAStoreRestoredElsewhere(t *testing.T) {
+	const root = "/home/alice/.password-store"
+
+	assert.Equal(t, "github.com/alice.age",
+		remote.RelativeTo(root, root+"/github.com/alice.age"))
+	assert.Equal(t, "store.coffin.age",
+		remote.RelativeTo(root, root+"/store.coffin.age"))
+
+	// A trailing slash on the root is what restic reports for some backends.
+	assert.Equal(t, "x.age", remote.RelativeTo(root+"/", root+"/x.age"))
+
+	// The root itself is the directory, not an entry.
+	assert.Empty(t, remote.RelativeTo(root, root))
+
+	// Anything outside the root is not an entry. Passing it through, as the
+	// old fallback did, produced entries named after somebody else's home
+	// directory and a dump for a path the snapshot does not contain.
+	assert.Empty(t, remote.RelativeTo(root, "/etc/passwd"))
+	assert.Empty(t, remote.RelativeTo(root, "/home/bob/store/x.age"))
+	assert.Empty(t, remote.RelativeTo(root, "/home/alice/.password-store-other/x.age"))
+}

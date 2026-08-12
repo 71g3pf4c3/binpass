@@ -172,10 +172,23 @@ func (r *ResticRemote) List(ctx context.Context) ([]File, error) {
 		return nil, err
 	}
 
-	// Get the latest snapshot ID first.
+	// Get the latest snapshot ID first. An empty repository is not an
+	// error: it is what the first sync to a fresh repository finds, and
+	// failing here meant restic could never be used from scratch — the
+	// first push was refused because there was nothing to pull.
 	snapID, err := r.latestSnapshotID(ctx)
+	if errors.Is(err, ErrNoSnapshots) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("remote/restic: list: %w", err)
+	}
+
+	// The snapshot records the directory it was taken from, which is not
+	// necessarily where this machine keeps its store.
+	root, err := r.snapshotRoot(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// restic ls <snapshot> --json
@@ -198,7 +211,7 @@ func (r *ResticRemote) List(ctx context.Context) ([]File, error) {
 		if entry.Type != "file" {
 			continue
 		}
-		path := r.toStoreRelative(entry.Path)
+		path := RelativeTo(root, entry.Path)
 		if path == "" {
 			continue
 		}
@@ -239,10 +252,15 @@ func (r *ResticRemote) Get(ctx context.Context, path string) (io.ReadCloser, str
 		return nil, "", fmt.Errorf("remote/restic: get %q: %w", path, err)
 	}
 
-	// restic dump <snapshot> <path>
-	// Restic stores absolute paths in snapshots, so we must prepend the
-	// store directory to get the full snapshot path.
-	snapshotPath := r.toSnapshotPath(path)
+	root, err := r.snapshotRoot(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// restic dump takes the path as it appears in the snapshot, which is
+	// rooted where the backup was taken rather than where this machine
+	// keeps its store.
+	snapshotPath := root + "/" + path
 	args := r.buildArgs("dump", snapID, snapshotPath)
 	out, err := r.run(ctx, args)
 	if err != nil {
@@ -496,8 +514,38 @@ func (r *ResticRemote) ensureInit(ctx context.Context) error {
 	return nil
 }
 
-// latestSnapshotID returns the short ID of the latest snapshot, or an error if
-// no snapshots exist.
+// snapshotRoot returns the directory the latest snapshot was taken from.
+//
+// restic records absolute paths, and the machine restoring a store rarely
+// keeps it where the machine that backed it up did. Without this, a store
+// backed up from /home/alice/.password-store and restored on a machine using
+// /home/bob/store produced entries named "home/alice/.password-store/x.age"
+// — a path that is not in the snapshot and not an entry name either.
+func (r *ResticRemote) snapshotRoot(ctx context.Context) (string, error) {
+	args := r.buildArgs("snapshots", "--latest", "1", "--json")
+	out, err := r.run(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	var snaps []ResticSnapshot
+	if err := json.Unmarshal(out, &snaps); err != nil {
+		return "", fmt.Errorf("remote/restic: reading the snapshot list: %w", err)
+	}
+	if len(snaps) == 0 || len(snaps[0].Paths) == 0 {
+		return r.storeDir, nil
+	}
+	return strings.TrimRight(snaps[0].Paths[0], "/"), nil
+}
+
+// ErrNoSnapshots reports a repository that holds no snapshot yet.
+//
+// It is a condition rather than a failure: a repository nobody has backed up
+// to is the ordinary starting point, and the first sync is what creates the
+// snapshot.
+var ErrNoSnapshots = errors.New("remote/restic: repository holds no snapshots yet")
+
+// latestSnapshotID returns the short ID of the latest snapshot, or
+// ErrNoSnapshots when the repository is empty.
 func (r *ResticRemote) latestSnapshotID(ctx context.Context) (string, error) {
 	args := r.buildArgs("snapshots", "--latest", "1", "--json")
 	out, err := r.run(ctx, args)
@@ -505,8 +553,11 @@ func (r *ResticRemote) latestSnapshotID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	var snaps []ResticSnapshot
-	if err := json.Unmarshal(out, &snaps); err != nil || len(snaps) == 0 {
-		return "", fmt.Errorf("no snapshots found")
+	if err := json.Unmarshal(out, &snaps); err != nil {
+		return "", fmt.Errorf("remote/restic: reading the snapshot list: %w", err)
+	}
+	if len(snaps) == 0 {
+		return "", ErrNoSnapshots
 	}
 	return snaps[0].ShortID, nil
 }
@@ -527,39 +578,29 @@ func parseSnapshotID(output string) string {
 	return ""
 }
 
-// toStoreRelative converts an absolute path from a restic snapshot to a
-// store-relative path by stripping the storeDir prefix. Restic records the
-// absolute path of the backup source, so "restic ls" returns paths like
-// "/tmp/store/sites/a.gpg" when the backup source was "/tmp/store". This
-// method strips that prefix to produce "sites/a.gpg".
-func (r *ResticRemote) toStoreRelative(absPath string) string {
-	// Normalise: restic may return "/tmp/store/file" for storeDir="/tmp/store".
-	prefix := r.storeDir
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	// Try with leading slash first (most common).
-	if strings.HasPrefix(absPath, prefix+"/") {
-		return strings.TrimPrefix(absPath, prefix+"/")
-	}
-	if absPath == prefix {
+// RelativeTo makes a path from a snapshot relative to the root it was taken
+// from.
+//
+// A path outside that root returns empty rather than being passed through:
+// restic snapshots hold absolute paths, and treating a stray one as an entry
+// name produced entries called "home/alice/.password-store/x.age" on a
+// machine whose store was somewhere else.
+func RelativeTo(root, absPath string) string {
+	root = strings.TrimRight(root, "/")
+	switch {
+	case absPath == root:
 		return ""
+	case strings.HasPrefix(absPath, root+"/"):
+		return strings.TrimPrefix(absPath, root+"/")
 	}
-	// Try without leading slash (some restic versions strip it).
-	trimmed := strings.TrimPrefix(absPath, "/")
-	if strings.HasPrefix(trimmed, strings.TrimPrefix(prefix, "/")+"/") {
-		return strings.TrimPrefix(trimmed, strings.TrimPrefix(prefix, "/")+"/")
+	// restic has been known to strip the leading slash; compare without it
+	// before giving up.
+	trimmedRoot := strings.TrimPrefix(root, "/")
+	trimmedPath := strings.TrimPrefix(absPath, "/")
+	if strings.HasPrefix(trimmedPath, trimmedRoot+"/") {
+		return strings.TrimPrefix(trimmedPath, trimmedRoot+"/")
 	}
-	// Fallback: if the path doesn't match the storeDir prefix, return as-is
-	// after stripping any leading slash. This handles edge cases where the
-	// backup was created with a relative path.
-	return strings.TrimPrefix(absPath, "/")
-}
-
-// toSnapshotPath converts a store-relative path to the absolute path that
-// restic uses in the snapshot. This is the inverse of toStoreRelative.
-func (r *ResticRemote) toSnapshotPath(relPath string) string {
-	return r.storeDir + "/" + relPath
+	return ""
 }
 
 // resticWriteWorktree writes data to the file at absPath in the working tree,

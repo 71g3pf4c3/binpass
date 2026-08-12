@@ -45,9 +45,12 @@ func TestResticRemote_Integration(t *testing.T) {
 	// Name.
 	assert.Equal(t, "test-local", r.Name())
 
-	// List on empty store (no snapshots) should return an error about no snapshots.
-	_, err = r.List(ctx)
-	assert.Error(t, err, "list on empty repo should fail with 'no snapshots found'")
+	// A repository nobody has backed up to yet is empty, not broken. It is
+	// where every restic remote starts, and failing here meant the first
+	// sync refused to push because there was nothing to pull.
+	files, err := r.List(ctx)
+	require.NoError(t, err, "an empty repository is the ordinary starting point")
+	assert.Empty(t, files)
 
 	// Put a file (writes to local store, marks dirty).
 	rev, err := r.Put(ctx, "sites/example.gpg", bytes.NewReader([]byte("encrypted-data")), "")
@@ -58,7 +61,7 @@ func TestResticRemote_Integration(t *testing.T) {
 	require.NoError(t, r.Push(ctx))
 
 	// List should now include the file.
-	files, err := r.List(ctx)
+	files, err = r.List(ctx)
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 	assert.Equal(t, "sites/example.gpg", files[0].Path)

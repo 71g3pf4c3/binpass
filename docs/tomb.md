@@ -427,6 +427,18 @@ warning: store.luks is a disk image, and origin stores every version of it in fu
 It is a warning, not a refusal: a 64 MB image on a private server is a
 perfectly reasonable arrangement.
 
+Note that "use restic" does not mean giving up a cloud provider. restic
+reaches S3, B2, Azure, Google Cloud Storage, SFTP, its own REST server, and —
+through `rclone:` — Google Drive, Dropbox and everything else rclone speaks:
+
+```sh
+binpass remote add restic drive "rclone:gdrive:binpass"
+```
+
+That is the same storage the `gdrive` transport uses, with deduplication and
+snapshots on top, which is exactly what a disk image needs. See
+[sync-remotes.md §2.2.1](sync-remotes.md).
+
 A coffin grows with its contents rather than being a fixed-size image, so it
 is the pragmatic choice on git. Set expectations with `.gitattributes`:
 

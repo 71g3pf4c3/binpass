@@ -468,6 +468,16 @@ binpass remote add restic s3-backup s3:s3.amazonaws.com/my-bucket/binpass
 binpass sync --remote=s3-backup
 ```
 
+The repository string is handed to restic untouched, so **every restic
+backend works**: `sftp:`, `b2:`, `azure:`, `gs:`, `swift:`, `rest:`, and
+`rclone:` — which reaches Google Drive, Dropbox, OneDrive and the rest of
+rclone's list with deduplication and snapshots on top of them.
+
+```sh
+binpass remote add restic b2 "b2:mybucket:binpass"
+binpass remote add restic drive "rclone:gdrive:binpass"
+```
+
 For production, store the restic password securely:
 
 ```yaml

@@ -40,9 +40,26 @@ func newRemoteAddCmd(app *App) *cobra.Command {
   webdav    — WebDAV endpoint
   s3        — S3-compatible bucket
 
-For git, the URL is required. For restic, the URL is the repository path or
-endpoint (e.g. "s3:s3.amazonaws.com/bucket/path" or "/mnt/backup"). For cloud
-remotes, binpass will guide you through OAuth on first use.`,
+For git, the URL is required.
+
+For restic, the URL is the repository, passed to restic untouched, so every
+backend it supports works:
+
+  /mnt/backup/binpass                     a local or mounted disk
+  sftp:user@host:/srv/binpass             SFTP
+  s3:s3.amazonaws.com/bucket/binpass      S3, MinIO, Garage, Wasabi
+  b2:bucket:binpass                       Backblaze B2
+  azure:container:/binpass                Azure Blob Storage
+  gs:bucket:/binpass                      Google Cloud Storage
+  swift:container:/binpass                OpenStack Swift
+  rest:https://host:8000/binpass          a rest-server
+  rclone:remote:binpass                   anything rclone speaks
+
+That last one reaches Google Drive, Dropbox and OneDrive with restic's
+deduplication and snapshots on top, which suits a store with a tomb far
+better than storing plain files does.
+
+For cloud remotes, binpass will guide you through OAuth on first use.`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
 			return app.runRemoteAdd(args[0], args[1], args[2:]...)

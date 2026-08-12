@@ -11,7 +11,7 @@ regardless of where your data lives.
 | Transport | Type | Atomic | History | Rename | Setup |
 |---|---|---|---|---|---|
 | git | `git` | yes | yes | yes | Built-in, no extra deps |
-| restic | `restic` | no (snapshot-based) | yes (snapshots) | yes (local) | Requires [restic](https://restic.net/) |
+| restic | `restic` | no (snapshot-based) | yes (snapshots) | yes (local) | Requires [restic](https://restic.net/). **Reaches every restic backend**: local, SFTP, S3, B2, Azure, GCS, Swift, REST, and anything rclone supports (§2.2.1) |
 | S3 | `s3` | no (verify-after-write) | yes (versioning) | no | Requires [rclone](https://rclone.org/) |
 | Google Drive | `gdrive` | no (verify-after-write) | yes (revisions) | no | Requires rclone + OAuth |
 | Yandex.Disk | `yandex` | no (verify-after-write) | limited | no | Requires rclone + OAuth |
@@ -20,6 +20,12 @@ regardless of where your data lives.
 **Key difference:** git is atomic and supports rename natively. Cloud
 transports are not atomic — binpass adds verify-after-write checks
 automatically when the transport reports `WeakAtomic` capability.
+
+**The `s3`, `gdrive`, `yandex` and `webdav` types are rclone storing plain
+files.** The `restic` type reaches the same providers — including Drive and
+Dropbox, through `rclone:` — but with deduplication, snapshots and history
+on top. Unless you need the store to be readable as ordinary files at the
+far end, restic is the better choice for all of them.
 
 ---
 
@@ -280,7 +286,47 @@ drift and the sync engine re-merges.
 ### 2.2. Prerequisites
 
 - [restic](https://restic.net/) installed on PATH
-- A restic repository (local, S3, B2, SFTP, etc.)
+- A restic repository
+
+### 2.2.1. Every restic backend works
+
+The repository string is passed to restic untouched, so **anything restic can
+address, binpass can use**. The sections below cover local, S3 and SFTP
+because they are the common cases, not because they are the supported ones.
+
+| Backend | Repository string |
+|---|---|
+| Local or mounted disk | `/mnt/backup/binpass` |
+| SFTP | `sftp:user@host:/srv/binpass` |
+| S3, MinIO, Garage, Wasabi, Ceph | `s3:s3.amazonaws.com/bucket/binpass` |
+| Backblaze B2 | `b2:bucket:binpass` |
+| Azure Blob Storage | `azure:container:/binpass` |
+| Google Cloud Storage | `gs:bucket:/binpass` |
+| OpenStack Swift | `swift:container:/binpass` |
+| REST server (`rest-server`) | `rest:https://host:8000/binpass` |
+| **Anything rclone supports** | `rclone:remote:path` |
+
+That last row is worth noticing: it reaches Google Drive, Yandex.Disk,
+Dropbox, OneDrive, pCloud, Box and the rest of rclone's list — with restic's
+deduplication and snapshots on top, rather than as plain files. For a store
+with a tomb that is the combination to want (§7.5).
+
+Credentials come from the environment, exactly as restic documents them, and
+binpass passes its environment through:
+
+```sh
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...   # s3
+export B2_ACCOUNT_ID=... B2_ACCOUNT_KEY=...              # b2
+export AZURE_ACCOUNT_NAME=... AZURE_ACCOUNT_KEY=...      # azure
+export GOOGLE_PROJECT_ID=... GOOGLE_APPLICATION_CREDENTIALS=...  # gs
+```
+
+Verify the repository string with restic before handing it to binpass — the
+error messages are restic's, and reading them directly is quicker:
+
+```sh
+restic -r b2:mybucket:binpass snapshots
+```
 
 ### 2.3. Local repository
 

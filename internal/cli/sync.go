@@ -110,6 +110,13 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 		return nil
 	}
 
+	// A block container synchronises correctly but grows the remote without
+	// bound: a LUKS image or a sparse bundle is one large opaque file that
+	// changes wholesale on every write, so a transport keeping every
+	// version stores the whole image again each time. Saying so once beats
+	// letting someone discover it when their git repository reaches 40 GB.
+	a.warnAboutBlockContainers(rem, actions)
+
 	// Print the plan.
 	hasConflicts := false
 	for _, act := range actions {
@@ -491,4 +498,31 @@ func sortedRemoteNames(remotes map[string]config.RemoteConfig) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// warnAboutBlockContainers reports a container the chosen transport carries
+// badly.
+//
+// It is a warning rather than a refusal: a small image on a private server
+// is a legitimate arrangement, and the sync itself is correct either way.
+// What is not legitimate is finding out from the provider's bill.
+func (a *App) warnAboutBlockContainers(rem remote.Remote, actions []sync.Action) {
+	if _, isRestic := rem.(*remote.ResticRemote); isRestic {
+		// restic deduplicates at the block level, which is exactly the case
+		// a disk image needs: a changed entry rewrites a few blocks, not the
+		// whole file.
+		return
+	}
+
+	for _, act := range actions {
+		if act.Kind == sync.ActionNone || !remote.IsBlockContainer(act.Path) {
+			continue
+		}
+		fmt.Fprintf(a.Err,
+			"warning: %s is a disk image, and %s stores every version of it in full.\n"+
+				"  A restic remote deduplicates at the block level and suits this far better;\n"+
+				"  see docs/tomb.md for which tomb backend to use with which transport.\n",
+			act.Path, rem.Name())
+		return
+	}
 }

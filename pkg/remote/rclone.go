@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -90,12 +91,10 @@ func (r *RcloneRemote) List(ctx context.Context) ([]File, error) {
 			continue
 		}
 		path := parts[0]
-		// Only include crypto files.
-		if !strings.HasSuffix(path, ".gpg") && !strings.HasSuffix(path, ".age") {
-			continue
-		}
-		// Skip dotfiles.
-		if strings.HasPrefix(path, ".") {
+		// Entries and the tomb container. A closed LUKS or sparse bundle
+		// store is only the container, so an extension check alone reports
+		// such a store as empty.
+		if !IsStoreContent(path) || storeDotfiles[filepath.Base(path)] {
 			continue
 		}
 		// The listing comes from the cloud backend, not from us.

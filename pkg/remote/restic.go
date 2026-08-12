@@ -202,13 +202,9 @@ func (r *ResticRemote) List(ctx context.Context) ([]File, error) {
 		if path == "" {
 			continue
 		}
-		// Skip dotfiles.
-		if isDotfile(path) {
-			continue
-		}
-		// Only crypto files.
-		ext := filepath.Ext(path)
-		if ext != ".gpg" && ext != ".age" {
+		// Entries and the tomb container; recipients files are setup that
+		// restic already carries in the snapshot.
+		if !IsStoreContent(path) || storeDotfiles[filepath.Base(path)] {
 			continue
 		}
 		// A snapshot is only as trustworthy as the repository holding it.
@@ -566,17 +562,6 @@ func (r *ResticRemote) toSnapshotPath(relPath string) string {
 	return r.storeDir + "/" + relPath
 }
 
-// isDotfile reports whether path starts with a dot after the last slash,
-// indicating a hidden file that should not be included in sync listings.
-func isDotfile(path string) bool {
-	for _, part := range strings.Split(path, "/") {
-		if len(part) > 0 && part[0] == '.' {
-			return true
-		}
-	}
-	return false
-}
-
 // resticWriteWorktree writes data to the file at absPath in the working tree,
 // creating parent directories as needed. This mirrors GitRemote.writeWorktree.
 func resticWriteWorktree(absPath string, data []byte) error {
@@ -605,13 +590,7 @@ func resticMoveAll(srcDir, dstDir string) error {
 		if err != nil {
 			return err
 		}
-		// Skip dotfiles.
-		if isDotfile(rel) {
-			return nil
-		}
-		// Only crypto files.
-		ext := filepath.Ext(rel)
-		if ext != ".gpg" && ext != ".age" {
+		if !IsStoreContent(rel) || storeDotfiles[filepath.Base(rel)] {
 			return nil
 		}
 		dstPath := filepath.Join(dstDir, rel)

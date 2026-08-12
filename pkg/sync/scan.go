@@ -56,8 +56,11 @@ func Scan(storeDir string, base Snapshot, device DeviceID, exts []string) (Snaps
 		if d.IsDir() {
 			return nil
 		}
-		ext := filepath.Ext(name)
-		if !allowed[ext] {
+		// A tomb container is store content even though it has no crypto
+		// extension: when the tomb is closed it is the only thing there,
+		// and skipping it means scanning a closed store finds nothing and
+		// the merge engine reads that as every entry having been deleted.
+		if !isContainer(name) && !allowed[filepath.Ext(name)] {
 			return nil
 		}
 
@@ -183,3 +186,20 @@ func ModTime(path string) time.Time {
 	}
 	return info.ModTime()
 }
+
+// containerNames are the files a tomb leaves in the store. They are content
+// that must synchronise, but they carry no crypto extension.
+//
+// The names are duplicated from pkg/tomb rather than imported: the sync
+// engine has no other reason to depend on the tomb, and these are part of
+// the on-disk layout either way.
+var containerNames = map[string]bool{
+	"store.coffin.age":           true,
+	"store.luks":                 true,
+	"store.luks.key.age":         true,
+	"store.sparsebundle":         true,
+	"store.sparsebundle.key.age": true,
+}
+
+// isContainer reports whether a file name is a tomb container.
+func isContainer(name string) bool { return containerNames[name] }

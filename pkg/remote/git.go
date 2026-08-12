@@ -313,13 +313,10 @@ func (g *GitRemote) List(ctx context.Context) ([]File, error) {
 			continue
 		}
 		path := string(p)
-		// Skip dotfiles: .gitattributes, .gpg-id, .age-recipients, etc.
-		if len(path) > 0 && path[0] == '.' {
-			continue
-		}
-		// Skip non-crypto files (no .gpg or .age extension).
-		ext := filepath.Ext(path)
-		if ext != ".gpg" && ext != ".age" {
+		// Entries, and the tomb container when the store is closed. A
+		// closed LUKS or sparse bundle store is only the container: listing
+		// entries alone would report it as empty.
+		if !IsStoreContent(path) || storeDotfiles[filepath.Base(path)] {
 			continue
 		}
 		// A repository is under the control of whoever can push to it.
@@ -651,15 +648,7 @@ func (g *GitRemote) commitLocalChanges(ctx context.Context) error {
 
 // belongsInStore reports whether a path is store content that sync owns.
 func (g *GitRemote) belongsInStore(path string) bool {
-	switch filepath.Ext(path) {
-	case ".gpg", ".age":
-		return true
-	}
-	switch filepath.Base(path) {
-	case ".gpg-id", ".age-recipients", ".gitattributes":
-		return true
-	}
-	return false
+	return IsStoreContent(path)
 }
 
 // adoptRemoteBranch points a store with no history of its own at the branch
@@ -710,9 +699,9 @@ func (g *GitRemote) preserveDivergedFiles(ctx context.Context, ref string) error
 		if path == "" || !g.belongsInStore(path) {
 			continue
 		}
-		ext := filepath.Ext(path)
-		if ext != ".gpg" && ext != ".age" {
-			continue // recipients files are setup, not content worth keeping twice.
+		// Recipients files are setup, not content worth keeping twice.
+		if storeDotfiles[filepath.Base(path)] {
+			continue
 		}
 		src := filepath.Join(g.dir, path)
 		data, err := os.ReadFile(src) //nolint:gosec // a path inside the store.
@@ -722,6 +711,7 @@ func (g *GitRemote) preserveDivergedFiles(ctx context.Context, ref string) error
 			}
 			return fmt.Errorf("remote/git: read %q: %w", path, err)
 		}
+		ext := filepath.Ext(path)
 		dst := strings.TrimSuffix(path, ext) + ".conflict-" + g.deviceTag() + "-" + stamp + ext
 		if err := g.writeWorktree(filepath.Join(g.dir, dst), data); err != nil {
 			return err

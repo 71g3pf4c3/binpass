@@ -144,9 +144,10 @@ If that is gnome-keyring, stop it from taking the name at login:
   systemctl --user mask gnome-keyring-daemon.socket
   systemctl --user stop gnome-keyring-daemon.service
 
-For KWallet:
-
-  systemctl --user mask plasma-kwallet-pam.service
+On KDE the owner is a bridge in front of KWallet, not kwalletd itself, which
+publishes org.kde.kwalletd6 and does not compete for this name. Stop whatever
+is named above; masking plasma-kwallet-pam.service only disables KWallet's
+unlock at login and frees nothing.
 
 Then start binpass:
 

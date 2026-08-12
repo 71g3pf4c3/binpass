@@ -3,7 +3,8 @@
 Chrome, VS Code, NetworkManager, Evolution, GNOME Online Accounts and a long
 tail of other programs keep their secrets in the system keyring rather than
 asking you. On Linux that keyring is a D-Bus interface,
-`org.freedesktop.secrets`, usually served by gnome-keyring or KWallet.
+`org.freedesktop.secrets`, usually served by gnome-keyring. On KDE it is
+served by a bridge in front of KWallet, if one is installed at all.
 
 `binpass ss` serves it from your password store instead. Nothing on the
 client side changes: the programs go on calling the keyring, and the secrets
@@ -103,11 +104,23 @@ systemctl --user mask gnome-keyring-daemon.socket
 systemctl --user stop gnome-keyring-daemon.service
 ```
 
-For KWallet:
+**KDE is usually not in the way at all.** KWallet does not own
+`org.freedesktop.secrets`: `kwalletd6` publishes `org.kde.kwalletd6` and
+nothing else, so a plain KDE session leaves the name free and `binpass ss
+serve` simply starts. What claims it, when anything does, is a separate
+bridge — `ksecretd`, or a distribution package wiring KWallet to the
+freedesktop API. `binpass ss doctor` reads the actual owner rather than
+guessing, so trust what it prints over any of this.
+
+If a bridge is there, stop that, not KWallet itself:
 
 ```sh
-systemctl --user mask plasma-kwallet-pam.service
+systemctl --user mask ksecretd.service     # whatever doctor named
 ```
+
+Masking `plasma-kwallet-pam.service` disables KWallet's unlock at login,
+which is unrelated to the bus name and will annoy you without freeing
+anything.
 
 Then log out and back in, or start binpass by hand.
 
@@ -300,8 +313,10 @@ not both run.
 
 ### `org.freedesktop.secrets is already owned`
 
-Something else is the keyring. `binpass ss doctor` names it and prints how to
-stop it — see [§3](#3-replacing-gnome-keyring-or-kwallet).
+Something else is the keyring. `binpass ss doctor` names the executable and
+its PID, which is the answer — on GNOME it is gnome-keyring-daemon, on KDE it
+is a bridge rather than KWallet itself. See
+[§3](#3-replacing-gnome-keyring-or-kwallet).
 
 ### `secret-tool` hangs or reports no such interface
 

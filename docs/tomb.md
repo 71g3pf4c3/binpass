@@ -392,17 +392,52 @@ binpass tomb open --timer=1h    # terminal 1, stays running
 binpass sync                     # push the blob
 ```
 
-The archive is a single large binary file, so git stores a fresh copy on
-every change and the repository grows accordingly. Set expectations with
-`.gitattributes`:
+### 7.1 Which backend suits which transport
+
+Every combination works — the container is transferred correctly in all of
+them. What differs is how much space it costs on the far end.
+
+| | git | restic | rclone (S3, Drive, WebDAV) |
+|---|---|---|---|
+| **coffin** | fine | best | fine |
+| **luks** | avoid | **best** | avoid |
+| **sparsebundle** | avoid | **best** | avoid |
+| no tomb | best | fine | fine |
+
+The reason is what each transport stores when one file changes:
+
+* **git** keeps every version in full, forever. A 1 GB LUKS image edited
+  daily is a repository growing by 1 GB a day, and `git gc` cannot help:
+  encrypted blobs do not delta-compress.
+* **rclone** stores the current version, plus older ones if the bucket has
+  versioning. Better than git, still a full copy per change.
+* **restic** deduplicates at block level. Changing one entry inside a 1 GB
+  image rewrites the blocks that actually changed — a few hundred kilobytes,
+  not a gigabyte. This is what a disk image needs.
+
+binpass says so when it is about to push a block container somewhere that
+keeps whole copies:
+
+```
+warning: store.luks is a disk image, and origin stores every version of it in full.
+  A restic remote deduplicates at the block level and suits this far better;
+  see docs/tomb.md for which tomb backend to use with which transport.
+```
+
+It is a warning, not a refusal: a 64 MB image on a private server is a
+perfectly reasonable arrangement.
+
+A coffin grows with its contents rather than being a fixed-size image, so it
+is the pragmatic choice on git. Set expectations with `.gitattributes`:
 
 ```
 store.coffin.age binary
 ```
 
-If repository size becomes a problem, a snapshot transport handles large
-opaque blobs better than git does — see
-[sync-remotes.md](sync-remotes.md) on restic.
+**A sparse bundle only opens on macOS**, and a LUKS container only on Linux.
+Both synchronise anywhere, but the second machine has to be able to open what
+it received. For a store shared between a Mac and a Linux box, coffin is the
+only backend both can open.
 
 ---
 

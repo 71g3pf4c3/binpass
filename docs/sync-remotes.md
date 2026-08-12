@@ -751,6 +751,37 @@ error.
 
 ---
 
+## 7.5 Syncing a store with a tomb
+
+A closed tomb is one large opaque file where the entries used to be, and
+every transport carries it correctly. What differs is the cost.
+
+| Tomb backend | git | restic | rclone (S3, Drive, WebDAV) |
+|---|---|---|---|
+| `coffin` | fine | best | fine |
+| `luks` | avoid | **best** | avoid |
+| `sparsebundle` | avoid | **best** | avoid |
+
+git keeps every version of the container in full and encrypted blobs do not
+delta-compress, so a 1 GB LUKS image edited daily is a repository growing by
+a gigabyte a day. restic deduplicates at block level, which is exactly what a
+disk image wants: one changed entry rewrites the blocks that changed rather
+than the whole image. binpass prints a warning when it is about to push a
+block container somewhere that stores whole copies.
+
+**Close the tomb before syncing, not after.** With it open, the store is a
+directory of entries and the transport uploads each one — precisely the
+metadata the tomb exists to hide. Worse, the two states interleave badly:
+syncing an open tomb and then closing it makes the next sync look like every
+entry was deleted at once.
+
+```sh
+binpass tomb close
+binpass sync
+```
+
+See [tomb.md](tomb.md) for the backends themselves.
+
 ## 8. Security considerations
 
 ### What the provider sees

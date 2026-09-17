@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -90,11 +91,17 @@ func (a *App) runImport(path, format string, dryRun, force bool, encoding string
 	}
 
 	// Re-open the file for the importer (DetectReader consumed the reader).
-	f, err := os.Open(path) //nolint:gosec // user-provided path.
+	// An explicit --encoding transcodes here, before any importer sees the
+	// bytes: importers work in UTF-8, and the store requires it.
+	raw, err := os.ReadFile(path) //nolint:gosec // user-provided path.
 	if err != nil {
 		return fmt.Errorf("import: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	raw, err = importer.Decode(raw, encoding)
+	if err != nil {
+		return fmt.Errorf("import: decoding as %q: %w", encoding, err)
+	}
+	f := bytes.NewReader(raw)
 
 	// For KeePass, we need a password from the terminal. Use readSecret
 	// (no echo) to avoid displaying the database password.

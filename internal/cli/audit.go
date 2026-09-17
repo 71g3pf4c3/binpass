@@ -40,6 +40,15 @@ each entry requires a touch. Use --parallel with caution.`,
 
 // runAudit performs the audit operation.
 func (a *App) runAudit(ctx context.Context, format string, parallel int, noHIBP bool) error {
+	// Reject the format before decrypting anything: the audit is the one
+	// command that touches every secret, and on a hardware token a typo in
+	// --format would otherwise cost a touch per entry to produce nothing.
+	switch format {
+	case "json", "text", "":
+	default:
+		return fmt.Errorf("audit: unknown format %q (use text or json)", format)
+	}
+
 	s, err := a.requireStore()
 	if err != nil {
 		return err
@@ -73,10 +82,8 @@ func (a *App) runAudit(ctx context.Context, format string, parallel int, noHIBP 
 		if err := enc.Encode(report); err != nil {
 			return fmt.Errorf("audit: encoding JSON: %w", err)
 		}
-	case "text", "":
-		a.printf("%s", audit.FormatHuman(report))
 	default:
-		return fmt.Errorf("audit: unknown format %q (use text or json)", format)
+		a.printf("%s", audit.FormatHuman(report))
 	}
 
 	// Exit with non-zero if there are critical findings.

@@ -2,6 +2,8 @@ package importer
 
 import (
 	"bytes"
+
+	"golang.org/x/text/encoding/unicode"
 	"strings"
 	"testing"
 )
@@ -496,5 +498,46 @@ func TestB64Encode(t *testing.T) {
 	got := b64Encode(data)
 	if got != "aGVsbG8gd29ybGQ=" {
 		t.Errorf("b64Encode = %q, want %q", got, "aGVsbG8gd29ybGQ=")
+	}
+}
+
+// TestCSVUTF16 covers the BOM pair Windows exports actually produce: the
+// payload is UTF-16 code units, and stripping the mark alone leaves
+// null-padded bytes that no CSV parser survives. Both byte orders must come
+// out as clean UTF-8 rows, Cyrillic included — ASCII-only fixtures would pass
+// even with the code units sliced apart, proving nothing.
+func TestCSVUTF16(t *testing.T) {
+	row := "folder,favorite,type,name,login_username,login_password,login_uri\n" +
+		"Социальное,0,login,Твиттер,@алиса,hunter2,https://twitter.com\n"
+
+	for _, tc := range []struct {
+		name   string
+		endian unicode.Endianness
+	}{
+		{"little", unicode.LittleEndian},
+		{"big", unicode.BigEndian},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			enc := unicode.UTF16(tc.endian, unicode.UseBOM).NewEncoder()
+			raw, err := enc.Bytes([]byte(row))
+			if err != nil {
+				t.Fatalf("encode fixture: %v", err)
+			}
+			if raw[0] == 0 && raw[1] == 0 {
+				t.Fatal("fixture has no BOM; the test would not exercise the path")
+			}
+
+			imp := &BitwardenImporter{}
+			entries, err := ImportAll(imp, bytes.NewReader(raw))
+			if err != nil {
+				t.Fatalf("ImportAll UTF-16 %s: %v", tc.name, err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("got %d entries, want 1", len(entries))
+			}
+			if entries[0].Title != "Твиттер" {
+				t.Fatalf("got name %q, want the Cyrillic one intact", entries[0].Title)
+			}
+		})
 	}
 }

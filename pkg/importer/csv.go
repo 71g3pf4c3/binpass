@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/csv"
+	"fmt"
 	"io"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/htmlindex"
+	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 )
 
@@ -24,7 +26,24 @@ func csvReadAll(r io.Reader, encoding string) ([][]string, error) {
 		return nil, err
 	}
 
-	raw = stripBOM(raw)
+	// A UTF-16 BOM means the payload is UTF-16 code units, not bytes that
+	// merely happen to follow the mark: stripping the mark alone leaves
+	// null-padded text that no CSV parser survives. Decode the whole thing
+	// to UTF-8 first; the decoder consumes the BOM itself.
+	switch {
+	case bytes.HasPrefix(raw, []byte{0xFF, 0xFE}):
+		raw, err = unicode.UTF16(unicode.LittleEndian, unicode.ExpectBOM).NewDecoder().Bytes(raw)
+		if err != nil {
+			return nil, fmt.Errorf("csv: decode UTF-16LE: %w", err)
+		}
+	case bytes.HasPrefix(raw, []byte{0xFE, 0xFF}):
+		raw, err = unicode.UTF16(unicode.BigEndian, unicode.ExpectBOM).NewDecoder().Bytes(raw)
+		if err != nil {
+			return nil, fmt.Errorf("csv: decode UTF-16BE: %w", err)
+		}
+	default:
+		raw = stripBOM(raw)
+	}
 
 	if encoding != "" {
 		raw, err = decodeBytes(raw, encoding)

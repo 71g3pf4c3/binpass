@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"encoding/csv"
+
 	"context"
 	"encoding/json"
 	"os"
@@ -252,7 +254,7 @@ func TestRunAudit_TextNoHIBP(t *testing.T) {
 	app.set(t, "reused-one", "same-password-both-entries\n")
 	app.set(t, "reused-two", "same-password-both-entries\n")
 
-	require.NoError(t, app.runAudit(context.Background(), "text", 1, true))
+	require.NoError(t, app.runAudit(context.Background(), "text", 1, true, nil))
 
 	out := app.out.String()
 	assert.Contains(t, out, "weak")
@@ -264,7 +266,7 @@ func TestRunAudit_JSON(t *testing.T) {
 	app := newTestApp(t)
 	app.set(t, "weak", "123456\n")
 
-	require.NoError(t, app.runAudit(context.Background(), "json", 1, true))
+	require.NoError(t, app.runAudit(context.Background(), "json", 1, true, nil))
 
 	var report map[string]any
 	require.NoError(t, json.Unmarshal(app.out.Bytes(), &report))
@@ -275,7 +277,7 @@ func TestRunAudit_UnknownFormat(t *testing.T) {
 	app := newTestApp(t)
 	app.set(t, "weak", "123456\n")
 
-	err := app.runAudit(context.Background(), "kaboom", 1, true)
+	err := app.runAudit(context.Background(), "kaboom", 1, true, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown format "kaboom"`)
 }
@@ -294,7 +296,78 @@ func TestRunAudit_CriticalFindingsFailTheRun(t *testing.T) {
 	app.hibpClient = fakeHIBP{}
 	app.set(t, "breached", "correct-horse-battery-staple\n")
 
-	err := app.runAudit(context.Background(), "json", 1, false)
+	err := app.runAudit(context.Background(), "json", 1, false, nil)
 	require.Error(t, err, "breached passwords must fail the audit run")
 	assert.Contains(t, err.Error(), "critical finding")
+}
+
+// TestRunExport_NotesAreFreeForm covers the export roundtrip contract: the
+// notes column carries the note lines, not a copy of the structured ones.
+// With the whole body exported as notes, every re-import duplicated username
+// and url — the body grew on each pass — while real note lines must survive.
+func TestRunExport_NotesAreFreeForm(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "site/login", "hunter2\nusername: alice\nurl: https://x.io\nremember: the answer\notpauth://totp/x?secret=JBSW\nplain note line\n")
+
+	require.NoError(t, app.runExport("csv", nil))
+
+	csv := app.out.String()
+	assert.Contains(t, csv, ",alice,", "the username column")
+	assert.Contains(t, csv, ",https://x.io,", "the url column")
+	for _, want := range []string{"remember: the answer", "plain note line"} {
+		assert.Contains(t, csv, want, "note material survives the export")
+	}
+	// username/url lines are columns now; as notes they would come back as
+	// fields on re-import, duplicating themselves each pass.
+	assert.NotContains(t, csv, "username: alice", "the field line is not also in notes")
+	assert.NotContains(t, csv, "url: https://x.io", "the field line is not also in notes")
+	assert.Equal(t, 1, strings.Count(csv, "otpauth://"), "the otp column carries the URI, and only it")
+}
+
+// TestRunExport_CRLFNoteRoundTrips checks the CRLF edge of csvEscape: a note
+// written on Windows carries \r\n line endings, and some CSV readers choke
+// on a CRLF inside a quoted field even though RFC 4180 allows it. The export
+// normalises every field to LF — the note arrives as a clean multi-line
+// field, and the export itself never emits a quoted CRLF.
+func TestRunExport_CRLFNoteRoundTrips(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "win/note", "hunter2\r\nusername: bob\r\nnote line\r\nsecond line\r\n")
+
+	require.NoError(t, app.runExport("csv", nil))
+
+	r := csv.NewReader(app.out)
+	_, err := r.Read() // the header
+	require.NoError(t, err, "our own export must parse as CSV")
+	rec, err := r.Read()
+	require.NoError(t, err, "our own export must parse as CSV")
+	require.Len(t, rec, 6)
+	assert.Equal(t, "win/note", rec[0])
+	assert.Equal(t, "bob", rec[1], "the username column")
+	assert.Equal(t, "note line\nsecond line", rec[5], "the note survives with normalised line endings")
+	assert.NotContains(t, app.out.String(), "\r", "no carriage return is emitted inside a quoted field")
+}
+
+// TestRunAudit_PartialEntries covers --entries: the filter runs before
+// decryption, so a partial audit costs a touch per requested entry, not per
+// store entry — the difference between running it and not on a hardware token.
+func TestRunAudit_PartialEntries(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "bank/tinkoff", "hunter2\n")
+	app.set(t, "bank/sber", "hunter2\n")
+	app.set(t, "github/alice", "123456\n")
+
+	// Only the bank entries: one glob, no per-name enumeration.
+	require.NoError(t, app.runAudit(context.Background(), "text", 1, true, []string{"bank/*"}))
+
+	assert.Contains(t, app.out.String(), "bank/tinkoff")
+	assert.Contains(t, app.out.String(), "bank/sber")
+	assert.NotContains(t, app.out.String(), "github/alice", "the filter keeps the rest of the store out")
+
+	var report map[string]any
+	app.out.Reset()
+	require.NoError(t, app.runAudit(context.Background(), "json", 1, true, []string{"bank/*"}))
+	require.NoError(t, json.Unmarshal(app.out.Bytes(), &report))
+	stats, ok := report["stats"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(2), stats["total"], "the stats count what was audited, not the whole store")
 }

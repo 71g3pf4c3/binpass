@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/71g3pf4c3/binpass/pkg/importer"
+	"github.com/71g3pf4c3/binpass/pkg/secret"
 	"github.com/spf13/cobra"
 )
 
@@ -176,7 +177,7 @@ func (a *App) runExport(format string, args []string) error {
 		username, _ := sec.Field("username")
 		url, _ := sec.Field("url")
 		otp, _ := sec.OTP()
-		notes := csvEscape(sec.Body())
+		notes := csvEscape(freeFormNotes(sec))
 
 		fmt.Fprintf(w, "%s,%s,%s,%s,%s,%s\n",
 			csvEscape(name),
@@ -217,4 +218,36 @@ func csvEscape(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// exportedFieldLines are the body line shapes the CSV carries in their own
+// columns. Everything else in the body is note material and must survive the
+// export: dropping it would not deduplicate, it would lose data.
+var exportedFieldLines = []string{"username:", "url:"}
+
+// freeFormNotes extracts the note lines of a secret: the body without the
+// lines the export already carries in dedicated columns. With the whole
+// body in notes, every re-import duplicated username, url and otp — a
+// roundtrip that grew on each pass.
+func freeFormNotes(sec *secret.Secret) string {
+	var notes []string
+	for _, line := range sec.Lines()[1:] { // the first line is the password
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "otpauth://") {
+			continue
+		}
+		dup := false
+		for _, p := range exportedFieldLines {
+			if strings.HasPrefix(line, p) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			notes = append(notes, line)
+		}
+	}
+	return strings.Join(notes, "\n")
 }

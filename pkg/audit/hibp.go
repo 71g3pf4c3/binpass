@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -27,12 +29,23 @@ type HIBPClient struct {
 	Endpoint string
 	// Client is the HTTP client used for requests.
 	Client *http.Client
-	// Cache stores previously fetched ranges to avoid redundant API calls.
+	// CacheDir persists fetched ranges between runs, so an audit does not
+	// re-download what yesterday's audit already saw. Empty disables the
+	// disk cache — it is an optimisation, never a dependency. Only the
+	// 5-character hash prefixes are stored, which is exactly what the
+	// k-anonymity protocol already sends to the API.
+	CacheDir string
+	// cache stores previously fetched ranges to avoid redundant API calls.
 	// Key: 5-char SHA-1 prefix. Value: map of suffix → count.
 	cache map[string]map[string]int
 	// mu protects the cache.
 	mu sync.Mutex
 }
+
+// hibpCacheTTL bounds how long a fetched range is trusted. HIBP adds new
+// breaches continuously; a day-old answer is recent enough, a year-old one
+// is not.
+const hibpCacheTTL = 24 * time.Hour
 
 // NewHIBPClient returns a client configured for the production HIBP API.
 func NewHIBPClient() *HIBPClient {
@@ -56,12 +69,24 @@ func (c *HIBPClient) Check(ctx context.Context, password string) (bool, error) {
 	suffixes, ok := c.cache[prefix]
 	c.mu.Unlock()
 	if !ok {
+		// The disk cache from previous runs comes before the network: an
+		// audit over an unchanged store is then entirely offline.
 		var err error
-		suffixes, err = c.fetchRange(ctx, prefix)
+		suffixes, ok, err = c.readCache(prefix)
 		if err != nil {
 			return false, err
 		}
+		if !ok {
+			suffixes, err = c.fetchRange(ctx, prefix)
+			if err != nil {
+				return false, err
+			}
+			c.writeCache(prefix, suffixes)
+		}
 		c.mu.Lock()
+		if c.cache == nil {
+			c.cache = make(map[string]map[string]int)
+		}
 		c.cache[prefix] = suffixes
 		c.mu.Unlock()
 	}
@@ -117,3 +142,59 @@ func (c *HIBPClient) fetchRange(ctx context.Context, prefix string) (map[string]
 type noopHIBP struct{}
 
 func (noopHIBP) Check(_ context.Context, _ string) (bool, error) { return false, nil }
+
+// readCache loads a range from the disk cache. A missing or stale file is a
+// miss; an unreadable or malformed one is a miss too, never an error the
+// audit fails on — the cache is an optimisation.
+func (c *HIBPClient) readCache(prefix string) (map[string]int, bool, error) {
+	if c.CacheDir == "" {
+		return nil, false, nil
+	}
+	path := filepath.Join(c.CacheDir, prefix)
+	fi, err := os.Stat(path)
+	if err != nil || time.Since(fi.ModTime()) > hibpCacheTTL {
+		return nil, false, nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // file name is a 5-char hex prefix we wrote ourselves.
+	if err != nil {
+		return nil, false, nil
+	}
+	suffixes := make(map[string]int)
+	for _, line := range strings.Split(string(data), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			suffixes[line] = 0
+		}
+	}
+	return suffixes, true, nil
+}
+
+// writeCache stores a range on disk, best-effort: a read-only or missing
+// cache directory degrades to no cache, not to a failed audit.
+func (c *HIBPClient) writeCache(prefix string, suffixes map[string]int) {
+	if c.CacheDir == "" {
+		return
+	}
+	if err := os.MkdirAll(c.CacheDir, 0o700); err != nil {
+		return
+	}
+	var b strings.Builder
+	for suffix := range suffixes {
+		b.WriteString(suffix)
+		b.WriteByte('\n')
+	}
+	tmp, err := os.CreateTemp(c.CacheDir, ".range-*") // 0600 by default.
+	if err != nil {
+		return
+	}
+	name := tmp.Name()
+	if _, err := tmp.WriteString(b.String()); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return
+	}
+	_ = os.Rename(name, filepath.Join(c.CacheDir, prefix))
+}

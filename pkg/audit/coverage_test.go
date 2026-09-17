@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -320,5 +321,55 @@ func TestAuditParallelWithDecryptionError(t *testing.T) {
 	}
 	if report.Stats.Audited != 0 {
 		t.Errorf("Audited = %d, want 0", report.Stats.Audited)
+	}
+}
+
+// TestHIBPDiskCache covers the between-runs cache: a fresh client sharing
+// the cache directory of one that already fetched a range answers from disk,
+// with the API hit exactly once — the network stop being the price of every
+// audit run.
+func TestHIBPDiskCache(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		fmt.Fprintf(w, "%s:1\n", strings.Repeat("A", 35-1)+"1")
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	password := "cache-me"
+	hash := sha1Hash(password)
+	prefix := sha1Prefix(hash)
+
+	first := &HIBPClient{Endpoint: srv.URL + "/", Client: srv.Client(), CacheDir: dir, cache: map[string]map[string]int{}}
+	if _, err := first.Check(context.Background(), password); err != nil {
+		t.Fatalf("first check: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("got %d API hits after the first check, want 1", hits)
+	}
+
+	// A second client — a different process, in production — finds the range
+	// on disk and never touches the API.
+	second := &HIBPClient{Endpoint: srv.URL + "/", Client: srv.Client(), CacheDir: dir, cache: map[string]map[string]int{}}
+	if _, err := second.Check(context.Background(), password); err != nil {
+		t.Fatalf("second check: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("got %d API hits after the cached check, want still 1", hits)
+	}
+
+	// A stale entry expires and is fetched again — by a third client, since
+	// the second still holds the range in memory, which is exactly the
+	// point of the two cache layers.
+	if err := os.Chtimes(filepath.Join(dir, prefix), time.Time{}, time.Now().Add(-hibpCacheTTL-time.Hour)); err != nil {
+		t.Fatalf("age the cache entry: %v", err)
+	}
+	third := &HIBPClient{Endpoint: srv.URL + "/", Client: srv.Client(), CacheDir: dir, cache: map[string]map[string]int{}}
+	if _, err := third.Check(context.Background(), password); err != nil {
+		t.Fatalf("third check: %v", err)
+	}
+	if hits != 2 {
+		t.Fatalf("got %d API hits after the stale entry, want 2", hits)
 	}
 }

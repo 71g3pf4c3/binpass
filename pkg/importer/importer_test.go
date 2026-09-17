@@ -93,6 +93,19 @@ Social,0,login,Twitter,@alice,hunter2,https://twitter.com,my account`
 	if imp.Detect(strings.NewReader("random text")) {
 		t.Error("BitwardenImporter.Detect should not match random text")
 	}
+	// A header mentioning folders alone is not Bitwarden: other exporters
+	// use that word too, and "favorite" is what disambiguates.
+	if imp.Detect(strings.NewReader("folder,name,login_username,login_password\nSocial,Twitter,@alice,hunter2")) {
+		t.Error("BitwardenImporter.Detect should not match a folder column without favorite")
+	}
+	if imp.Detect(strings.NewReader("group,name,login_username,login_password\nOrg,Twitter,@alice,hunter2")) {
+		t.Error("BitwardenImporter.Detect should not match a group column without favorite")
+	}
+	orgCsv := `group,favorite,type,name,login_username,login_password
+Org,0,login,Twitter,@alice,hunter2`
+	if !imp.Detect(strings.NewReader(orgCsv)) {
+		t.Error("BitwardenImporter.Detect should recognise an organization export with group column")
+	}
 }
 
 func TestBitwardenImport(t *testing.T) {

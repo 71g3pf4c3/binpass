@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"os"
 	"path/filepath"
 	"sort"
@@ -104,11 +105,29 @@ func (a *App) runRemoteAdd(remoteType, name string, extra ...string) error {
 	rc := config.RemoteConfig{
 		Type: remoteType,
 	}
-	if len(extra) > 0 {
-		rc.URL = extra[0]
-	}
-	if len(extra) > 1 {
-		rc.Folder = extra[1]
+	// The first bare argument is the URL, as every type takes it; the rest
+	// are key=value pairs, which is how the fields only some types have
+	// (an S3 bucket, a region, a key prefix) are spelled without a flag
+	// per transport.
+	for _, ex := range extra {
+		if rc.URL == "" && !strings.Contains(ex, "=") {
+			rc.URL = ex
+			continue
+		}
+		key, value, ok := strings.Cut(ex, "=")
+		if !ok || value == "" {
+			return fmt.Errorf("remote add: %q: expected URL or key=value (bucket=, folder=, region=)", ex)
+		}
+		switch key {
+		case "bucket":
+			rc.Bucket = value
+		case "folder":
+			rc.Folder = value
+		case "region":
+			rc.Region = value
+		default:
+			return fmt.Errorf("remote add: unknown field %q (valid: bucket, folder, region)", key)
+		}
 	}
 
 	cfgPath := config.FilePath()
@@ -201,6 +220,12 @@ func upsertRemoteYAML(path, name string, rc config.RemoteConfig) error {
 	}
 	if rc.PasswordCommand != "" {
 		entry["password_command"] = rc.PasswordCommand
+	}
+	if rc.Bucket != "" {
+		entry["bucket"] = rc.Bucket
+	}
+	if rc.Region != "" {
+		entry["region"] = rc.Region
 	}
 
 	remotesMap[name] = entry

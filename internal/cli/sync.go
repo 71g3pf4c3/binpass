@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -440,7 +441,34 @@ func (a *App) buildRemote(name string, deviceID sync.DeviceID) (remote.Remote, e
 			opts.Password = rc.Password
 		}
 		return remote.NewResticRemote(opts)
-	case "s3", "gdrive", "yandex", "webdav":
+	case "s3":
+		// Native S3: conditional writes and an atomic advisory lock,
+		// neither of which rclone can offer. The endpoint comes from url
+		// (a "http://" prefix selects plain HTTP for a local MinIO); the
+		// bucket is a field of its own; the key prefix reuses folder.
+		// Credentials deliberately have no config form: they come from the
+		// environment (AWS_ACCESS_KEY_ID and friends), the same way restic
+		// takes its password from a command rather than the config.
+		endpoint, scheme := rc.URL, "https"
+		if u, perr := url.Parse(rc.URL); perr == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+			scheme, endpoint = u.Scheme, u.Host
+		}
+		if endpoint == "" {
+			return nil, fmt.Errorf("sync: s3 remote %q requires url (the endpoint)", name)
+		}
+		if rc.Bucket == "" {
+			return nil, fmt.Errorf("sync: s3 remote %q requires bucket", name)
+		}
+		return remote.NewS3Remote(remote.S3Options{
+			Name:     name,
+			Endpoint: endpoint,
+			Scheme:   scheme,
+			Region:   rc.Region,
+			Bucket:   rc.Bucket,
+			Prefix:   rc.Folder,
+			Device:   string(deviceID),
+		})
+	case "gdrive", "yandex", "webdav":
 		remotePath := rc.URL
 		if rc.Folder != "" {
 			remotePath = rc.URL + "/" + rc.Folder

@@ -35,7 +35,7 @@
 
           # Hash of the fetched module set. null would mean "the source
           # vendors its dependencies", which this repository does not.
-          vendorHash = "sha256-bwVRF+oNrQH2aD98soPStWzSJD7p4FaBrGm8NlHHH1I=";
+          vendorHash = "sha256-lhOt2faziYG7ad8vcJceCsoRdatQhG3Iv6cZwVCyzIk=";
 
           env.CGO_ENABLED = 0;
           ldflags = [

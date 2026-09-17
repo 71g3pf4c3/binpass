@@ -431,6 +431,7 @@ func (a *App) buildRemote(name string, deviceID sync.DeviceID) (remote.Remote, e
 			Name:     name,
 			Repo:     repo,
 			StoreDir: a.Cfg.Dir,
+			Device:   string(deviceID),
 		}
 		if rc.PasswordCommand != "" {
 			opts.PasswordCommand = rc.PasswordCommand

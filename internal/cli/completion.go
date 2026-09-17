@@ -116,3 +116,35 @@ func filterPrefix(candidates []string, prefix string) []string {
 	}
 	return out
 }
+
+// completeLauncherNames offers the pickers `binpass menu` can drive. The list
+// is what menu.go detects, in the order it tries them.
+func completeLauncherNames(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	return filterPrefix([]string{"auto", "rofi", "wofi", "dmenu", "wmenu", "fzf"}, toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeFieldNames offers the field keys of the entry named by the first
+// positional argument, plus "password" for the first line.
+//
+// This is the one completion that decrypts: field names live inside the
+// ciphertext. It fires only when the entry is already on the command line and
+// the shell asks for a --field value, not on every Tab, so a hardware token is
+// touched only for a completion whose answer genuinely needs the key.
+func (a *App) completeFieldNames(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	s, err := a.Store()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	sec, err := s.Get(args[0])
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	names := []string{"password"}
+	for _, f := range sec.Fields() {
+		names = append(names, f.Key)
+	}
+	return filterPrefix(names, toComplete), cobra.ShellCompDirectiveNoFileComp
+}

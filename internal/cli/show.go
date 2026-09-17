@@ -47,6 +47,7 @@ func newShowCmd(app *App) *cobra.Command {
 	cmd.Flags().IntVarP(&opts.line, "clip", "c", 1, "copy the given line to the clipboard")
 	cmd.Flags().IntVarP(&opts.line, "qrcode", "q", 1, "render the given line as a QR code")
 	cmd.Flags().StringVar(&opts.field, "field", "", "print a single named field")
+	_ = cmd.RegisterFlagCompletionFunc("field", app.completeFieldNames)
 	cmd.Flags().Lookup("clip").NoOptDefVal = "1"
 	cmd.Flags().Lookup("qrcode").NoOptDefVal = "1"
 	return cmd

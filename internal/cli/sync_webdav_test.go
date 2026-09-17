@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -134,4 +135,71 @@ func TestWebDAVSync_E2E(t *testing.T) {
 		assert.NotContains(t, e, ".binpass.lock",
 			fmt.Sprintf("the lock file is transport state, not an entry (store has %v)", entries))
 	}
+}
+
+// TestWebDAVCopiedStore_NoConflicts covers the store-copy case: a store
+// moved wholesale to a second machine — state.db fresh, every file present
+// on both sides with no base entry. The rclone transport cannot hash while
+// listing, so without fetching the orphans' content the merge sees "same
+// path, unknown relation" in every file and drowns the store in conflicts.
+// With the fetch, an unmodified copy is recognised as exactly that.
+func TestWebDAVCopiedStore_NoConflicts(t *testing.T) {
+	remote := startWebDAV(t)
+
+	appA := newTestApp(t)
+	appB := newTestApp(t)
+	// The copy carries A's recipients; B must hold A's identity to read it.
+	appB.Cfg.Identity = appA.Cfg.Identity
+	appA.Cfg.Remotes = map[string]config.RemoteConfig{"backup": {Type: "webdav", URL: remote}}
+	appB.Cfg.Remotes = map[string]config.RemoteConfig{"backup": {Type: "webdav", URL: remote}}
+
+	ctx := context.Background()
+
+	// Device A fills the store and pushes.
+	appA.activate(t)
+	appA.set(t, "github.com/alice", "hunter2\n")
+	appA.set(t, "shared/nested/entry", "value\n")
+	require.NoError(t, appA.runSync(ctx, "backup", false))
+
+	// The store is copied to device B wholesale — files, no state.db.
+	appB.activate(t)
+	copyStoreTree(t, appA.dir, appB.dir)
+
+	// B's first sync must recognise the copy, not fight it.
+	appB.out.Reset()
+	require.NoError(t, appB.runSync(ctx, "backup", false))
+
+	assert.NotContains(t, appB.out.String(), "conflict",
+		"an unmodified copy of the remote state is not a conflict")
+	bs, err := appB.Store()
+	require.NoError(t, err)
+	for name, want := range map[string]string{
+		"github.com/alice":    "hunter2",
+		"shared/nested/entry": "value",
+	} {
+		sec, err := bs.Get(name)
+		require.NoError(t, err, "entry %s survived the copy sync", name)
+		assert.Equal(t, want, sec.Password(), "content unchanged for %s", name)
+	}
+}
+
+// copyStoreTree copies every file of the store directory to another.
+func copyStoreTree(t *testing.T, from, to string) {
+	t.Helper()
+	require.NoError(t, filepath.WalkDir(from, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(from, p)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(to, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(dst), 0o700))
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, data, 0o600)
+	}))
 }

@@ -268,7 +268,7 @@ func TestRunAudit_JSON(t *testing.T) {
 
 	var report map[string]any
 	require.NoError(t, json.Unmarshal(app.out.Bytes(), &report))
-	assert.NotNil(t, report["Entries"], "the JSON report carries its findings")
+	assert.NotNil(t, report["entries"], "the JSON report carries its findings")
 }
 
 func TestRunAudit_UnknownFormat(t *testing.T) {
@@ -278,4 +278,23 @@ func TestRunAudit_UnknownFormat(t *testing.T) {
 	err := app.runAudit(context.Background(), "kaboom", 1, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown format "kaboom"`)
+}
+
+// fakeHIBP reports every password as breached, standing in for the network.
+type fakeHIBP struct{}
+
+func (fakeHIBP) Check(context.Context, string) (bool, error) { return true, nil }
+
+// TestRunAudit_CriticalFindingsFailTheRun covers the exit code contract: an
+// audit that finds breached passwords is a failed command, so scripts and
+// CI stop on it. The breach database is injected — the real one is the
+// network, which has no place in a test.
+func TestRunAudit_CriticalFindingsFailTheRun(t *testing.T) {
+	app := newTestApp(t)
+	app.hibpClient = fakeHIBP{}
+	app.set(t, "breached", "correct-horse-battery-staple\n")
+
+	err := app.runAudit(context.Background(), "json", 1, false)
+	require.Error(t, err, "breached passwords must fail the audit run")
+	assert.Contains(t, err.Error(), "critical finding")
 }

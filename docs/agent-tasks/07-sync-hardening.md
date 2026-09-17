@@ -177,11 +177,16 @@ DeviceID уже есть в StateDB. `Snapshots()` фильтрует по те�
 
 ### 7. Cloud integration tests через testcontainers
 
-**Статус: S3 сделано.** MinIO через testcontainers-go: юнит-набор в
+**Статус: сделано.** MinIO через testcontainers-go: юнит-набор в
 `pkg/remote/s3_test.go` (roundtrip, conditional write, префиксы, lock
 протокол, stale-steal) + e2e в `internal/cli/sync_s3_test.go` (два
-устройства, push/pull, конфликт). Skip без Docker-сокета; GitHub CI
-проверяет docker явно. WebDAV через `rclone serve webdav` — не сделано.
+устройства, push/pull, конфликт). WebDAV: `rclone serve webdav` как
+заглушка — e2e в `internal/cli/sync_webdav_test.go` + `TestRcloneRemote_ListReal`
+против реального бинарника. Skip без Docker-сокета (S3) / без rclone
+(WebDAV); GitHub CI проверяет и то и другое явно. **Тесты немедленно
+нашли родовой баг**: `RcloneRemote.List` с реальным rclone всегда
+возвращал пусто (--files-from-raw без stdin + отсутствие -R) — все
+rclone-транспорты были push-only. Починено.
 
 **Проблема:** rclone-based transports (S3, Drive, Yandex, WebDAV) покрыты 0%.
 Нет проверки что sync engine работает end-to-end через cloud transport.

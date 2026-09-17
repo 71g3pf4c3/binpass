@@ -18,6 +18,7 @@ import (
 	"github.com/71g3pf4c3/binpass/pkg/storage"
 	"github.com/71g3pf4c3/binpass/pkg/sync"
 	"github.com/spf13/cobra"
+	"lukechampine.com/blake3"
 )
 
 // newSyncCmd builds `binpass sync`.
@@ -103,6 +104,12 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 	if err != nil {
 		return fmt.Errorf("sync: list remote: %w", err)
 	}
+	// Files on both sides with no base entry — a copied store on a second
+	// device, a restored state.db — are resolved by content when the
+	// transport cannot name it upfront (git hashes while listing; rclone
+	// and restic cannot). Without it, every such file merges as a
+	// conflict: safe, but a copied store would drown in them.
+	remoteFiles = fillUnknownRemoteHashes(ctx, rem, remoteFiles, base, s.Dir())
 	remoteSnap := remoteFilesToSnapshot(remoteFiles, base, deviceID)
 
 	// Scan the local store.
@@ -504,6 +511,38 @@ func isGitRepo(dir string) bool {
 func sExts(s interface{ Dir() string }) []string {
 	// The store has both .gpg and .age backends.
 	return []string{".gpg", ".age"}
+}
+
+// fillUnknownRemoteHashes downloads the remote copy of files that exist on
+// both sides but not in the base, and fills in their content hash. The git
+// transport hashes while listing; rclone and restic cannot, and for them an
+// unknown hash on a both-sides-no-base file forces a conflict — correct, but
+// it means a store copied to a second device syncs into one conflict file per
+// entry. The fetch is bounded to exactly those files, and a failure leaves
+// the hash unknown, which is the behaviour the merge already handles.
+func fillUnknownRemoteHashes(ctx context.Context, rem remote.Remote, files []remote.File, base sync.Snapshot, storeDir string) []remote.File {
+	for i, f := range files {
+		if f.Hash != [32]byte{} {
+			continue // the transport named the content already
+		}
+		if _, ok := base[f.Path]; ok {
+			continue // the base knows this file; the merge compares versions
+		}
+		if fi, err := os.Stat(filepath.Join(storeDir, f.Path)); err != nil || fi.IsDir() {
+			continue // not on both sides; the merge resolves it by version alone
+		}
+		rc, _, err := rem.Get(ctx, f.Path)
+		if err != nil {
+			continue
+		}
+		data, readErr := io.ReadAll(rc)
+		_ = rc.Close()
+		if readErr != nil {
+			continue
+		}
+		files[i].Hash = blake3.Sum256(data)
+	}
+	return files
 }
 
 // remoteFilesToSnapshot converts a list of RemoteFile into a Snapshot. It

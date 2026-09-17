@@ -38,6 +38,15 @@ each entry requires a touch. Use --parallel with caution.`,
 	return cmd
 }
 
+// hibp returns the breach-database client for the audit: the injected one
+// when a test set it, the real one otherwise.
+func (a *App) hibp() audit.HIBPChecker {
+	if a.hibpClient != nil {
+		return a.hibpClient
+	}
+	return audit.NewHIBPClient()
+}
+
 // runAudit performs the audit operation.
 func (a *App) runAudit(ctx context.Context, format string, parallel int, noHIBP bool) error {
 	// Reject the format before decrypting anything: the audit is the one
@@ -67,7 +76,7 @@ func (a *App) runAudit(ctx context.Context, format string, parallel int, noHIBP 
 	auditor := &audit.Auditor{
 		Store:      s,
 		Opts:       opts,
-		HIBPClient: audit.NewHIBPClient(),
+		HIBPClient: a.hibp(),
 	}
 
 	report, err := auditor.Run(ctx)

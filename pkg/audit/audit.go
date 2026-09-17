@@ -36,11 +36,11 @@ const (
 // Finding describes a single audit issue with one entry.
 type Finding struct {
 	// Kind is the category of the finding.
-	Kind Kind
+	Kind Kind `json:"kind"`
 	// Severity is the severity level.
-	Severity Severity
+	Severity Severity `json:"severity"`
 	// Detail is a human-readable explanation, suitable for display.
-	Detail string
+	Detail string `json:"detail"`
 }
 
 // Kind identifies the type of audit finding.
@@ -60,43 +60,43 @@ const (
 // EntryResult is the set of findings for a single store entry.
 type EntryResult struct {
 	// Name is the store path of the entry.
-	Name string
+	Name string `json:"name"`
 	// Findings are the issues discovered.
-	Findings []Finding
+	Findings []Finding `json:"findings"`
 }
 
 // Report is the complete audit output.
 type Report struct {
 	// Entries are the results, sorted by severity (critical first) then name.
-	Entries []EntryResult
+	Entries []EntryResult `json:"entries"`
 	// Skipped lists entries that could not be decrypted, with the error.
-	Skipped []SkippedEntry
+	Skipped []SkippedEntry `json:"skipped"`
 	// Stats holds summary counters.
-	Stats Stats
+	Stats Stats `json:"stats"`
 }
 
 // SkippedEntry records an entry that could not be audited.
 type SkippedEntry struct {
 	// Name is the store path.
-	Name string
+	Name string `json:"name"`
 	// Error describes why the entry was skipped.
-	Error string
+	Error string `json:"error"`
 }
 
 // Stats holds summary counters for the audit.
 type Stats struct {
 	// Total is the number of entries in the store.
-	Total int
+	Total int `json:"total"`
 	// Audited is the number of entries successfully decrypted and checked.
-	Audited int
+	Audited int `json:"audited"`
 	// Critical is the number of entries with at least one critical finding.
-	Critical int
+	Critical int `json:"critical"`
 	// Warning is the number of entries with at least one warning finding.
-	Warning int
+	Warning int `json:"warning"`
 	// Info is the number of entries with at least one info finding.
-	Info int
+	Info int `json:"info"`
 	// Clean is the number of entries with no findings.
-	Clean int
+	Clean int `json:"clean"`
 }
 
 // Options configures the audit.

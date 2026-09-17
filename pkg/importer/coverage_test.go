@@ -2,6 +2,9 @@ package importer
 
 import (
 	"bytes"
+
+	"golang.org/x/text/encoding/unicode"
+
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -242,22 +245,30 @@ type errorReader struct{}
 func (errorReader) Read(_ []byte) (int, error) { return 0, fmt.Errorf("read error") }
 
 func TestStripBOMUTF16(t *testing.T) {
-	// UTF-16 LE BOM
-	data := []byte{0xFF, 0xFE, 'a', ',', 'b', '\n', '1', ',', '2'}
-	rows, err := csvReadAll(bytes.NewReader(data), "")
-	if err != nil {
-		t.Fatalf("csvReadAll UTF-16 LE: %v", err)
+	// Real UTF-16: the text as code units with the BOM, not the mark glued
+	// to plain ASCII — the fixture the old test used only parsed because
+	// the reader never decoded anything.
+	for _, tc := range []struct {
+		name   string
+		endian unicode.Endianness
+	}{
+		{"little", unicode.LittleEndian},
+		{"big", unicode.BigEndian},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := unicode.UTF16(tc.endian, unicode.UseBOM).NewEncoder().Bytes([]byte("a,b\n1,2"))
+			if err != nil {
+				t.Fatalf("encode fixture: %v", err)
+			}
+			rows, err := csvReadAll(bytes.NewReader(raw), "")
+			if err != nil {
+				t.Fatalf("csvReadAll UTF-16 %s: %v", tc.name, err)
+			}
+			if len(rows) != 2 || rows[0][0] != "a" || rows[1][1] != "2" {
+				t.Errorf("got %v", rows)
+			}
+		})
 	}
-	if len(rows) != 2 {
-		t.Errorf("rows: %d", len(rows))
-	}
-
-	// UTF-16 BE BOM
-	data2 := []byte{0xFE, 0xFF, 0x00, 'a', 0x00, ',', 0x00, 'b'}
-	rows2, err2 := csvReadAll(bytes.NewReader(data2), "")
-	// May not parse as valid CSV but should not panic.
-	_ = rows2
-	_ = err2
 }
 
 // ---------------------------------------------------------------------------

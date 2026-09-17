@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/71g3pf4c3/binpass/pkg/audit"
 	"github.com/spf13/cobra"
@@ -15,6 +17,7 @@ func newAuditCmd(app *App) *cobra.Command {
 		format   string
 		parallel int
 		noHIBP   bool
+		only     []string
 	)
 	cmd := &cobra.Command{
 		Use:   "audit [--format=FORMAT] [--parallel=N]",
@@ -26,29 +29,37 @@ The HIBP check uses the k-anonymity protocol: only the first 5 characters of
 the SHA-1 hash leave the machine. The full password never touches the network.
 
 Warning: audit decrypts the entire store. If your store uses a hardware token,
-each entry requires a touch. Use --parallel with caution.`,
+each entry requires a touch. Use --parallel with caution, or --entries to
+audit a part of the store and keep the touches proportional to it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return app.runAudit(cmd.Context(), format, parallel, noHIBP)
+			return app.runAudit(cmd.Context(), format, parallel, noHIBP, only)
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json")
 	cmd.Flags().IntVar(&parallel, "parallel", 1, "number of concurrent decryption goroutines")
 	cmd.Flags().BoolVar(&noHIBP, "no-hibp", false, "skip the HIBP breach check (offline mode)")
+	cmd.Flags().StringSliceVar(&only, "entries", nil, "audit only these entries: exact names or globs (bank/*)")
 	return cmd
 }
 
 // hibp returns the breach-database client for the audit: the injected one
-// when a test set it, the real one otherwise.
+// when a test set it, the real one otherwise. The real one carries the disk
+// cache, so consecutive audits over an unchanged store stay offline; the
+// injected one is a test double and gets nothing of the sort.
 func (a *App) hibp() audit.HIBPChecker {
 	if a.hibpClient != nil {
 		return a.hibpClient
 	}
-	return audit.NewHIBPClient()
+	c := audit.NewHIBPClient()
+	if dir, err := os.UserCacheDir(); err == nil {
+		c.CacheDir = filepath.Join(dir, "binpass", "hibp")
+	}
+	return c
 }
 
 // runAudit performs the audit operation.
-func (a *App) runAudit(ctx context.Context, format string, parallel int, noHIBP bool) error {
+func (a *App) runAudit(ctx context.Context, format string, parallel int, noHIBP bool, only []string) error {
 	// Reject the format before decrypting anything: the audit is the one
 	// command that touches every secret, and on a hardware token a typo in
 	// --format would otherwise cost a touch per entry to produce nothing.
@@ -72,6 +83,7 @@ func (a *App) runAudit(ctx context.Context, format string, parallel int, noHIBP 
 	if noHIBP {
 		opts.HIBP = false
 	}
+	opts.Only = only
 
 	auditor := &audit.Auditor{
 		Store:      s,

@@ -14,6 +14,7 @@ package audit
 
 import (
 	"context"
+	"path"
 	"time"
 
 	"github.com/71g3pf4c3/binpass/pkg/secret"
@@ -115,6 +116,12 @@ type Options struct {
 	// Parallel is the number of concurrent decryption goroutines. 0 or 1 means
 	// sequential.
 	Parallel int
+	// Only restricts the audit to the listed entries, each an exact name or
+	// a path/basename glob (bank/*, *tinkoff). Empty means everything —
+	// the audit decrypts the whole store, which on a hardware recipient is
+	// a touch per entry, so a partial audit is not a convenience but a way
+	// to make one affordable at all.
+	Only []string
 }
 
 // DefaultOptions returns the default audit options: all checks enabled, single
@@ -153,6 +160,11 @@ func (a *Auditor) Run(ctx context.Context) (*Report, error) {
 	entries, err := a.Store.List("")
 	if err != nil {
 		return nil, err
+	}
+	// The filter runs before anything is decrypted: its whole point is to
+	// keep the hardware-token touches proportional to what was asked.
+	if len(a.Opts.Only) > 0 {
+		entries = filterEntries(entries, a.Opts.Only)
 	}
 
 	report := &Report{Stats: Stats{Total: len(entries)}}
@@ -309,4 +321,19 @@ func (a *Auditor) Run(ctx context.Context) (*Report, error) {
 
 	sortEntries(report.Entries)
 	return report, nil
+}
+
+// filterEntries keeps the names matching at least one pattern. A pattern is
+// an exact name, or a glob over the store path (bank/*, */tinkoff, *mail*).
+func filterEntries(names, patterns []string) []string {
+	var kept []string
+	for _, name := range names {
+		for _, p := range patterns {
+			if ok, err := path.Match(p, name); err == nil && ok {
+				kept = append(kept, name)
+				break
+			}
+		}
+	}
+	return kept
 }

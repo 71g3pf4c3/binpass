@@ -41,6 +41,12 @@ sync-тестов), что сильнее mock-а — проверяет реа�
 
 ### 2.1. UTF-16 BE не работает в csvReadAll
 
+**Статус: сделано.** Полная перекодировка UTF-16 → UTF-8 по BOM (обе
+endianness) до CSV-парсинга; тест с кириллицей (ASCII-only фикстура ничего не
+доказывает). Старый TestStripBOMUTF16 фиксировал сломанное поведение — его
+фикстура была невалидным UTF-16 и парсилась только потому, что декодирования
+не было; заменён на настоящий.
+
 `stripBOM` снимает 2-байтный BOM, но оставляет null-padded bytes. CSV parser
 видит `0x00 a 0x00 ,` и не парсит. UTF-16 LE работает потому что после BOM
 strip оставшиеся bytes ≈ ASCII.
@@ -62,6 +68,11 @@ if bytes.HasPrefix(raw, []byte{0xFF, 0xFE}) {
 почти не встречается.
 
 ### 2.2. Export — sec.Body() в notes
+
+**Статус: сделано.** В notes идут только free-form строки; `username:`, `url:`
+и `otpauth://` дропаются (у них свои колонки — иначе каждый re-import
+дублировал бы их). Прочие `key: value` строки остаются в notes: у них нет
+колонки, дропать — потеря данных, не дедупликация. Тест на roundtrip.
 
 `runExport` кладёт `sec.Body()` (включая `username: alice\nurl: ...`) в
 notes-колонку. При re-import получается дублирование: username и URL уже в
@@ -86,6 +97,11 @@ store доступен. Для gopass — аналогично. Но это тр
 
 ### 2.4. HIBP persistent cache
 
+**Статус: сделано.** `$XDG_CACHE_HOME/binpass/hibp/`, один файл на 5-символьный
+SHA-1 префикс (ровно то, что k-anonymity и так отправляет в API), TTL 24h,
+atomic write (tmp+rename), деградация в no-cache при ошибках, а не падение
+аудита. Opt-in через `CacheDir` — тесты не трогают реальный кэш.
+
 Сейчас — in-memory per-run. При audit на 1000+ entries с hardware token —
 каждый run заново делает N API calls. Disk cache (between runs) сократит
 количество calls.
@@ -96,6 +112,10 @@ TTL = 24h. Invalidated при HIBP error.
 **Оценка:** 2 часа.
 
 ### 2.5. Incremental / partial audit
+
+**Статус: сделано.** `binpass audit --entries=bank/*,github/alice` — glob/
+exact фильтр применяется после List, до decrypt: на hardware token — касание
+на запрошенную запись, а не на весь стор.
 
 `binpass audit` расшифровывает весь стор. С hardware token — N касаний.
 `binpass audit --entries=bank/tinkoff,github/alice` — частичный audit.
@@ -225,6 +245,10 @@ return (strings.Contains(line, "folder,") || strings.Contains(line, "group,")) &
 **Оценка:** 5 минут.
 
 ### 5.3. csvEscape: quote char doubling edge case
+
+**Статус: проверено, менять нечего.** Экспорт не эмитит CRLF внутри quoted
+fields: все поля проходят через `Lines()`/`Password()`, которые нормализуют
+`\r\n` → `\n`. Закреплено тестом TestRunExport_CRLFNoteRoundTrips.
 
 `csvEscape` удваивает `"` внутри quoted string. Стандартный CSV escaping.
 Но если входная строка содержит `\r\n` (Windows line ending) — оба символа

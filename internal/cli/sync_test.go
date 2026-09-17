@@ -29,6 +29,17 @@ type testApp struct {
 	errOut *bytes.Buffer
 	// dir is the store root.
 	dir string
+	// stateDir is this app's sync state directory. It is selected through
+	// the BINPASS_STATE_DIR environment variable, which is process-wide:
+	// a test simulating two devices switches between them with activate.
+	stateDir string
+}
+
+// activate makes this app's sync state the one the process reads, which is
+// how a single test plays two devices.
+func (a *testApp) activate(t *testing.T) {
+	t.Helper()
+	t.Setenv("BINPASS_STATE_DIR", a.stateDir)
 }
 
 // newTestApp builds an initialised store with a throwaway age identity. No
@@ -45,6 +56,7 @@ func newTestApp(t *testing.T) *testApp {
 	require.NoError(t, os.WriteFile(keyFile, []byte(id.String()+"\n"), 0o600))
 
 	t.Setenv("BINPASS_STATE_DIR", filepath.Join(tmp, "state"))
+	stateDir := filepath.Join(tmp, "state")
 
 	cfg := config.Default()
 	cfg.Dir = dir
@@ -59,7 +71,7 @@ func newTestApp(t *testing.T) *testApp {
 	require.NoError(t, err)
 	require.NoError(t, s.Init("", []crypto.Recipient{crypto.Recipient(id.Recipient().String())}))
 
-	return &testApp{App: app, out: out, errOut: errOut, dir: dir}
+	return &testApp{App: app, out: out, errOut: errOut, dir: dir, stateDir: stateDir}
 }
 
 // set writes an entry through the store, the way `binpass insert` would.

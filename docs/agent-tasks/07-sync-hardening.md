@@ -19,9 +19,14 @@ restic snapshots. Критический путь пройден, здесь —
 
 ### 1. S3 conditional write через `If-Match` на ETag
 
-**Статус: открыто, требует решения (a) minio-go S3Remote или (b) verify-after-write.**
-Морально смягчено advisory locking'ом (см. #3): параллельные Push на
-Drive/WebDAV теперь serialized lock-файлом, S3 остаётся race-окном.
+**Статус: сделано, вариант (a) — minio-go.** `pkg/remote/s3.go`: нативный
+S3Remote (AWS/MinIO/Ceph/Garage/…), `PutObject` с `If-Match`, advisory lock
+через `If-None-Match: *` — атомарный захват, stale-steal по TTL. Креды
+только из env-цепочки (AWS_ACCESS_KEY_ID / shared file / IAM) — в конфиге
+секретов нет, по правилу «secrets never in plaintext on disk». Конфиг:
+`type: s3` + url (endpoint), bucket, folder (префикс), region; миграция
+с rclone-варианта описана в docs/sync-remotes.md §3.5. e2e против MinIO в
+testcontainers: push/pull/offline-divergence/conflict (TestS3Sync_E2E).
 
 **Проблема:** RcloneRemote conditional write сейчас — read-before-write. Race
 window между Get (проверка rev) и Put (загрузка). Два клиента, параллельный
@@ -161,6 +166,12 @@ DeviceID уже есть в StateDB. `Snapshots()` фильтрует по те�
 `device:<name>` in tags.
 
 ### 7. Cloud integration tests через testcontainers
+
+**Статус: S3 сделано.** MinIO через testcontainers-go: юнит-набор в
+`pkg/remote/s3_test.go` (roundtrip, conditional write, префиксы, lock
+протокол, stale-steal) + e2e в `internal/cli/sync_s3_test.go` (два
+устройства, push/pull, конфликт). Skip без Docker-сокета; GitHub CI
+проверяет docker явно. WebDAV через `rclone serve webdav` — не сделано.
 
 **Проблема:** rclone-based transports (S3, Drive, Yandex, WebDAV) покрыты 0%.
 Нет проверки что sync engine работает end-to-end через cloud transport.

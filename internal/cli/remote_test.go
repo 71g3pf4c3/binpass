@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"os"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 

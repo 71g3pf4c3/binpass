@@ -12,20 +12,23 @@ regardless of where your data lives.
 |---|---|---|---|---|---|
 | git | `git` | yes | yes | yes | Built-in, no extra deps |
 | restic | `restic` | no (snapshot-based) | yes (snapshots) | yes (local) | Requires [restic](https://restic.net/). **Reaches every restic backend**: local, SFTP, S3, B2, Azure, GCS, Swift, REST, and anything rclone supports (§2.2.1) |
-| S3 | `s3` | no (verify-after-write) | yes (versioning) | no | Requires [rclone](https://rclone.org/) |
+| S3 | `s3` | **yes (If-Match)** | yes (bucket versioning) | yes (atomic create) | Native, no rclone. Works with AWS, MinIO, Ceph RGW and other S3-compatible storage |
 | Google Drive | `gdrive` | no (verify-after-write) | yes (revisions) | no | Requires rclone + OAuth |
 | Yandex.Disk | `yandex` | no (verify-after-write) | limited | no | Requires rclone + OAuth |
 | WebDAV | `webdav` | no (verify-after-write | no | no | Requires rclone |
 
-**Key difference:** git is atomic and supports rename natively. Cloud
-transports are not atomic — binpass adds verify-after-write checks
-automatically when the transport reports `WeakAtomic` capability.
+**Key difference:** git is atomic and supports rename natively. The native
+S3 transport is atomic too — `PutObject` with `If-Match` fails cleanly when
+another device wrote in between. The other cloud transports are not atomic,
+and binpass adds verify-after-write checks automatically when the transport
+reports `WeakAtomic` capability.
 
-**The `s3`, `gdrive`, `yandex` and `webdav` types are rclone storing plain
-files.** The `restic` type reaches the same providers — including Drive and
-Dropbox, through `rclone:` — but with deduplication, snapshots and history
-on top. Unless you need the store to be readable as ordinary files at the
-far end, restic is the better choice for all of them.
+**The `s3` type speaks S3 directly; the `gdrive`, `yandex` and `webdav`
+types are rclone storing plain files.** The `restic` type reaches the same
+providers — including Drive and Dropbox, through `rclone:` — but with
+deduplication, snapshots and history on top. Unless you need the store to
+be readable as ordinary files at the far end, restic is the better choice
+for all of them.
 
 ---
 
@@ -457,89 +460,81 @@ client has pushed, and the sync engine re-merges the changes.
 ## 3. S3
 
 Works with any S3-compatible storage: AWS S3, MinIO, Garage, Ceph, Backblaze
-B2 (S3 mode), DigitalOcean Spaces, etc.
+B2 (S3 mode), DigitalOcean Spaces, etc. The transport is native — no rclone
+in between — which is what buys it the two things the rclone-based types do
+not have:
 
-### 2.1. Prerequisites
+- **Conditional writes.** Every `Put` goes out with `If-Match: <ETag>`: if
+  another device changed the object since this one last listed it, S3
+  refuses the write with 412 and the sync re-merges instead of silently
+  overwriting.
+- **An atomic advisory lock.** The lock object is created with
+  `If-None-Match: *`, so of two devices starting a sync at the same moment
+  exactly one gets to run; the other is told who holds the lock. A lock
+  whose holder died is recovered after its TTL (5 minutes).
 
-- [rclone](https://rclone.org/) installed on PATH
+### 3.1. Prerequisites
+
 - An S3 bucket created
-- rclone configured with the bucket credentials
+- Credentials in the environment: `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY` (or a shared credentials file, or an instance
+  role — the same chain the AWS tools use). The config file deliberately
+  has no place for a secret key.
 
-### 3.2. Configure rclone
+### 3.2. Add the remote to binpass
 
 ```sh
-rclone config
-# n) New remote
-# name> mybucket
-# Storage> s3
-# provider> Minio (or AWS, Garage, etc.)
-# env_auth> false
-# access_key_id> YOUR_ACCESS_KEY
-# secret_access_key> YOUR_SECRET_KEY
-# endpoint> https://s3.example.com
-# region> us-east-1
+binpass remote add s3 backup s3.example.com bucket=my-bucket folder=password-store region=eu-west-1
+binpass sync --remote=backup
 ```
 
-This creates `~/.config/rclone/rclone.conf` with the `mybucket` remote.
+The URL is the endpoint; a `http://` prefix selects plain HTTP for a local
+MinIO or a trusted LAN endpoint (the default is HTTPS). `bucket` is
+required; `folder` is the key prefix inside the bucket and `region` is
+optional.
 
-### 3.3. Add the remote to binpass
-
-```sh
-binpass remote add s3 mybucket mybucket:password-store
-binpass sync --remote=mybucket
-```
-
-### 3.4. Example: MinIO (local)
+### 3.3. Example: MinIO (local)
 
 ```sh
-# Start a local MinIO instance (for testing).
 docker run -d -p 9000:9000 -p 9001:9001 \
   -e MINIO_ROOT_USER=admin -e MINIO_ROOT_PASSWORD=admin123 \
   minio/minio server /data --console-address ":9001"
 
-# Configure rclone for the local MinIO.
-rclone config create minio s3 \
-  provider=Minio \
-  env_auth=false \
-  access_key_id=admin \
-  secret_access_key=admin123 \
-  endpoint=http://localhost:9000
+export AWS_ACCESS_KEY_ID=admin
+export AWS_SECRET_ACCESS_KEY=admin123
 
-# Create a bucket.
-rclone mkdir minio:password-store
-
-# Add to binpass and sync.
-binpass remote add s3 minio minio:password-store
+binpass remote add s3 minio http://localhost:9000 bucket=password-store
 binpass sync --remote=minio
 ```
 
-### 3.5. Example: AWS S3
+### 3.4. Example: AWS S3
 
 ```sh
-# Use AWS credentials from the environment.
 export AWS_ACCESS_KEY_ID=AKIA...
-export AWS_PROFILE=default  # or use env_auth=true in rclone
+export AWS_SECRET_ACCESS_KEY=...
 
-rclone config create aws-s3 s3 \
-  provider=AWS \
-  env_auth=true \
-  region=eu-west-1
-
-binpass remote add s3 aws-s3 aws-s3:my-password-bucket
-binpass sync --remote=aws-s3
+binpass remote add s3 aws-backup s3.amazonaws.com bucket=my-password-bucket region=eu-west-1
+binpass sync --remote=aws-backup
 ```
+
+### 3.5. Migrating from the rclone-based `s3` type
+
+Earlier versions spoke S3 through rclone (`url: mybucket:password-store`,
+credentials in `rclone config`). The `s3` type is native now: move the
+endpoint into `url`, name the bucket with `bucket`, and export the
+credentials binpass reads itself. Existing rclone setups keep working
+through the `restic` type with an `rclone:` repository URL (§2.2.1).
 
 ### 3.6. Versioning
 
 S3 supports bucket versioning. If enabled on the bucket, all versions of each
-file are retained. binpass reports `Caps().History = true` for S3, which means
-the sync engine can detect and recover from accidental overwrites.
+file are retained, which is a safety net on top of — not instead of — the
+conditional writes.
 
 ### 3.7. Rate limits
 
 AWS S3 has generous rate limits (3,500 PUT/s per prefix). MinIO has no
-built-in limits. For other providers (DigitalOcean Spaces, etc.), binpass
-respects `Retry-After` headers automatically through rclone.
+built-in limits.
 
 ---
 
@@ -550,51 +545,41 @@ respects `Retry-After` headers automatically through rclone.
 - [rclone](https://rclone.org/) installed on PATH
 - A Google account
 
-### 4.2. Configure rclone
+### 4.2. Add the remote to binpass
 
 ```sh
-rclone config
-# n) New remote
-# name> gdrive
-# Storage> drive
-# client_id> (leave blank for rclone's own)
-# client_secret> (leave blank)
-# scope> 1 (full access)
-# root_folder_id> (leave blank)
-# service_account_file> (leave blank)
-# auto_confirm> true
+binpass remote add gdrive mydrive
 ```
 
-rclone will open a browser window for OAuth. Authorise access and the token
-is saved to `~/.config/rclone/rclone.conf`.
+That is the whole setup: binpass finds no rclone remote called `mydrive`,
+runs rclone's own OAuth — a browser window opens, you authorise, and the
+token lands in rclone's config, the same place the sync later reads it
+from. With a path or a different rclone remote name:
+
+```sh
+binpass remote add gdrive work teamdrive:binpass-store
+```
+
+An existing rclone remote of the same name is picked up as it is; the
+flow only starts when something is missing.
 
 ### 4.3. Headless setup
 
-On a machine without a browser (server, CI), use device-flow:
+On a machine without a browser (server, CI), `remote add` prints the
+two-step device flow instead of starting the OAuth:
 
 ```sh
-rclone authorize "drive" --auto-confirm
-# Prints a token JSON. Copy it.
+# On a machine with a browser:
+rclone authorize "drive"
+# Prints a token in JSON braces. Copy it.
 
 # On the headless machine:
-rclone config create gdrive drive \
-  config_refresh_token=true \
+rclone config create mydrive drive \
   token='{"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}'
 ```
 
-### 4.4. Add the remote to binpass
-
-```sh
-# The folder will be created on first sync if it does not exist.
-binpass remote add gdrive gdrive gdrive:binpass-store
-binpass sync --remote=gdrive
-```
-
-Or specify a folder name:
-
-```sh
-binpass remote add gdrive gdrive gdrive:binpass-store --folder=work
-```
+The binpass remote is saved either way; the sync works once the token is
+in place.
 
 ### 4.5. Important notes
 
@@ -618,25 +603,22 @@ binpass remote add gdrive gdrive gdrive:binpass-store --folder=work
 - [rclone](https://rclone.org/) installed on PATH
 - A Yandex account
 
-### 5.2. Configure rclone
+### 5.2. Add the remote to binpass
 
 ```sh
-rclone config
-# n) New remote
-# name> yandex
-# Storage> yandex
-# client_id> (leave blank for rclone's own)
-# client_secret> (leave blank)
+binpass remote add yandex yd
 ```
 
-rclone will open a browser for Yandex OAuth.
-
-### 5.3. Add the remote to binpass
+binpass runs rclone's own Yandex OAuth — browser window, authorise,
+token saved in rclone's config — and that is all. With a path:
 
 ```sh
-binpass remote add yandex yandex yandex:password-store
-binpass sync --remote=yandex
+binpass remote add yandex yd yd:password-store
 ```
+
+On a headless machine, `remote add` prints the two-step flow instead
+(`rclone authorize "yandex"` where a browser is, then `rclone config
+create` with the token here), exactly as for Google Drive (§4.3).
 
 ### 5.4. WebDAV fallback
 
@@ -749,10 +731,15 @@ sync:
       url: /mnt/backup/binpass
       password_command: "pass show restic/binpass"
 
-    # S3 remote: uses rclone.
-    s3-rclone:
+    # S3 remote: the native transport, with conditional writes.
+    backup:
       type: s3
-      url: mybucket:password-store
+      url: s3.example.com          # the endpoint; "http://host:port" for a local MinIO
+      bucket: my-bucket
+      folder: password-store        # key prefix inside the bucket (optional)
+      region: eu-west-1             # optional; MinIO ignores it
+      # Credentials are NOT set here: the transport reads
+      # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the environment.
 
     # Google Drive remote: uses rclone.
     gdrive:

@@ -112,6 +112,8 @@ func applyFile(cfg *Config) error {
 				SignCommits:     v.GetBool(prefix + "sign_commits"),
 				Password:        v.GetString(prefix + "password"),
 				PasswordCommand: v.GetString(prefix + "password_command"),
+				Bucket:          v.GetString(prefix + "bucket"),
+				Region:          v.GetString(prefix + "region"),
 			}
 			if rc.Type != "" {
 				cfg.Remotes[name] = rc

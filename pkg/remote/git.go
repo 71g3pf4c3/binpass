@@ -329,11 +329,17 @@ func (g *GitRemote) List(ctx context.Context) ([]File, error) {
 			modTime = time.Time{}
 		}
 		size, _ := g.fileSize(ctx, path)
+		// The working tree is both the local store and the "remote"
+		// listing, so its digest is free and lets the merge engine
+		// recognise a file that is on both sides of the comparison only
+		// because of that identity.
+		hash, _ := hashFileBlake3(filepath.Join(g.dir, filepath.FromSlash(path)))
 		files = append(files, File{
 			Path:    path,
 			Size:    size,
 			ModTime: modTime,
 			Rev:     rev,
+			Hash:    hash,
 		})
 	}
 	return files, nil
@@ -451,6 +457,27 @@ func (g *GitRemote) Rename(ctx context.Context, from, to string) error {
 		return fmt.Errorf("remote/git: commit rename: %w", err)
 	}
 	return nil
+}
+
+// Log returns the commit history newest first, one entry per line, in git's
+// --oneline form. It is the git transport's idea of a snapshot list: every
+// commit a sync made is a point the store can be examined at.
+func (g *GitRemote) Log(ctx context.Context, limit int) ([]string, error) {
+	args := []string{"log", "--oneline"}
+	if limit > 0 {
+		args = append(args, fmt.Sprintf("-%d", limit))
+	}
+	out, err := g.git(ctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("remote/git: log: %w", err)
+	}
+	var lines []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines, nil
 }
 
 // Lock is a no-op for git. Git uses its own merge and locking model.

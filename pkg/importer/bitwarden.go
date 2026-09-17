@@ -23,8 +23,10 @@ func (BitwardenImporter) Detect(r io.Reader) bool {
 	data, _ := io.ReadAll(io.LimitReader(r, 4096))
 	line := firstNonEmptyLine(data)
 	// Bitwarden exports start with "folder,favorite,type,name,..." or
-	// "group,favorite,type,name,...".
-	return strings.Contains(line, "folder,") || strings.Contains(line, "group,") && strings.Contains(line, "favorite,")
+	// "group,favorite,type,name,...". Both markers must be paired with
+	// "favorite,": a lone "folder," also appears in other managers' headers,
+	// and && binds tighter than ||, so the grouping has to be explicit.
+	return (strings.Contains(line, "folder,") || strings.Contains(line, "group,")) && strings.Contains(line, "favorite,")
 }
 
 // Import reads entries from a Bitwarden CSV.

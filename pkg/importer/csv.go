@@ -82,6 +82,17 @@ func decodeBytes(data []byte, encName string) ([]byte, error) {
 	return decoded, nil
 }
 
+// Decode converts data from a character encoding named as htmlindex knows
+// it (for example "windows-1251") into UTF-8. The CLI uses it to honour
+// `import --encoding` before an importer sees the bytes: importers receive
+// UTF-8 and their own fallback heuristic never has to fire.
+func Decode(data []byte, encoding string) ([]byte, error) {
+	if encoding == "" {
+		return data, nil
+	}
+	return decodeBytes(data, encoding)
+}
+
 // csvHeaderIndex builds a map from column names (lowercased) to their indices
 // in the header row. This allows each importer to look up columns by name
 // rather than position, which varies between export versions.

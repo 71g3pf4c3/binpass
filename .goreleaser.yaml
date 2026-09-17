@@ -9,6 +9,7 @@ project_name: binpass
 before:
   hooks:
     - go mod tidy
+    - mkdir -p completions
 
 builds:
   - id: binpass
@@ -31,6 +32,16 @@ builds:
     goarch:
       - amd64
       - arm64
+    # Shell completions are generated from the binary that will ship in the
+    # package, so what the package installs always matches what `binpass
+    # completion` would emit for that build. Only the host's own target is
+    # executed: cross-compiled binaries cannot run here, and the completion
+    # scripts a build emits do not depend on its architecture.
+    hooks:
+      post:
+        - cmd: sh -c 'case "{{ .Target }}" in linux_amd64*) {{ .Path }} completion bash > ./completions/binpass.bash;; esac'
+        - cmd: sh -c 'case "{{ .Target }}" in linux_amd64*) {{ .Path }} completion zsh > ./completions/_binpass;; esac'
+        - cmd: sh -c 'case "{{ .Target }}" in linux_amd64*) {{ .Path }} completion fish > ./completions/binpass.fish;; esac'
 
 archives:
   - id: binpass
@@ -52,20 +63,21 @@ checksum:
 # OIDC identity, so verification needs no key distributed out of band.
 #
 #   cosign verify-blob checksums.txt \
-#     --signature checksums.txt.sig --certificate checksums.txt.pem \
+#     --bundle checksums.txt.bundle \
 #     --certificate-identity-regexp 'https://github.com/71g3pf4c3/binpass/.*' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 #
-# Signing the checksum file covers every artefact listed in it.
+# Signing the checksum file covers every artefact listed in it. The bundle
+# carries the certificate and the signature together, which is the only
+# form current cosign emits since --output-certificate/--output-signature
+# were removed.
 signs:
   - cmd: cosign
-    certificate: "${artifact}.pem"
     args:
       - sign-blob
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
-      - "${artifact}"
+      - "--bundle=${artifact}.bundle"
       - "--yes"
+      - "${artifact}"
     artifacts: checksum
     output: true
 
@@ -91,6 +103,18 @@ nfpms:
         dst: /usr/share/doc/binpass/LICENSE
       - src: README.md
         dst: /usr/share/doc/binpass/README.md
+      # Completions land where each shell picks them up without the user
+      # sourcing anything: the bash-completion directory is on bash's
+      # default lookup path, zsh's site-functions is in fpath on every
+      # distro that ships zsh, and fish loads vendor_completions.d at
+      # startup. The file names must match the command: bash keys its
+      # completions by command name, zsh by the underscore-prefixed one.
+      - src: ./completions/binpass.bash
+        dst: /usr/share/bash-completion/completions/binpass
+      - src: ./completions/_binpass
+        dst: /usr/share/zsh/site-functions/_binpass
+      - src: ./completions/binpass.fish
+        dst: /usr/share/fish/vendor_completions.d/binpass.fish
 
 sboms:
   - id: archive

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -337,4 +338,40 @@ func setupResticRepo(t *testing.T) (storeDir, repoDir, password string) {
 	}
 
 	return storeDir, repoDir, password
+}
+
+// TestResticRemote_DeviceTag checks that a Push stamps the snapshot with the
+// device tag, so a repository shared by several machines can say who pushed
+// what — the multi-client debugging story restic otherwise cannot offer.
+func TestResticRemote_DeviceTag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping restic integration test in short mode")
+	}
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not found on PATH")
+	}
+
+	ctx := context.Background()
+	storeDir, repoDir, password := setupResticRepo(t)
+
+	r, err := NewResticRemote(ResticOptions{
+		Name:     "test-local",
+		Repo:     repoDir,
+		Password: password,
+		StoreDir: storeDir,
+		Device:   "thinkpad",
+	})
+	require.NoError(t, err)
+	defer func() { _ = r.Close() }()
+
+	require.NoError(t, os.WriteFile(filepath.Join(storeDir, "a.age"), []byte("data"), 0o600))
+	_, err = r.Put(ctx, "a.age", strings.NewReader("data"), "")
+	require.NoError(t, err)
+	require.NoError(t, r.Push(ctx))
+
+	snaps, err := r.Snapshots(ctx)
+	require.NoError(t, err)
+	require.Len(t, snaps, 1)
+	assert.Contains(t, snaps[0].Tags, "binpass")
+	assert.Contains(t, snaps[0].Tags, "device:thinkpad")
 }

@@ -19,6 +19,15 @@ restic snapshots. Критический путь пройден, здесь —
 
 ### 1. S3 conditional write через `If-Match` на ETag
 
+**Статус: сделано, вариант (a) — minio-go.** `pkg/remote/s3.go`: нативный
+S3Remote (AWS/MinIO/Ceph/Garage/…), `PutObject` с `If-Match`, advisory lock
+через `If-None-Match: *` — атомарный захват, stale-steal по TTL. Креды
+только из env-цепочки (AWS_ACCESS_KEY_ID / shared file / IAM) — в конфиге
+секретов нет, по правилу «secrets never in plaintext on disk». Конфиг:
+`type: s3` + url (endpoint), bucket, folder (префикс), region; миграция
+с rclone-варианта описана в docs/sync-remotes.md §3.5. e2e против MinIO в
+testcontainers: push/pull/offline-divergence/conflict (TestS3Sync_E2E).
+
 **Проблема:** RcloneRemote conditional write сейчас — read-before-write. Race
 window между Get (проверка rev) и Put (загрузка). Два клиента, параллельный
 Push на S3 → один затрёт другой молча.
@@ -38,6 +47,13 @@ half-measure.
 файл, один получает ошибку. Caps().Atomic = true для S3.
 
 ### 2. Property-тесты merge engine
+
+**Статус: сделано.** `TestMergeProperty` (200 миров на прогон, soak
+`-count=1000`). Нашёл реальный баг: orphan-both-sides (файл на обеих
+сторонах без base-entries) молча пушшил локальную копию, теряя remote.
+Починено: одинаковый хеш → none, разный → conflict; для этого `remote.File`
+получил blake3-хеш (git List заполняет). Инвариант «nothing is lost»
+уточнён: изменённый файл не получает Delete, delete-vs-edit — edit-wins.
 
 **Проблема:** merge покрыт детерминированными cases (merge_test.go, 485 строк).
 Нет проверки инвариантов при произвольных входах. spec §12 прямо требует.
@@ -65,6 +81,11 @@ Merge, проверять инварианты. 10k итераций за сек
 
 ### 3. Advisory locking для Drive/WebDAV
 
+**Статус: сделано.** `.binpass.lock` протокол (device, timestamp, TTL):
+write → read-back → compare, stale-steal по TTL, conditional delete при
+unlock. `runSync` берёт lock при мутации (dry-run — нет). Протокол
+протестирован fake-runner'ом на двух клиентов + real-rclone тест.
+
 **Проблема:** `RcloneRemote.Lock()` → `NoopUnlock`. Два клиента могут
 параллельно писать на Drive/WebDAV → last-write-wins → потеря данных.
 
@@ -84,6 +105,16 @@ ttl:300
 
 ### 4. OAuth flow для gdrive/yandex
 
+**Статус: сделано, через rclone.** binpass не растит свой OAuth-клиент и
+регистрацию app у Google/Yandex — он оркестрирует rclone: `remote add
+gdrive mydrive` зовёт `rclone config create mydrive drive` (браузер,
+token в rclone.conf — тот же, из которого sync читает). Headless: печатает
+device-flow инструкции (`rclone authorize` на машине с браузером +
+`config create` с токеном). Существующий rclone.conf подхватывается без
+шагов; URL для gdrive/yandex нормализуется (`mydrive` → `mydrive:`).
+Протокол покрыт тестами с seam'ом (без браузера): уже настроен → no-op,
+headless → инструкции, ошибка OAuth → remote сохранён + ошибка.
+
 **Проблема:** сейчас `binpass remote add gdrive` требует `rclone config`
 вручную. Пользователь должен сам настроить OAuth token.
 
@@ -99,6 +130,13 @@ ttl:300
 `binpass sync --remote=mydrive` работает без ручного rclone config.
 
 ### 5. `binpass sync history` — просмотр restic snapshots
+
+**Статус: сделано, шире задания.** `sync history` печатает restic snapshots
+(short ID, время, host, tags; фолбэк на обрезку полного ID для restic <0.16)
+и git commits (`--oneline`). `sync restore <id>` восстанавливает стор из
+restic snapshot после confirm-промпта; git-ремоуты направляются в git.
+Restic roundtrip тест гоняется против реального restic (skip без бинарника;
+CI ставит restic).
 
 **Проблема:** `ResticRemote.Snapshots()` и `Restore()` есть в API, но нет CLI
 wrapper. Пользователь не может просмотреть историю snapshots или откатиться.
@@ -119,6 +157,11 @@ restore <id>` восстанавливает. Для git — `git log` output.
 
 ### 6. Restic snapshot tagging по device
 
+**Статус: сделано.** `ResticOptions.Device` → `Push()` добавляет
+`--tag device:<id>` рядом с `binpass`; ID тот же, что в StateDB. `sync
+history` печатает тег. Пустой device тег не добавляет. `sync restore`
+добавлен отдельно (см. #5).
+
 **Проблема:** все restic snapshots идут с `--tag binpass`. В multi-client
 сценарии нельзя понять, кто когда пушнил.
 
@@ -133,6 +176,17 @@ DeviceID уже есть в StateDB. `Snapshots()` фильтрует по те�
 `device:<name>` in tags.
 
 ### 7. Cloud integration tests через testcontainers
+
+**Статус: сделано.** MinIO через testcontainers-go: юнит-набор в
+`pkg/remote/s3_test.go` (roundtrip, conditional write, префиксы, lock
+протокол, stale-steal) + e2e в `internal/cli/sync_s3_test.go` (два
+устройства, push/pull, конфликт). WebDAV: `rclone serve webdav` как
+заглушка — e2e в `internal/cli/sync_webdav_test.go` + `TestRcloneRemote_ListReal`
+против реального бинарника. Skip без Docker-сокета (S3) / без rclone
+(WebDAV); GitHub CI проверяет и то и другое явно. **Тесты немедленно
+нашли родовой баг**: `RcloneRemote.List` с реальным rclone всегда
+возвращал пусто (--files-from-raw без stdin + отсутствие -R) — все
+rclone-транспорты были push-only. Починено.
 
 **Проблема:** rclone-based transports (S3, Drive, Yandex, WebDAV) покрыты 0%.
 Нет проверки что sync engine работает end-to-end через cloud transport.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/71g3pf4c3/binpass/pkg/storage"
 	"github.com/71g3pf4c3/binpass/pkg/sync"
 	"github.com/spf13/cobra"
+	"lukechampine.com/blake3"
 )
 
 // newSyncCmd builds `binpass sync`.
@@ -35,6 +37,7 @@ func newSyncCmd(app *App) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&remoteName, "remote", "", "remote to sync with (default: all configured remotes)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen without making changes")
+	cmd.AddCommand(newSyncHistoryCmd(app), newSyncRestoreCmd(app))
 	return cmd
 }
 
@@ -79,14 +82,34 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 	// into it: scanning first would read the tree as it was before the pull
 	// and report every incoming entry as locally missing, which the merge
 	// engine reads as a deletion to propagate.
-	rem, err := a.buildRemote(remoteName)
+	rem, err := a.buildRemote(remoteName, deviceID)
 	if err != nil {
 		return err
 	}
+
+	// Take the advisory lock before mutating anything, so two clients
+	// pushing at the same time cannot overwrite each other's work on the
+	// transports that have no compare-and-swap. Dry runs only read and
+	// stay out of the way of a real sync in progress. Transports without
+	// locking return a no-op, so this is one call for all of them.
+	if !dryRun {
+		unlock, err := rem.Lock(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = unlock.Unlock(ctx) }()
+	}
+
 	remoteFiles, err := rem.List(ctx)
 	if err != nil {
 		return fmt.Errorf("sync: list remote: %w", err)
 	}
+	// Files on both sides with no base entry — a copied store on a second
+	// device, a restored state.db — are resolved by content when the
+	// transport cannot name it upfront (git hashes while listing; rclone
+	// and restic cannot). Without it, every such file merges as a
+	// conflict: safe, but a copied store would drown in them.
+	remoteFiles = fillUnknownRemoteHashes(ctx, rem, remoteFiles, base, s.Dir())
 	remoteSnap := remoteFilesToSnapshot(remoteFiles, base, deviceID)
 
 	// Scan the local store.
@@ -108,6 +131,21 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 	if len(actions) == 0 {
 		fmt.Fprintln(a.Out, "Everything up-to-date.")
 		return nil
+	}
+
+	// A run in which every action is None has nothing to transfer, but the
+	// None actions still carry base entries and merged VVs to persist, and
+	// the git transport may have commits made during List that need a push,
+	// so only the message is shared with the nothing-at-all case.
+	needsWork := false
+	for _, act := range actions {
+		if act.Kind != sync.ActionNone {
+			needsWork = true
+			break
+		}
+	}
+	if !needsWork {
+		fmt.Fprintln(a.Out, "Everything up-to-date.")
 	}
 
 	// A block container synchronises correctly but grows the remote without
@@ -319,6 +357,16 @@ func (a *App) applyActions(ctx context.Context, s interface {
 				if err := db.UpdateFile(&updated); err != nil {
 					return fmt.Errorf("sync: update VV for %q: %w", act.Path, err)
 				}
+				continue
+			}
+			// A file the merge confirmed in sync without a base entry —
+			// the same content on both sides before the first shared
+			// sync — is learned here, so the next run compares against it
+			// instead of re-deriving the no-base case every time.
+			if act.Base == nil && act.Local != nil {
+				if err := db.UpdateFile(act.Local); err != nil {
+					return fmt.Errorf("sync: record base for %q: %w", act.Path, err)
+				}
 			}
 		}
 	}
@@ -338,8 +386,8 @@ func remoteRevForAction(act sync.Action) string {
 // buildRemote constructs a Remote from the configuration. If name is empty,
 // it returns the default remote. For git remotes, it uses the store directory
 // directly (the store is the git working tree). For other types, it delegates
-// to RemoteFromConfig.
-func (a *App) buildRemote(name string) (remote.Remote, error) {
+// to RemoteFromConfig. The device ID names this machine in the advisory lock.
+func (a *App) buildRemote(name string, deviceID sync.DeviceID) (remote.Remote, error) {
 	if name == "" {
 		name = a.Cfg.Sync.DefaultRemote
 	}
@@ -391,6 +439,7 @@ func (a *App) buildRemote(name string) (remote.Remote, error) {
 			Name:     name,
 			Repo:     repo,
 			StoreDir: a.Cfg.Dir,
+			Device:   string(deviceID),
 		}
 		if rc.PasswordCommand != "" {
 			opts.PasswordCommand = rc.PasswordCommand
@@ -399,7 +448,34 @@ func (a *App) buildRemote(name string) (remote.Remote, error) {
 			opts.Password = rc.Password
 		}
 		return remote.NewResticRemote(opts)
-	case "s3", "gdrive", "yandex", "webdav":
+	case "s3":
+		// Native S3: conditional writes and an atomic advisory lock,
+		// neither of which rclone can offer. The endpoint comes from url
+		// (a "http://" prefix selects plain HTTP for a local MinIO); the
+		// bucket is a field of its own; the key prefix reuses folder.
+		// Credentials deliberately have no config form: they come from the
+		// environment (AWS_ACCESS_KEY_ID and friends), the same way restic
+		// takes its password from a command rather than the config.
+		endpoint, scheme := rc.URL, "https"
+		if u, perr := url.Parse(rc.URL); perr == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+			scheme, endpoint = u.Scheme, u.Host
+		}
+		if endpoint == "" {
+			return nil, fmt.Errorf("sync: s3 remote %q requires url (the endpoint)", name)
+		}
+		if rc.Bucket == "" {
+			return nil, fmt.Errorf("sync: s3 remote %q requires bucket", name)
+		}
+		return remote.NewS3Remote(remote.S3Options{
+			Name:     name,
+			Endpoint: endpoint,
+			Scheme:   scheme,
+			Region:   rc.Region,
+			Bucket:   rc.Bucket,
+			Prefix:   rc.Folder,
+			Device:   string(deviceID),
+		})
+	case "gdrive", "yandex", "webdav":
 		remotePath := rc.URL
 		if rc.Folder != "" {
 			remotePath = rc.URL + "/" + rc.Folder
@@ -407,6 +483,7 @@ func (a *App) buildRemote(name string) (remote.Remote, error) {
 		return remote.NewRcloneRemote(remote.RcloneOptions{
 			Name:   name,
 			Remote: remotePath,
+			Device: string(deviceID),
 		})
 	default:
 		return remote.FromConfig(rc.Type, map[string]string{
@@ -436,6 +513,38 @@ func sExts(s interface{ Dir() string }) []string {
 	return []string{".gpg", ".age"}
 }
 
+// fillUnknownRemoteHashes downloads the remote copy of files that exist on
+// both sides but not in the base, and fills in their content hash. The git
+// transport hashes while listing; rclone and restic cannot, and for them an
+// unknown hash on a both-sides-no-base file forces a conflict — correct, but
+// it means a store copied to a second device syncs into one conflict file per
+// entry. The fetch is bounded to exactly those files, and a failure leaves
+// the hash unknown, which is the behaviour the merge already handles.
+func fillUnknownRemoteHashes(ctx context.Context, rem remote.Remote, files []remote.File, base sync.Snapshot, storeDir string) []remote.File {
+	for i, f := range files {
+		if f.Hash != [32]byte{} {
+			continue // the transport named the content already
+		}
+		if _, ok := base[f.Path]; ok {
+			continue // the base knows this file; the merge compares versions
+		}
+		if fi, err := os.Stat(filepath.Join(storeDir, f.Path)); err != nil || fi.IsDir() {
+			continue // not on both sides; the merge resolves it by version alone
+		}
+		rc, _, err := rem.Get(ctx, f.Path)
+		if err != nil {
+			continue
+		}
+		data, readErr := io.ReadAll(rc)
+		_ = rc.Close()
+		if readErr != nil {
+			continue
+		}
+		files[i].Hash = blake3.Sum256(data)
+	}
+	return files
+}
+
 // remoteFilesToSnapshot converts a list of RemoteFile into a Snapshot. It
 // preserves existing version vectors from the base for files that have not
 // changed.
@@ -450,6 +559,7 @@ func remoteFilesToSnapshot(files []remote.File, base sync.Snapshot, deviceID syn
 		}
 		snap[f.Path] = &sync.FileState{
 			Path:      f.Path,
+			Hash:      f.Hash,
 			Size:      f.Size,
 			ModTime:   f.ModTime,
 			Version:   vv,

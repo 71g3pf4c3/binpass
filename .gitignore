@@ -13,3 +13,5 @@ coverage.filtered
 result
 result-*
 binpass
+completions/
+vendor/

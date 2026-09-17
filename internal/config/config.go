@@ -97,6 +97,11 @@ type RemoteConfig struct {
 	// PasswordCommand is a shell command that prints the restic password
 	// to stdout (restic only, preferred over Password).
 	PasswordCommand string
+	// Bucket is the S3 bucket (s3 only). The native S3 transport needs it
+	// separate from the endpoint in URL.
+	Bucket string
+	// Region is the S3 bucket's region (s3 only).
+	Region string
 }
 
 // Default returns the configuration pass would use with no environment set.

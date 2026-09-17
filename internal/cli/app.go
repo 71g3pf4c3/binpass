@@ -14,6 +14,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/71g3pf4c3/binpass/internal/config"
+	"github.com/71g3pf4c3/binpass/pkg/audit"
 	"github.com/71g3pf4c3/binpass/pkg/crypto"
 	"github.com/71g3pf4c3/binpass/pkg/identity"
 	"github.com/71g3pf4c3/binpass/pkg/plugin"
@@ -45,6 +46,11 @@ type App struct {
 	guardOnce sync.Once
 	// cachedGuard enforces plugin capabilities on store access.
 	cachedGuard *plugin.Guard
+
+	// hibpClient stands in for the HIBP breach database in tests; nil
+	// means the real one, which talks to the network and has no place
+	// there.
+	hibpClient audit.HIBPChecker
 }
 
 // Guard returns the capability guard for this invocation.

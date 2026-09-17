@@ -45,6 +45,8 @@ func newMenuCmd(app *App) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&opts.launcher, "launcher", "auto", "picker: auto|rofi|fzf|dmenu|wofi|wmenu")
 	cmd.Flags().StringVar(&opts.field, "field", "password", "what to emit: password, all, or a field name")
+	_ = cmd.RegisterFlagCompletionFunc("launcher", completeLauncherNames)
+	_ = cmd.RegisterFlagCompletionFunc("field", app.completeFieldNames)
 	cmd.Flags().BoolVar(&opts.typeIt, "type", false, "type the secret into the focused window")
 	cmd.Flags().BoolVar(&opts.print, "print", false, "write the secret to stdout")
 	cmd.Flags().StringVar(&opts.prompt, "prompt", "pass", "picker prompt")

@@ -41,6 +41,7 @@ type ResticRemote struct {
 	lastSnapID string        // snapshot ID from last List call (for conditional write)
 	dirty      bool          // true if Put/Delete/Rename modified the local store
 	initDone   bool          // true after repo is verified or initialised
+	device     string        // device:<id> tag stamped onto every snapshot
 }
 
 // ResticOptions configures a ResticRemote.
@@ -64,6 +65,10 @@ type ResticOptions struct {
 	ExtraArgs []string
 	// ExtraEnv are extra environment variables for the restic process.
 	ExtraEnv []string
+	// Device names this machine in the device:<id> tag every snapshot gets.
+	// With several machines pushing to one repository it is the only way to
+	// tell from `restic snapshots` who created what; empty adds no tag.
+	Device string
 }
 
 // NewResticRemote creates a ResticRemote. It validates that the restic binary is
@@ -95,6 +100,7 @@ func NewResticRemote(opts ResticOptions) (*ResticRemote, error) {
 		resticPath:  resticPath,
 		extraArgs:   opts.ExtraArgs,
 		extraEnv:    opts.ExtraEnv,
+		device:      opts.Device,
 		mu:          make(chan struct{}, 1),
 	}
 	r.mu <- struct{}{} // initialise as unlocked
@@ -150,6 +156,12 @@ func (r *ResticRemote) Push(ctx context.Context) error {
 	// Run restic backup.
 	args := r.buildArgs("backup", r.storeDir)
 	args = append(args, "--tag", "binpass")
+	if r.device != "" {
+		// Naming the machine that made the snapshot is what makes a
+		// multi-client repository debuggable: `sync history` prints the
+		// tag, and `restic snapshots` groups by it.
+		args = append(args, "--tag", "device:"+r.device)
+	}
 	out, err := r.run(ctx, args)
 	if err != nil {
 		return fmt.Errorf("remote/restic: backup: %w", err)

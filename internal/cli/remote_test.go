@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -144,4 +145,36 @@ func TestRemoteListEmpty(t *testing.T) {
 
 	err := app.runRemoteList()
 	assert.NoError(t, err)
+}
+
+func TestRemoteAddS3KeyValues(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	t.Setenv("BINPASS_CONFIG", cfgPath)
+
+	app := &App{Cfg: config.Default(), Out: io.Discard, Err: io.Discard}
+
+	// The native S3 transport takes the endpoint as the URL and the rest
+	// as key=value pairs; credentials deliberately have no form at all.
+	require.NoError(t, app.runRemoteAdd("s3", "backup",
+		"https://s3.example.com", "bucket=my-bucket", "folder=password-store", "region=eu-west-1"))
+
+	rc, ok := app.Cfg.Remotes["backup"]
+	require.True(t, ok)
+	assert.Equal(t, "https://s3.example.com", rc.URL)
+	assert.Equal(t, "my-bucket", rc.Bucket)
+	assert.Equal(t, "password-store", rc.Folder)
+	assert.Equal(t, "eu-west-1", rc.Region)
+
+	data, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "bucket: my-bucket")
+	assert.Contains(t, string(data), "region: eu-west-1")
+}
+
+func TestRemoteAddRejectsUnknownField(t *testing.T) {
+	app := &App{Cfg: config.Default(), Out: io.Discard, Err: io.Discard}
+	err := app.runRemoteAdd("s3", "backup", "https://s3.example.com", "password=nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown field")
 }

@@ -1,8 +1,12 @@
 package remote
 
 import (
+	"io"
+	"os"
 	"path"
 	"path/filepath"
+
+	"lukechampine.com/blake3"
 )
 
 // Names of the tomb containers, repeated here rather than imported from
@@ -88,4 +92,23 @@ func IsTombContainer(p string) bool {
 func IsBlockContainer(p string) bool {
 	base := path.Base(filepath.ToSlash(p))
 	return base == luksImageName || base == bundleName
+}
+
+// hashFileBlake3 digests the file at path. It mirrors pkg/sync's scanner
+// hash so that a File.Hash is comparable with the hashes in state.db;
+// the sync package is not imported for this, because pkg/remote must not
+// depend on the engine that drives it.
+func hashFileBlake3(path string) ([32]byte, error) {
+	f, err := os.Open(path) //nolint:gosec // paths come from a store listing that was validated.
+	if err != nil {
+		return [32]byte{}, err
+	}
+	defer func() { _ = f.Close() }()
+	h := blake3.New(32, nil)
+	if _, err := io.Copy(h, f); err != nil {
+		return [32]byte{}, err
+	}
+	var out [32]byte
+	h.Sum(out[:0])
+	return out, nil
 }

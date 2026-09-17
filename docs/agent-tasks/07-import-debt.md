@@ -13,7 +13,7 @@
 
 4 коммита + 1 docs commit на ветке. Пока не влито — не существует.
 
-**Действие:** rebase на main, resolve conflicts (если CI добавили), merge.
+**Статус: сделано** — ветка влита.
 
 ### 1.2. `runImport`/`runExport`/`runAudit` — 0% unit coverage
 
@@ -21,29 +21,19 @@
 `runExport`, `runAudit`. Эти функции ходят в `app.requireStore()` → реальный
 store. Без injection point для mock store — untestable в unit tests.
 
-**Проблема:** если `--format=kaboom` или `--encoding=windows-1251` сломается
-после merge — узнаем только из e2e или production.
-
-**Решение:** вынести store interaction в interface:
-```go
-type importRunner struct {
-    store   storeProvider
-    opener  fileOpener
-    secret  secretReader
-}
-type storeProvider interface {
-    List(sub string) ([]string, error)
-    Get(name string) (*secret.Secret, error)
-    Set(name string, sec *secret.Secret) error
-    Exists(name string) bool
-}
-```
-Тогда `runImport` тестируется с mock store. **Оценка:** ~2 часа.
+**Статус: сделано иначе, чем предлагалось.** Mock store не понадобился:
+тесты гоняют runners через настоящий age-store в temp dir (паттерн из
+sync-тестов), что сильнее mock-а — проверяет реальный стек. Попутно найдены
+и починены два бага: `--encoding` принимался и молча игнорировался;
+неизвестный `--format` в audit расшифровывал весь стор до отказа.
 
 ### 1.3. `internal/cli/binary.go` — тот же 0% coverage
 
 `runBinaryCat`/`runBinarySum`/`runBinaryCopy`/`runBinaryMove` — тот же pattern.
 Требуют mock store. Дыра в coverage.
+
+**Статус: сделано** — runners выделены в методы и покрыты тестами против
+настоящего стора (см. 1.2).
 
 ---
 
@@ -212,6 +202,9 @@ unreachable. Но если библиотеку обновят и изменит
 unreachable. Если станет reachable — написать тест.
 
 ### 5.2. Bitwarden Detect: operator precedence
+
+**Статус: сделано.** `(folder || group) && favorite`, плюс 4 регрессионных
+кейса в тест-таблице (false-positive формы и организация-экспорт).
 
 ```go
 return strings.Contains(line, "folder,") || strings.Contains(line, "group,") && strings.Contains(line, "favorite,")

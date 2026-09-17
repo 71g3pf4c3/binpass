@@ -35,7 +35,7 @@
 
           # Hash of the fetched module set. null would mean "the source
           # vendors its dependencies", which this repository does not.
-          vendorHash = "sha256-bwVRF+oNrQH2aD98soPStWzSJD7p4FaBrGm8NlHHH1I=";
+          vendorHash = "sha256-lhOt2faziYG7ad8vcJceCsoRdatQhG3Iv6cZwVCyzIk=";
 
           env.CGO_ENABLED = 0;
           ldflags = [
@@ -157,6 +157,8 @@
           # goreleaser shells out to syft for the SBOM it attaches to each
           # archive; without it a release fails at the very last step.
           syft
+          # And to cosign for keyless signing of the checksum file.
+          cosign
           gotestsum
           mockgen
           delve

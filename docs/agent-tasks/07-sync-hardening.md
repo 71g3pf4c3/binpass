@@ -105,6 +105,16 @@ ttl:300
 
 ### 4. OAuth flow для gdrive/yandex
 
+**Статус: сделано, через rclone.** binpass не растит свой OAuth-клиент и
+регистрацию app у Google/Yandex — он оркестрирует rclone: `remote add
+gdrive mydrive` зовёт `rclone config create mydrive drive` (браузер,
+token в rclone.conf — тот же, из которого sync читает). Headless: печатает
+device-flow инструкции (`rclone authorize` на машине с браузером +
+`config create` с токеном). Существующий rclone.conf подхватывается без
+шагов; URL для gdrive/yandex нормализуется (`mydrive` → `mydrive:`).
+Протокол покрыт тестами с seam'ом (без браузера): уже настроен → no-op,
+headless → инструкции, ошибка OAuth → remote сохранён + ошибка.
+
 **Проблема:** сейчас `binpass remote add gdrive` требует `rclone config`
 вручную. Пользователь должен сам настроить OAuth token.
 

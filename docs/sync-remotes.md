@@ -545,51 +545,41 @@ built-in limits.
 - [rclone](https://rclone.org/) installed on PATH
 - A Google account
 
-### 4.2. Configure rclone
+### 4.2. Add the remote to binpass
 
 ```sh
-rclone config
-# n) New remote
-# name> gdrive
-# Storage> drive
-# client_id> (leave blank for rclone's own)
-# client_secret> (leave blank)
-# scope> 1 (full access)
-# root_folder_id> (leave blank)
-# service_account_file> (leave blank)
-# auto_confirm> true
+binpass remote add gdrive mydrive
 ```
 
-rclone will open a browser window for OAuth. Authorise access and the token
-is saved to `~/.config/rclone/rclone.conf`.
+That is the whole setup: binpass finds no rclone remote called `mydrive`,
+runs rclone's own OAuth — a browser window opens, you authorise, and the
+token lands in rclone's config, the same place the sync later reads it
+from. With a path or a different rclone remote name:
+
+```sh
+binpass remote add gdrive work teamdrive:binpass-store
+```
+
+An existing rclone remote of the same name is picked up as it is; the
+flow only starts when something is missing.
 
 ### 4.3. Headless setup
 
-On a machine without a browser (server, CI), use device-flow:
+On a machine without a browser (server, CI), `remote add` prints the
+two-step device flow instead of starting the OAuth:
 
 ```sh
-rclone authorize "drive" --auto-confirm
-# Prints a token JSON. Copy it.
+# On a machine with a browser:
+rclone authorize "drive"
+# Prints a token in JSON braces. Copy it.
 
 # On the headless machine:
-rclone config create gdrive drive \
-  config_refresh_token=true \
+rclone config create mydrive drive \
   token='{"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}'
 ```
 
-### 4.4. Add the remote to binpass
-
-```sh
-# The folder will be created on first sync if it does not exist.
-binpass remote add gdrive gdrive gdrive:binpass-store
-binpass sync --remote=gdrive
-```
-
-Or specify a folder name:
-
-```sh
-binpass remote add gdrive gdrive gdrive:binpass-store --folder=work
-```
+The binpass remote is saved either way; the sync works once the token is
+in place.
 
 ### 4.5. Important notes
 
@@ -613,25 +603,22 @@ binpass remote add gdrive gdrive gdrive:binpass-store --folder=work
 - [rclone](https://rclone.org/) installed on PATH
 - A Yandex account
 
-### 5.2. Configure rclone
+### 5.2. Add the remote to binpass
 
 ```sh
-rclone config
-# n) New remote
-# name> yandex
-# Storage> yandex
-# client_id> (leave blank for rclone's own)
-# client_secret> (leave blank)
+binpass remote add yandex yd
 ```
 
-rclone will open a browser for Yandex OAuth.
-
-### 5.3. Add the remote to binpass
+binpass runs rclone's own Yandex OAuth — browser window, authorise,
+token saved in rclone's config — and that is all. With a path:
 
 ```sh
-binpass remote add yandex yandex yandex:password-store
-binpass sync --remote=yandex
+binpass remote add yandex yd yd:password-store
 ```
+
+On a headless machine, `remote add` prints the two-step flow instead
+(`rclone authorize "yandex"` where a browser is, then `rclone config
+create` with the token here), exactly as for Google Drive (§4.3).
 
 ### 5.4. WebDAV fallback
 

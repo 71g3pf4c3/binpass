@@ -2,10 +2,10 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/71g3pf4c3/binpass/internal/config"
@@ -31,17 +31,25 @@ func newRemoteCmd(app *App) *cobra.Command {
 // newRemoteAddCmd builds `binpass remote add`.
 func newRemoteAddCmd(app *App) *cobra.Command {
 	return &cobra.Command{
-		Use:   "add TYPE NAME [URL]",
+		Use:   "add TYPE NAME [URL] [key=value...]",
 		Short: "Add a synchronisation remote",
 		Long: `Add a new remote for synchronisation. TYPE is one of:
   git       — a git repository (the default pass transport)
   restic    — a restic repository (encrypted, deduplicated, versioned snapshots)
   gdrive    — Google Drive folder
   yandex    — Yandex.Disk folder
-  webdav    — WebDAV endpoint
-  s3        — S3-compatible bucket
+  webdav    — a WebDAV endpoint, through rclone
+  s3        — an S3-compatible bucket, spoken to natively
 
 For git, the URL is required.
+
+After the URL, fields only some types have come as key=value pairs:
+
+  binpass remote add s3 backup s3.example.com bucket=my-bucket region=eu-west-1
+
+gdrive and yandex authorise through rclone's own OAuth: adding one opens
+a browser when the rclone remote is not configured yet, and prints the
+two-step device flow on a machine without a display.
 
 For restic, the URL is the repository, passed to restic untouched, so every
 backend it supports works:
@@ -128,6 +136,22 @@ func (a *App) runRemoteAdd(remoteType, name string, extra ...string) error {
 		default:
 			return fmt.Errorf("remote add: unknown field %q (valid: bucket, folder, region)", key)
 		}
+	}
+
+	// The OAuth-backed types name an rclone remote in their URL ("mydrive"
+	// of "mydrive:store"); a bare word is that remote at its root, and no
+	// URL at all means the remote is called what binpass calls it. The
+	// default is what makes `remote add gdrive mydrive` enough.
+	if _, needs := rcloneBackends[remoteType]; needs {
+		if rc.URL == "" {
+			rc.URL = name + ":"
+		} else if !strings.Contains(rc.URL, ":") {
+			rc.URL += ":"
+		}
+	}
+
+	if err := a.ensureRcloneAuth(rc); err != nil {
+		return err
 	}
 
 	cfgPath := config.FilePath()

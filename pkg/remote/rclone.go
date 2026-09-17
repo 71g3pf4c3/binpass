@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RcloneRemote is a Remote backed by any storage that rclone supports. It
@@ -22,6 +24,11 @@ type RcloneRemote struct {
 	name       string
 	remote     string // e.g. "mybucket:" or "gdrive:binpass"
 	rclonePath string
+	device     string
+	// run executes one rclone invocation. It is a field so tests can
+	// substitute an in-memory fake for the real binary, the same way the
+	// golden suite substitutes the real pass.
+	run func(ctx context.Context, args []string, stdin io.Reader) ([]byte, error)
 }
 
 // RcloneOptions configures an RcloneRemote.
@@ -31,6 +38,10 @@ type RcloneOptions struct {
 	// Remote is the rclone remote:path, e.g. "mybucket:password-store" or
 	// "gdrive:binpass". Must end with a colon if it refers to the root.
 	Remote string
+	// Device identifies this machine in the advisory lock. The sync engine
+	// passes the same device ID it stores in state.db, so a lock names the
+	// device the conflict files name. Empty falls back to the hostname.
+	Device string
 }
 
 // NewRcloneRemote creates a new rclone-backed remote. It verifies that the
@@ -44,7 +55,23 @@ func NewRcloneRemote(opts RcloneOptions) (*RcloneRemote, error) {
 		name:       opts.Name,
 		remote:     opts.Remote,
 		rclonePath: p,
+		device:     opts.Device,
+		run:        realRclone(p),
 	}, nil
+}
+
+// realRclone returns the default runner: one exec per invocation, with
+// CombinedOutput so rclone's own diagnostics reach the error message.
+func realRclone(path string) func(ctx context.Context, args []string, stdin io.Reader) ([]byte, error) {
+	return func(ctx context.Context, args []string, stdin io.Reader) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // fixed binary, arguments built internally.
+		cmd.Stdin = stdin
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("rclone %s: %s: %w", strings.Join(args, " "), out, err)
+		}
+		return out, nil
+	}
 }
 
 // Name returns the human-readable name.
@@ -53,12 +80,14 @@ func (r *RcloneRemote) Name() string { return r.name }
 // Caps returns the capabilities of rclone-backed storage. Rclone provides
 // atomic writes through S3's If-Match when the backend supports it; for
 // other backends we report weak atomicity and rely on verify-after-write.
+// Advisory locking is a lock file in the remote root, which every rclone
+// backend can carry.
 func (r *RcloneRemote) Caps() Caps {
 	return Caps{
 		Atomic:     false, // Conservatively false; S3 could be true with If-Match.
 		WeakAtomic: true,  // Rclone verifies uploads by default.
 		History:    true,  // S3 has versioning; others may not.
-		Locking:    false,
+		Locking:    true,
 		Rename:     false, // Cloud storages cannot rename in place.
 		Watch:      false,
 	}
@@ -148,10 +177,8 @@ func (r *RcloneRemote) Put(ctx context.Context, path string, content io.Reader, 
 	// Use rclone rcat instead which reads from stdin.
 	// A fixed binary; remotePath is the configured remote plus a store
 	// path, passed as a single operand.
-	cmd := exec.CommandContext(ctx, r.rclonePath, "rcat", remotePath) //nolint:gosec // fixed binary, arguments built internally.
-	cmd.Stdin = bytes.NewReader(data)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("remote/rclone: put %q: %s: %w", path, out, err)
+	if _, err := r.run(ctx, []string{"rcat", remotePath}, bytes.NewReader(data)); err != nil {
+		return "", fmt.Errorf("remote/rclone: put %q: %w", path, err)
 	}
 
 	rev := fmt.Sprintf("%d", len(data))
@@ -188,9 +215,84 @@ func (r *RcloneRemote) Rename(ctx context.Context, from, to string) error {
 	return nil
 }
 
-// Lock returns a no-op unlock since rclone has no advisory locking.
-func (r *RcloneRemote) Lock(_ context.Context) (Unlock, error) {
-	return NoopUnlock{}, nil
+// Lock acquires the advisory lock: a .binpass.lock file in the remote root.
+//
+// The protocol is write, read back, compare — the best a storage without
+// compare-and-swap can do. Two clients that race for the same expired lock
+// can both believe they hold it in the window between one's read-back and
+// the other's write; the TTL means the damage is bounded, and conditional
+// writes (expectRev) still catch a lost update at the file level.
+//
+// A lock whose holder died is recovered by expiry: once ts + ttl is in the
+// past, the next client overwrites it.
+func (r *RcloneRemote) Lock(ctx context.Context) (Unlock, error) {
+	device := r.device
+	if device == "" {
+		if host, err := os.Hostname(); err == nil && host != "" {
+			device = host
+		} else {
+			device = "unknown"
+		}
+	}
+	lockPath := r.remote + "/" + LockFileName
+	now := time.Now()
+
+	// A read error here is "no lock yet" as often as it is a broken
+	// transport; rather than guess, fall through to the write, which fails
+	// loudly on a transport that is genuinely down.
+	if data, err := r.run(ctx, []string{"cat", lockPath}, nil); err == nil {
+		if held, perr := parseAdvisoryLock(data); perr == nil && !held.stale(now) && held.Device != device {
+			return nil, &LockHeldError{Remote: r.name, Lock: held}
+		}
+	}
+
+	ours := advisoryLock{Device: device, TS: now, TTL: DefaultLockTTL}
+	if _, err := r.run(ctx, []string{"rcat", lockPath}, bytes.NewReader(ours.marshal())); err != nil {
+		return nil, fmt.Errorf("remote/rclone: lock: %w", err)
+	}
+
+	// The read-back is what turns a blind overwrite into a lock: if another
+	// client's content came back, they won the race and we must not touch
+	// the store.
+	back, err := r.run(ctx, []string{"cat", lockPath}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("remote/rclone: lock verify: %w", err)
+	}
+	if !bytes.Equal(back, ours.marshal()) {
+		var holder advisoryLock
+		if parsed, perr := parseAdvisoryLock(back); perr == nil {
+			holder = parsed
+		}
+		return nil, &LockHeldError{Remote: r.name, Lock: holder}
+	}
+	return rcloneUnlock{r: r, device: device}, nil
+}
+
+// rcloneUnlock releases a lock acquired by RcloneRemote.Lock. It deletes the
+// lock file only when it still names this device, so it never removes a lock
+// another client legitimately took over after ours expired.
+type rcloneUnlock struct {
+	r      *RcloneRemote
+	device string
+}
+
+// Unlock releases the advisory lock.
+func (u rcloneUnlock) Unlock(ctx context.Context) error {
+	lockPath := u.r.remote + "/" + LockFileName
+	data, err := u.r.run(ctx, []string{"cat", lockPath}, nil)
+	if err != nil {
+		// The lock is gone; releasing an absent lock is success, the
+		// same way closing an already-closed file is.
+		return nil
+	}
+	held, perr := parseAdvisoryLock(data)
+	if perr != nil || held.Device != u.device {
+		return nil
+	}
+	if _, err := u.r.run(ctx, []string{"delete", lockPath}, nil); err != nil {
+		return fmt.Errorf("remote/rclone: unlock: %w", err)
+	}
+	return nil
 }
 
 // Close is a no-op for rclone.
@@ -198,10 +300,5 @@ func (r *RcloneRemote) Close() error { return nil }
 
 // rclone executes an rclone command and returns its stdout.
 func (r *RcloneRemote) rclone(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, r.rclonePath, args...) //nolint:gosec // fixed binary, arguments built internally.
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("rclone %s: %s: %w", strings.Join(args, " "), out, err)
-	}
-	return out, nil
+	return r.run(ctx, args, nil)
 }

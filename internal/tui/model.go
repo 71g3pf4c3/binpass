@@ -1258,17 +1258,21 @@ func truncate(s string, maxCells int) string {
 	if lipgloss.Width(s) <= maxCells {
 		return s
 	}
-	// Binary search for the longest prefix that fits.
-	lo, hi := 0, len(s)
-	for lo < hi {
-		mid := lo + (hi-lo)/2
-		if lipgloss.Width(s[:mid]) <= maxCells {
-			lo = mid + 1
-		} else {
-			hi = mid
+	// Walk runes, not bytes: a prefix cut mid-rune is invalid UTF-8, and
+	// how much width such a prefix has is undefined — exactly what bit
+	// when the width library started counting invalid bytes instead of
+	// ignoring them.
+	var b strings.Builder
+	cells := 0
+	for _, r := range s {
+		w := lipgloss.Width(string(r))
+		if cells+w > maxCells {
+			break
 		}
+		b.WriteRune(r)
+		cells += w
 	}
-	return s[:lo-1]
+	return b.String()
 }
 
 // indent returns the prefix string for the given tree depth.

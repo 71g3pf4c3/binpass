@@ -459,6 +459,27 @@ func (g *GitRemote) Rename(ctx context.Context, from, to string) error {
 	return nil
 }
 
+// Log returns the commit history newest first, one entry per line, in git's
+// --oneline form. It is the git transport's idea of a snapshot list: every
+// commit a sync made is a point the store can be examined at.
+func (g *GitRemote) Log(ctx context.Context, limit int) ([]string, error) {
+	args := []string{"log", "--oneline"}
+	if limit > 0 {
+		args = append(args, fmt.Sprintf("-%d", limit))
+	}
+	out, err := g.git(ctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("remote/git: log: %w", err)
+	}
+	var lines []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines, nil
+}
+
 // Lock is a no-op for git. Git uses its own merge and locking model.
 func (g *GitRemote) Lock(_ context.Context) (Unlock, error) {
 	return NoopUnlock{}, nil

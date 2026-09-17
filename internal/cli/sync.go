@@ -35,6 +35,7 @@ func newSyncCmd(app *App) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&remoteName, "remote", "", "remote to sync with (default: all configured remotes)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen without making changes")
+	cmd.AddCommand(newSyncHistoryCmd(app), newSyncRestoreCmd(app))
 	return cmd
 }
 

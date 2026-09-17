@@ -81,11 +81,17 @@ func (a *App) runSyncHistory(ctx context.Context, remoteName string) error {
 			return fmt.Errorf("sync history: %w", err)
 		}
 		for _, s := range snaps {
+			// restic before 0.16 omits short_id from the JSON; its full
+			// IDs shorten the same way, and restore accepts either.
+			id := s.ShortID
+			if id == "" && len(s.ID) >= 8 {
+				id = s.ID[:8]
+			}
 			when := s.Time
 			if t, err := time.Parse(time.RFC3339, s.Time); err == nil {
 				when = t.Local().Format("2006-01-02 15:04:05")
 			}
-			line := fmt.Sprintf("%s  %s", s.ShortID, when)
+			line := fmt.Sprintf("%s  %s", id, when)
 			if s.Hostname != "" {
 				line += "  " + s.Hostname
 			}

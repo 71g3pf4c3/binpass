@@ -37,15 +37,19 @@ jobs:
           go-version: "1.26"
           cache: true
       # The golden tests compare binpass against the real thing; without
-      # these they skip silently and prove nothing.
+      # these they skip silently and prove nothing. rclone and restic are
+      # the same deal for the transport tests: the advisory lock protocol
+      # and the snapshot round trip need the real binaries.
       - name: Install the reference implementation
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pass gnupg tree age
+          sudo apt-get install -y --no-install-recommends pass gnupg tree age rclone restic
       - name: Verify the reference tools are present
         run: |
           command -v pass || { echo "pass is missing: the golden suite would skip"; exit 1; }
           command -v tree || { echo "tree is missing: pass cannot render listings"; exit 1; }
+          command -v rclone || { echo "rclone is missing: the transport tests would skip"; exit 1; }
+          command -v restic || { echo "restic is missing: the snapshot tests would skip"; exit 1; }
       - name: Unit tests with race detector
         run: go test -race ./...
       - name: Coverage gate (>=70%)

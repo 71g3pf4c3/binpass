@@ -59,7 +59,7 @@ unit-tests:
   <<: *go-setup
   <<: *go-cache
   script:
-    - apt-get update && apt-get install -y --no-install-recommends pass gnupg tree age git
+    - apt-get update && apt-get install -y --no-install-recommends pass gnupg tree age git rclone restic
     - command -v pass || { echo "pass is missing: golden suite would skip"; exit 1; }
     - command -v tree || { echo "tree is missing: pass cannot render listings"; exit 1; }
     - go test -race ./...
@@ -69,7 +69,7 @@ coverage:
   <<: *go-setup
   <<: *go-cache
   script:
-    - apt-get update && apt-get install -y --no-install-recommends pass gnupg tree age git
+    - apt-get update && apt-get install -y --no-install-recommends pass gnupg tree age git rclone restic
     - go test -coverpkg=./pkg/...,./internal/... -coverprofile=coverage.out ./...
     - grep -v -E '/mocks/|_mock\.go|/gen/' coverage.out > coverage.filtered || true
     - total=$(go tool cover -func=coverage.filtered | awk '/^total:/ {gsub(/%/,"",$3); print $3}')

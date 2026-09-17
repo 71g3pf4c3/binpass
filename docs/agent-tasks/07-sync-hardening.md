@@ -19,6 +19,10 @@ restic snapshots. Критический путь пройден, здесь —
 
 ### 1. S3 conditional write через `If-Match` на ETag
 
+**Статус: открыто, требует решения (a) minio-go S3Remote или (b) verify-after-write.**
+Морально смягчено advisory locking'ом (см. #3): параллельные Push на
+Drive/WebDAV теперь serialized lock-файлом, S3 остаётся race-окном.
+
 **Проблема:** RcloneRemote conditional write сейчас — read-before-write. Race
 window между Get (проверка rev) и Put (загрузка). Два клиента, параллельный
 Push на S3 → один затрёт другой молча.
@@ -38,6 +42,13 @@ half-measure.
 файл, один получает ошибку. Caps().Atomic = true для S3.
 
 ### 2. Property-тесты merge engine
+
+**Статус: сделано.** `TestMergeProperty` (200 миров на прогон, soak
+`-count=1000`). Нашёл реальный баг: orphan-both-sides (файл на обеих
+сторонах без base-entries) молча пушшил локальную копию, теряя remote.
+Починено: одинаковый хеш → none, разный → conflict; для этого `remote.File`
+получил blake3-хеш (git List заполняет). Инвариант «nothing is lost»
+уточнён: изменённый файл не получает Delete, delete-vs-edit — edit-wins.
 
 **Проблема:** merge покрыт детерминированными cases (merge_test.go, 485 строк).
 Нет проверки инвариантов при произвольных входах. spec §12 прямо требует.
@@ -64,6 +75,11 @@ Merge, проверять инварианты. 10k итераций за сек
 -run TestMergeProperty -count=1000`.
 
 ### 3. Advisory locking для Drive/WebDAV
+
+**Статус: сделано.** `.binpass.lock` протокол (device, timestamp, TTL):
+write → read-back → compare, stale-steal по TTL, conditional delete при
+unlock. `runSync` берёт lock при мутации (dry-run — нет). Протокол
+протестирован fake-runner'ом на двух клиентов + real-rclone тест.
 
 **Проблема:** `RcloneRemote.Lock()` → `NoopUnlock`. Два клиента могут
 параллельно писать на Drive/WebDAV → last-write-wins → потеря данных.
@@ -100,6 +116,13 @@ ttl:300
 
 ### 5. `binpass sync history` — просмотр restic snapshots
 
+**Статус: сделано, шире задания.** `sync history` печатает restic snapshots
+(short ID, время, host, tags; фолбэк на обрезку полного ID для restic <0.16)
+и git commits (`--oneline`). `sync restore <id>` восстанавливает стор из
+restic snapshot после confirm-промпта; git-ремоуты направляются в git.
+Restic roundtrip тест гоняется против реального restic (skip без бинарника;
+CI ставит restic).
+
 **Проблема:** `ResticRemote.Snapshots()` и `Restore()` есть в API, но нет CLI
 wrapper. Пользователь не может просмотреть историю snapshots или откатиться.
 
@@ -118,6 +141,11 @@ binpass sync restore abc12345           # восстановить snapshot в �
 restore <id>` восстанавливает. Для git — `git log` output.
 
 ### 6. Restic snapshot tagging по device
+
+**Статус: сделано.** `ResticOptions.Device` → `Push()` добавляет
+`--tag device:<id>` рядом с `binpass`; ID тот же, что в StateDB. `sync
+history` печатает тег. Пустой device тег не добавляет. `sync restore`
+добавлен отдельно (см. #5).
 
 **Проблема:** все restic snapshots идут с `--tag binpass`. В multi-client
 сценарии нельзя понять, кто когда пушнил.

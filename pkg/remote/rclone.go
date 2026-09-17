@@ -95,11 +95,17 @@ func (r *RcloneRemote) Caps() Caps {
 
 // List returns all .gpg and .age files on the remote.
 func (r *RcloneRemote) List(ctx context.Context) ([]File, error) {
-	// rclone lsf --format "ps" --separator "\t" remote:path
+	// rclone lsf -R --format "ps" --separator "\t" remote:path
+	//
+	// -R is not optional: without it lsf lists the top level only, and a
+	// store whose entries live in directories ("github.com/alice.age")
+	// would look empty to the sync engine. Directories show up in the
+	// output as lines with a negative size; IsStoreContent filters them
+	// out along with everything else that is not a store file.
 	out, err := r.rclone(ctx, "lsf",
+		"-R",
 		"--format", "ps",
 		"--separator", "\t",
-		"--files-from-raw", "/dev/stdin", // unused, just listing all
 		r.remote,
 	)
 	if err != nil {

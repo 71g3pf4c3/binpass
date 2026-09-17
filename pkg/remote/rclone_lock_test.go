@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -227,4 +228,36 @@ func TestRcloneRemote_AdvisoryLockReal(t *testing.T) {
 	unlockB, err := b.Lock(ctx)
 	require.NoError(t, err)
 	require.NoError(t, unlockB.Unlock(ctx))
+}
+
+// TestRcloneRemote_ListReal checks List against the real rclone binary on
+// the local backend. The fake-runner tests prove the parsing; only the real
+// binary proves the flags — which is how a listing that filtered itself to
+// nothing (--files-from-raw /dev/stdin with no input) and a listing that
+// never left the top level (no -R) both shipped.
+func TestRcloneRemote_ListReal(t *testing.T) {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone not on PATH")
+	}
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "github.com")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "alice.age"), []byte("data"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "toplevel.gpg"), []byte("data"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, LockFileName), []byte("lock"), 0o600))
+
+	ctx := context.Background()
+	r, err := NewRcloneRemote(RcloneOptions{Name: "local", Remote: dir})
+	require.NoError(t, err)
+	defer func() { _ = r.Close() }()
+
+	files, err := r.List(ctx)
+	require.NoError(t, err)
+
+	var paths []string
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	assert.ElementsMatch(t, []string{"github.com/alice.age", "toplevel.gpg"}, paths,
+		"nested and top-level entries alike, and nothing that is not a store file")
 }

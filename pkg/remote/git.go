@@ -329,11 +329,17 @@ func (g *GitRemote) List(ctx context.Context) ([]File, error) {
 			modTime = time.Time{}
 		}
 		size, _ := g.fileSize(ctx, path)
+		// The working tree is both the local store and the "remote"
+		// listing, so its digest is free and lets the merge engine
+		// recognise a file that is on both sides of the comparison only
+		// because of that identity.
+		hash, _ := hashFileBlake3(filepath.Join(g.dir, filepath.FromSlash(path)))
 		files = append(files, File{
 			Path:    path,
 			Size:    size,
 			ModTime: modTime,
 			Rev:     rev,
+			Hash:    hash,
 		})
 	}
 	return files, nil

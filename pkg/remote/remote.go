@@ -55,6 +55,12 @@ type File struct {
 	// revision, and so on. It is passed to Put/Delete to implement conditional
 	// writes.
 	Rev string
+	// Hash is the blake3 digest of the file content, when the transport can
+	// produce it without another round trip. The zero value means unknown:
+	// the merge engine then cannot tell an identical remote copy from a
+	// divergent one and must assume divergence. The git transport fills it
+	// from the working tree, which is the file itself.
+	Hash [32]byte
 }
 
 // Remote is the transport interface for synchronisation (§8.2). One
@@ -149,6 +155,7 @@ func FromConfig(remoteType string, opts map[string]string) (Remote, error) {
 		return NewRcloneRemote(RcloneOptions{
 			Name:   name,
 			Remote: remote,
+			Device: opts["device"],
 		})
 	default:
 		return nil, ErrUnknownRemote

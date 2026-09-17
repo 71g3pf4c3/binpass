@@ -79,10 +79,24 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 	// into it: scanning first would read the tree as it was before the pull
 	// and report every incoming entry as locally missing, which the merge
 	// engine reads as a deletion to propagate.
-	rem, err := a.buildRemote(remoteName)
+	rem, err := a.buildRemote(remoteName, deviceID)
 	if err != nil {
 		return err
 	}
+
+	// Take the advisory lock before mutating anything, so two clients
+	// pushing at the same time cannot overwrite each other's work on the
+	// transports that have no compare-and-swap. Dry runs only read and
+	// stay out of the way of a real sync in progress. Transports without
+	// locking return a no-op, so this is one call for all of them.
+	if !dryRun {
+		unlock, err := rem.Lock(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = unlock.Unlock(ctx) }()
+	}
+
 	remoteFiles, err := rem.List(ctx)
 	if err != nil {
 		return fmt.Errorf("sync: list remote: %w", err)
@@ -108,6 +122,21 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 	if len(actions) == 0 {
 		fmt.Fprintln(a.Out, "Everything up-to-date.")
 		return nil
+	}
+
+	// A run in which every action is None has nothing to transfer, but the
+	// None actions still carry base entries and merged VVs to persist, and
+	// the git transport may have commits made during List that need a push,
+	// so only the message is shared with the nothing-at-all case.
+	needsWork := false
+	for _, act := range actions {
+		if act.Kind != sync.ActionNone {
+			needsWork = true
+			break
+		}
+	}
+	if !needsWork {
+		fmt.Fprintln(a.Out, "Everything up-to-date.")
 	}
 
 	// A block container synchronises correctly but grows the remote without
@@ -319,6 +348,16 @@ func (a *App) applyActions(ctx context.Context, s interface {
 				if err := db.UpdateFile(&updated); err != nil {
 					return fmt.Errorf("sync: update VV for %q: %w", act.Path, err)
 				}
+				continue
+			}
+			// A file the merge confirmed in sync without a base entry —
+			// the same content on both sides before the first shared
+			// sync — is learned here, so the next run compares against it
+			// instead of re-deriving the no-base case every time.
+			if act.Base == nil && act.Local != nil {
+				if err := db.UpdateFile(act.Local); err != nil {
+					return fmt.Errorf("sync: record base for %q: %w", act.Path, err)
+				}
 			}
 		}
 	}
@@ -338,8 +377,8 @@ func remoteRevForAction(act sync.Action) string {
 // buildRemote constructs a Remote from the configuration. If name is empty,
 // it returns the default remote. For git remotes, it uses the store directory
 // directly (the store is the git working tree). For other types, it delegates
-// to RemoteFromConfig.
-func (a *App) buildRemote(name string) (remote.Remote, error) {
+// to RemoteFromConfig. The device ID names this machine in the advisory lock.
+func (a *App) buildRemote(name string, deviceID sync.DeviceID) (remote.Remote, error) {
 	if name == "" {
 		name = a.Cfg.Sync.DefaultRemote
 	}
@@ -407,6 +446,7 @@ func (a *App) buildRemote(name string) (remote.Remote, error) {
 		return remote.NewRcloneRemote(remote.RcloneOptions{
 			Name:   name,
 			Remote: remotePath,
+			Device: string(deviceID),
 		})
 	default:
 		return remote.FromConfig(rc.Type, map[string]string{
@@ -450,6 +490,7 @@ func remoteFilesToSnapshot(files []remote.File, base sync.Snapshot, deviceID syn
 		}
 		snap[f.Path] = &sync.FileState{
 			Path:      f.Path,
+			Hash:      f.Hash,
 			Size:      f.Size,
 			ModTime:   f.ModTime,
 			Version:   vv,

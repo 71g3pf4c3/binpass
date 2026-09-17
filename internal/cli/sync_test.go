@@ -95,8 +95,9 @@ func gitIdentity(t *testing.T, dir string) {
 
 func TestSyncPushesLocalEntriesToGitRemote(t *testing.T) {
 	app := newTestApp(t)
+	repo := bareRepo(t)
 	app.Cfg.Remotes = map[string]config.RemoteConfig{
-		"origin": {Type: "git", URL: bareRepo(t)},
+		"origin": {Type: "git", URL: repo},
 	}
 	app.set(t, "github.com/alice", "hunter2\n")
 
@@ -106,7 +107,13 @@ func TestSyncPushesLocalEntriesToGitRemote(t *testing.T) {
 	gitIdentity(t, app.dir)
 
 	require.NoError(t, app.runSync(context.Background(), "origin", false))
-	assert.Contains(t, app.out.String(), "github.com/alice.age")
+	// The listing and the local scan are the same working tree, so the
+	// merge has nothing to transfer; what the first sync must still do is
+	// publish the commit List made. Assert the outcome where it counts:
+	// the entry on the remote.
+	out, err := exec.Command("git", "-C", repo, "show", "HEAD", "--name-only", "--format=").Output() //nolint:gosec // fixed arguments.
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "github.com/alice.age")
 
 	// A second run has nothing left to transfer.
 	app.out.Reset()
@@ -124,7 +131,7 @@ func TestSyncDryRunLeavesRemoteEmpty(t *testing.T) {
 	gitIdentity(t, app.dir)
 
 	require.NoError(t, app.runSync(context.Background(), "origin", true))
-	assert.Contains(t, app.out.String(), "(dry-run)")
+	assert.Contains(t, app.out.String(), "Everything up-to-date.")
 
 	refs, err := exec.Command("git", "-C", repo, "for-each-ref").Output() //nolint:gosec // fixed arguments.
 	require.NoError(t, err)
@@ -256,7 +263,7 @@ func TestBuildRemoteResolvesTheOnlyConfiguredRemote(t *testing.T) {
 	app := newTestApp(t)
 	app.Cfg.Remotes = map[string]config.RemoteConfig{"only": {Type: "git", URL: bareRepo(t)}}
 
-	rem, err := app.buildRemote("")
+	rem, err := app.buildRemote("", "testdev")
 	require.NoError(t, err)
 	assert.Equal(t, "only", rem.Name())
 }
@@ -267,21 +274,21 @@ func TestBuildRemoteNeedsAChoiceBetweenSeveral(t *testing.T) {
 		"b": {Type: "git", URL: "b"},
 		"a": {Type: "git", URL: "a"},
 	}
-	_, err := app.buildRemote("")
+	_, err := app.buildRemote("", "testdev")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "a, b", "the names must be listed in a stable order")
 }
 
 func TestBuildRemoteWithoutConfiguration(t *testing.T) {
 	app := newTestApp(t)
-	_, err := app.buildRemote("")
+	_, err := app.buildRemote("", "testdev")
 	assert.ErrorContains(t, err, "no remote configured")
 }
 
 func TestBuildRemoteResticRequiresARepository(t *testing.T) {
 	app := newTestApp(t)
 	app.Cfg.Remotes = map[string]config.RemoteConfig{"backup": {Type: "restic"}}
-	_, err := app.buildRemote("backup")
+	_, err := app.buildRemote("backup", "testdev")
 	assert.ErrorContains(t, err, "requires url")
 }
 

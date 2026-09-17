@@ -275,6 +275,40 @@ func TestMerge_OpenerNil_NoAutoMerge(t *testing.T) {
 
 // ---- ConflictName test ----
 
+func TestMerge_BothSidesNoBase_Conflict(t *testing.T) {
+	// Two devices created the same entry offline, before either synced:
+	// there is no shared history to pick a winner from, so both copies
+	// must be preserved. Found by TestMergeProperty; the previous
+	// behaviour pushed the local version and silently dropped the remote
+	// one, making the devices overwrite each other on every sync.
+	local := Snapshot{"x.gpg": mkState("x.gpg", VersionVector{"thinkpad": 1}, hash(1))}
+	remote := Snapshot{"x.gpg": mkState("x.gpg", VersionVector{"macbook": 1}, hash(2))}
+
+	actions := Merge(local, remote, Snapshot{}, nil)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionConflict, actions[0].Kind)
+	assert.Equal(t, VersionVector{"thinkpad": 1, "macbook": 1}, actions[0].MergedVersion)
+
+	// The verdict must not depend on which side runs the merge.
+	actions = Merge(remote, local, Snapshot{}, nil)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionConflict, actions[0].Kind)
+}
+
+func TestMerge_BothSidesNoBase_IdenticalCiphertext_IsSynced(t *testing.T) {
+	// The same content on both sides without a shared base: a store copied
+	// between machines, or the git transport whose listing is the same
+	// working tree as the local scan. There is nothing to transfer and
+	// nothing to fork — only a base entry to learn.
+	local := Snapshot{"x.gpg": mkState("x.gpg", VersionVector{"thinkpad": 1}, hash(1))}
+	remote := Snapshot{"x.gpg": mkState("x.gpg", VersionVector{"macbook": 1}, hash(1))}
+
+	actions := Merge(local, remote, Snapshot{}, nil)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionNone, actions[0].Kind)
+	assert.Equal(t, VersionVector{"thinkpad": 1, "macbook": 1}, actions[0].MergedVersion)
+}
+
 func TestConflictName(t *testing.T) {
 	ts := time.Date(2026, 8, 8, 14, 22, 33, 0, time.UTC)
 	got := ConflictName("github.com/alice.gpg", "thinkpad", ts.Format("20060102T150405"))

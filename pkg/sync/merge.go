@@ -165,8 +165,28 @@ func mergeFile(path string, local, remote, base *FileState, opener Opener) Actio
 		return a
 	}
 
-	// Should not happen (local and remote exist without base, or base exists
-	// alone). If it does, treat the file as needing sync.
+	// Created independently on both sides before either synced: there is
+	// no shared history to compare, so neither version is known to be
+	// newer. When the transport can vouch for the content being identical
+	// — a store copied between machines, or the git transport, whose
+	// listing is the same working tree — the file is simply in sync.
+	// Otherwise treating the local one as the winner, as this once did,
+	// silently discards the remote copy and makes two devices overwrite
+	// each other back and forth on every sync: a conflict preserves both.
+	if local != nil && remote != nil && base == nil {
+		if local.Hash == remote.Hash && local.Hash != [32]byte{} {
+			a.Kind = ActionNone
+			a.Reason = "identical content on both sides, no shared base"
+			a.MergedVersion = local.Version.Merge(remote.Version)
+			return a
+		}
+		a.Kind = ActionConflict
+		a.Reason = "created on both sides independently, no shared base"
+		a.MergedVersion = local.Version.Merge(remote.Version)
+		return a
+	}
+
+	// One side has the file with no base and no counterpart: a new file.
 	if local != nil {
 		a.Kind = ActionPush
 		a.Reason = "orphan local file, no base"

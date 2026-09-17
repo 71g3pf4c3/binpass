@@ -44,11 +44,7 @@ and written to standard output, suitable for piping to a file:
     binpass binary cat photo.b64 > photo.jpg`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			s, err := app.requireStore()
-			if err != nil {
-				return err
-			}
-			return binary.Cat(s, args[0], app.Out)
+			return app.runBinaryCat(args[0])
 		},
 	}
 }
@@ -66,16 +62,7 @@ decoded (original) binary data, not on the base64 representation.
     binpass binary sum photo.b64`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			s, err := app.requireStore()
-			if err != nil {
-				return err
-			}
-			sum, err := binary.Sum(s, args[0])
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(app.Out, sum)
-			return nil
+			return app.runBinarySum(args[0])
 		},
 	}
 }
@@ -94,30 +81,7 @@ The entry name must end in ".b64". The source file is not modified.
 		Aliases: []string{"cp"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			s, err := app.requireStore()
-			if err != nil {
-				return err
-			}
-			name := args[0]
-			path := args[1]
-
-			if !force && s.Exists(name) {
-				ok, err := app.confirm(fmt.Sprintf("An entry already exists for %s. Overwrite it?", name))
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return nil
-				}
-			}
-
-			f, err := os.Open(path) //nolint:gosec // user-supplied path is intentional.
-			if err != nil {
-				return err
-			}
-			defer func() { _ = f.Close() }()
-
-			return binary.Store(s, name, f)
+			return app.runBinaryCopy(args[0], args[1], force)
 		},
 	}
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "overwrite without prompting")
@@ -140,41 +104,89 @@ This is equivalent to ` + "`binpass binary copy`" + ` followed by removing the s
 		Aliases: []string{"mv"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			s, err := app.requireStore()
-			if err != nil {
-				return err
-			}
-			name := args[0]
-			path := args[1]
-
-			if !force && s.Exists(name) {
-				ok, err := app.confirm(fmt.Sprintf("An entry already exists for %s. Overwrite it?", name))
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return nil
-				}
-			}
-
-			f, err := os.Open(path) //nolint:gosec // user-supplied path is intentional.
-			if err != nil {
-				return err
-			}
-			// Closed explicitly below and again on every error path; the
-			// second close is harmless and the first is required because
-			// Windows refuses to remove an open file.
-			defer func() { _ = f.Close() }()
-
-			if err := binary.Store(s, name, f); err != nil {
-				return err
-			}
-			if err := f.Close(); err != nil {
-				return err
-			}
-			return os.Remove(path)
+			return app.runBinaryMove(args[0], args[1], force)
 		},
 	}
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "overwrite without prompting")
 	return cmd
+}
+
+// runBinaryCat decodes a .b64 entry to the output stream.
+func (a *App) runBinaryCat(name string) error {
+	s, err := a.requireStore()
+	if err != nil {
+		return err
+	}
+	return binary.Cat(s, name, a.Out)
+}
+
+// runBinarySum prints the SHA-256 of a .b64 entry's decoded content.
+func (a *App) runBinarySum(name string) error {
+	s, err := a.requireStore()
+	if err != nil {
+		return err
+	}
+	sum, err := binary.Sum(s, name)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(a.Out, sum)
+	return nil
+}
+
+// runBinaryCopy encodes a file as base64 and stores it under name.
+func (a *App) runBinaryCopy(name, path string, force bool) error {
+	s, err := a.requireStore()
+	if err != nil {
+		return err
+	}
+	proceed, err := a.overwriteEntry(s, name, force)
+	if err != nil || !proceed {
+		return err
+	}
+	f, err := os.Open(path) //nolint:gosec // user-supplied path is intentional.
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return binary.Store(s, name, f)
+}
+
+// runBinaryMove stores a file under name and removes the original.
+func (a *App) runBinaryMove(name, path string, force bool) error {
+	s, err := a.requireStore()
+	if err != nil {
+		return err
+	}
+	proceed, err := a.overwriteEntry(s, name, force)
+	if err != nil || !proceed {
+		return err
+	}
+	f, err := os.Open(path) //nolint:gosec // user-supplied path is intentional.
+	if err != nil {
+		return err
+	}
+	// Closed explicitly below and again on every error path; the
+	// second close is harmless and the first is required because
+	// Windows refuses to remove an open file.
+	defer func() { _ = f.Close() }()
+
+	if err := binary.Store(s, name, f); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Remove(path)
+}
+
+// overwriteEntry asks whether an existing entry may be replaced, unless
+// force was given. It reports whether the operation may proceed; a declined
+// prompt is not an error — the command ends quietly, exactly as it did
+// before the question was asked, leaving the entry untouched.
+func (a *App) overwriteEntry(s interface{ Exists(string) bool }, name string, force bool) (bool, error) {
+	if force || !s.Exists(name) {
+		return true, nil
+	}
+	return a.confirm(fmt.Sprintf("An entry already exists for %s. Overwrite it?", name))
 }

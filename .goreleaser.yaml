@@ -63,20 +63,21 @@ checksum:
 # OIDC identity, so verification needs no key distributed out of band.
 #
 #   cosign verify-blob checksums.txt \
-#     --signature checksums.txt.sig --certificate checksums.txt.pem \
+#     --bundle checksums.txt.bundle \
 #     --certificate-identity-regexp 'https://github.com/71g3pf4c3/binpass/.*' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 #
-# Signing the checksum file covers every artefact listed in it.
+# Signing the checksum file covers every artefact listed in it. The bundle
+# carries the certificate and the signature together, which is the only
+# form current cosign emits since --output-certificate/--output-signature
+# were removed.
 signs:
   - cmd: cosign
-    certificate: "${artifact}.pem"
     args:
       - sign-blob
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
-      - "${artifact}"
+      - "--bundle=${artifact}.bundle"
       - "--yes"
+      - "${artifact}"
     artifacts: checksum
     output: true
 

@@ -157,6 +157,8 @@
           # goreleaser shells out to syft for the SBOM it attaches to each
           # archive; without it a release fails at the very last step.
           syft
+          # And to cosign for keyless signing of the checksum file.
+          cosign
           gotestsum
           mockgen
           delve

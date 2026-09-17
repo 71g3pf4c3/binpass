@@ -21,7 +21,9 @@ build: ## Build the binpass client.
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/binpass ./cmd/binpass
 
 snapshot: ## Build a local release snapshot with goreleaser (no publish).
-	goreleaser release --snapshot --clean
+	# Keyless signing needs the CI's OIDC identity, which a local run does
+	# not have; skipping it is what makes a local snapshot possible at all.
+	goreleaser release --snapshot --clean --skip=sign
 
 release: ## Cut a release with goreleaser (requires a tag + GITHUB_TOKEN).
 	goreleaser release --clean

@@ -40,24 +40,19 @@
   `/usr/share/fish/vendor_completions.d/binpass.fish`. Генерируй на этапе
   сборки хуком goreleaser.
 
+### 1. Completion — дописать
+
+**Статус: сделано.** `--field=` подставляет имена полей записи, `--launcher=` —
+пикеры; nfpms ставит completion-скрипты через post-hook goreleaser (только
+linux_amd64 — кросс-компилированный бинарник на хосте не исполняется).
+Второй аргумент `mv`/`cp` дополняется (`completeEntriesAndDirs`).
+
 ### 2. GitLab CI
 
-Просили `.gitlab-ci.yml` с автотестами, линтерами, сборкой релизов и
-публикацией артефактов. **Ещё не сделан.** Существующий
-`.github/workflows/ci.yml` — образец по составу проверок.
-
-Нужны стадии:
-* `lint` — `golangci-lint run`, `gofmt -l`, `go vet`.
-* `test` — весь набор. **Обязательно ставь настоящий `pass`, `gnupg`, `tree`**,
-  иначе golden-тесты молча пропустятся и ничего не проверят. Добавь явную
-  проверку наличия `pass` с `exit 1`, если его нет.
-* `test:e2e` — сборка `Dockerfile.e2e` и прогон (нужен docker-in-docker).
-* `coverage` — gate ≥70%, с `coverage_report`/`cobertura` для GitLab.
-* `build` — матрица linux/darwin/windows × amd64/arm64.
-* `release` — goreleaser по тегу, артефакты в GitLab Releases. Учти, что
-  goreleaser для GitLab требует `GITLAB_TOKEN` и секцию `gitlab:` в конфиге.
-
-Кешируй `$GOPATH/pkg/mod` между запусками.
+**Статус: сделано.** `.gitlab-ci.yml` со стадиями lint/test/coverage/build;
+rclone и restic ставятся явно (golden-тесты требуют настоящий `pass`, `gnupg`,
+`tree`). Пара: `.github/workflows/ci.yml` — держи состав проверок в синхроне
+при изменении любого из двух.
 
 ### 3. Проверить весь набор
 

@@ -7,11 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/71g3pf4c3/binpass/pkg/store"
 )
 
 // PassImporter reads entries from an existing pass or gopass store on disk.
-// It does not decrypt; it copies the ciphertext, which the export step can
-// then re-encrypt for the target store.
+//
+// With Source set, entries are decrypted through that store — the same crypto
+// backends the destination uses — and carried as ordinary secrets, so the
+// export step re-encrypts them for the destination's recipients. Entries that
+// cannot be decrypted (no secret key, cancelled pinentry, absent gpg binary)
+// fall back to carrying the ciphertext as an attachment, which is what the
+// importer has always done for stores whose keys are unavailable.
 //
 // Because pass stores use the same format as binpass, this importer is also
 // the basis for "binpass import pass /path/to/other/store".
@@ -19,10 +26,23 @@ type PassImporter struct {
 	// Dir is the path to the source pass store. If empty, the importer
 	// reports an error at import time.
 	Dir string
+
+	// Source is a store bound to Dir through which entries are decrypted.
+	// Nil keeps the ciphertext-copying behaviour.
+	Source *store.Store
 }
 
 // Name returns the format name.
 func (PassImporter) Name() string { return "pass" }
+
+// GopassImporter reads a gopass store. gopass shares pass's on-disk layout,
+// so the entry discovery and decryption logic is inherited unchanged.
+type GopassImporter struct {
+	PassImporter
+}
+
+// Name returns the format name.
+func (GopassImporter) Name() string { return "gopass" }
 
 // Detect reports whether the reader looks like a pass store. A pass store is
 // identified by its directory structure (a tree of .gpg or .age files with a
@@ -31,10 +51,12 @@ func (PassImporter) Name() string { return "pass" }
 // instead.
 func (PassImporter) Detect(_ io.Reader) bool { return false }
 
-// Import walks the source store directory and yields entries. It reads the
-// ciphertext from each entry but does not decrypt it; the Password field is
-// left empty and the raw ciphertext is carried in a special field so that the
-// export step can re-encrypt without needing the source store's keys.
+// Import walks the source store directory and yields entries. When Source is
+// set, each entry is decrypted through it and carried as a pre-rendered
+// secret, preserving the source plaintext byte for byte. Entries that fail
+// to decrypt, and all entries when Source is nil, are yielded with their raw
+// ciphertext as an attachment so a later manual decryption can still recover
+// them.
 func (p *PassImporter) Import(_ io.Reader) iter.Seq2[*Entry, error] {
 	return func(yield func(*Entry, error) bool) {
 		if p.Dir == "" {
@@ -67,12 +89,8 @@ func (p *PassImporter) Import(_ io.Reader) iter.Seq2[*Entry, error] {
 				// Not an encrypted entry; skip.
 				return nil
 			}
-			entryName := rel[:len(rel)-len(ext)]
+			entryName := filepath.ToSlash(rel[:len(rel)-len(ext)])
 
-			// Use forward slashes for the store path.
-			entryName = filepath.ToSlash(entryName)
-
-			// Read the raw ciphertext (will be re-encrypted by export step).
 			data, err := os.ReadFile(path) //nolint:gosec // path is from a user-provided directory.
 			if err != nil {
 				// Report but don't abort: one unreadable entry shouldn't stop
@@ -81,26 +99,58 @@ func (p *PassImporter) Import(_ io.Reader) iter.Seq2[*Entry, error] {
 				return nil
 			}
 
-			e := &Entry{
-				Path: entryName,
-				Fields: []Field{
-					{Name: "source-format", Value: "pass"},
-					{Name: "source-ext", Value: ext},
-				},
-				// Carry raw ciphertext for the export step.
-				Attachments: []Attachment{{
-					Name: "_ciphertext" + ext,
-					Data: data,
-				}},
+			if p.Source != nil {
+				sec, derr := p.Source.Get(entryName)
+				if derr == nil {
+					e := &Entry{
+						Path:     entryName,
+						Password: sec.Password(),
+						// Carry the decrypted secret verbatim: the
+						// structured Entry fields cannot express an
+						// arbitrary pass body, and rebuilding one would
+						// rewrite the entry instead of transferring it.
+						Raw: sec,
+					}
+					if !yield(e, nil) {
+						return errIterationStopped
+					}
+					return nil
+				}
+				// Decryption failed: fall back to the ciphertext. No error
+				// is yielded because one undecryptable entry must not
+				// abort the whole import; the fallback is visible in the
+				// entry itself (no password, a _ciphertext attachment) and
+				// summarised by the caller.
 			}
 
-			if !yield(e, nil) {
-				return fmt.Errorf("importer: iteration stopped")
+			if !yield(ciphertextEntry(entryName, ext, data), nil) {
+				return errIterationStopped
 			}
 			return nil
 		})
 		if err != nil {
 			yield(nil, err)
 		}
+	}
+}
+
+// errIterationStopped makes filepath.Walk unwind when the consumer stops
+// pulling, so no further files are read and decrypted for nobody.
+var errIterationStopped = fmt.Errorf("importer: iteration stopped")
+
+// ciphertextEntry builds the fallback form of an entry: the undecrypted bytes
+// travel as an attachment, with the source extension kept so the operator
+// knows which tool to point at them.
+func ciphertextEntry(name, ext string, data []byte) *Entry {
+	return &Entry{
+		Path: name,
+		Fields: []Field{
+			{Name: "source-format", Value: "pass"},
+			{Name: "source-ext", Value: ext},
+		},
+		Attachments: []Attachment{{
+			Name: "_ciphertext" + ext,
+			Data: data,
+		}},
 	}
 }

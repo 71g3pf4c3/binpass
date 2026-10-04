@@ -85,6 +85,25 @@ notes-колонку. При re-import получается дублирован
 
 ### 2.3. Pass/gopass importer не расшифровывает
 
+**Статус: сделано.** Импортеру добавлен опциональный `Source *store.Store` —
+стор, привязанный к каталогу source store, с теми же crypto backends, что и
+destination (gpg через exec + age). При наличии `Source` каждая запись
+расшифровывается через `store.Get` и переносится в destination через
+обычный write path (`WriteEntries` → `Set`) с re-encrypt под получателей
+destination. Plaintext живёт только в памяти и внутри destination store: gpg
+получает ciphertext через stdin и отдаёт plaintext через pipe, никаких
+временных файлов и argv. Байт-в-байт round-trip обеспечен полем `Entry.Raw`
+(перезапись через structured fields меняла бы порядок строк body). Записи,
+которые не расшифровываются (нет ключа, отменён pinentry), не валят импорт:
+fallback на прежний ciphertext-as-attachment, с summary-предупреждением в
+stderr от CLI. Попутно починено три смежных бага: `runImport` падал на
+`os.ReadFile` каталога до запуска импортера (CLI-путь импорта pass был
+мёртв); `--format=gopass` не резолвился в registry, хотя CLI его обещал;
+`binpass ls` паниковал на layout'е "entry + entry/_ciphertext" (nil map в
+`treeNode.insert` — leaf теперь превращается в directory, если под ним
+появляется путь). Тесты гоняют настоящий gpg с throwaway-ключом в изолированном
+GNUPGHOME (skip, если gpg нет — прецедент golden suite).
+
 Копирует ciphertext как attachment. Для re-encrypt нужен source store's crypto
 backend. Пользователь видит attachment с `.gpg` или `.age` расширением, но не
 может им пользоваться без ручной расшифровки.

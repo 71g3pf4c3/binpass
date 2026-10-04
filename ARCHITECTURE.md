@@ -270,7 +270,7 @@ binpass plugin audit
 | `pass-otp` | `binpass otp` | HOTP-счётчик синхронизируется корректно (§8.5), `--watch`, YubiKey OATH, QR |
 | `pass-update` | `binpass update` | Массовая ротация по маске, интеграция с рецептами (§4.1), политика длины из конфига |
 | `pass-audit` | `binpass audit` | HIBP по k-anonymity (5-символьный SHA-1 префикс, полный хеш не покидает машину, кеш ответов в памяти, `--no-hibp` для offline), слабые через zxcvbn (score < 2), переиспользованные через SHA-1 хеш-группы, просроченные через `expire:`/`expires:`/`expiry:` поля (RFC 3339, ISO, европейский формат, относительные "Nd"), severity buckets mutually exclusive (Critical + Warning + Info + Clean = Audited), `--format=json`, `--parallel`, пароли никогда не выводятся |
-| `pass-import` | `binpass import` | 9 форматов: KeePass KDBX (gokeepasslib, вложенные группы, TOTP, custom fields, attachments → `name.b64`), Bitwarden CSV, 1Password CSV, LastPass CSV (http://sn placeholder, CP1251 decode), Chrome CSV, Firefox CSV (URL→domain fallback), Enpass CSV (Recycle Bin filter), pass/gopass (ciphertext copy для re-encrypt). Автоопределение по содержимому (`Registry.Detect`), `--dry-run` (`Plan`/`FormatPlan`), `--force` для overwrite, `--format` для explicit selection, `--encoding` для non-UTF-8, BOM strip (UTF-8/UTF-16 LE/BE), multiline CSV fields, path normalisation + traversal reject (`ValidatePath`), dedup (`DeduplicatePaths`), KDBX password с TTY (`readSecret`, no echo). Плюс `binpass export` (CSV, WARNING о plaintext) |
+| `pass-import` | `binpass import` | 9 форматов: KeePass KDBX (gokeepasslib, вложенные группы, TOTP, custom fields, attachments → `name.b64`), Bitwarden CSV, 1Password CSV, LastPass CSV (http://sn placeholder, CP1251 decode), Chrome CSV, Firefox CSV (URL→domain fallback), Enpass CSV (Recycle Bin filter), pass/gopass (decrypt через source store, byte-exact transfer, ciphertext fallback для нерасшифровываемых записей). Автоопределение по содержимому (`Registry.Detect`), `--dry-run` (`Plan`/`FormatPlan`), `--force` для overwrite, `--format` для explicit selection, `--encoding` для non-UTF-8, BOM strip (UTF-8/UTF-16 LE/BE), multiline CSV fields, path normalisation + traversal reject (`ValidatePath`), dedup (`DeduplicatePaths`), KDBX password с TTY (`readSecret`, no echo). Плюс `binpass export` (CSV, WARNING о plaintext) |
 | `pass-tomb` / `pass-coffin` | `binpass tomb` | Кроссплатформенно (§7) |
 | `pass-file` | `binpass binary` | Стрим без буферизации в память, `sum`, детект бинарности |
 | `pass-genphrase` | `binpass generate --words=5` | Diceware, EFF-словари, несколько языков |
@@ -331,8 +331,11 @@ Username, URL, Notes, TOTPURI, Fields, Attachments. Экспорт маппит 
 **Ограничения текущей реализации:**
 
 * 9 форматов (не 60+). Расширение — добавление Importer implementations.
-* Pass/gopass importer копирует ciphertext как attachment для re-encrypt, не
-  расшифровывает. Для корректного re-encrypt нужен source store's crypto backend.
+* Pass/gopass importer расшифровывает записи через source store (те же
+  crypto backends, внешний gpg через exec), и plaintext переносится в
+  destination store через обычный write path с re-encrypt. Записи, которые
+  не расшифровываются (нет ключа), импортируются с ciphertext как
+  attachment — как fallback.
 * Export выводит `sec.Body()` (включая structured fields) в notes-колонку CSV.
   Для чистого экспорта — только Notes-часть body.
 

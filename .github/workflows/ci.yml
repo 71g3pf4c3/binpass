@@ -25,7 +25,11 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          # Pinned, not "latest": the lint run refuses to even load the
+          # config when the binary was built with an older Go than go.mod
+          # targets, and "latest" resolved to a go1.24 build on the runner.
+          # v2.12.2 is what the nix dev shell ships, built with go1.26.5.
+          version: v2.12.2
           args: --timeout=5m
 
   test:

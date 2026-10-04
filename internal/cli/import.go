@@ -3,11 +3,14 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
+	"github.com/71g3pf4c3/binpass/pkg/crypto"
 	"github.com/71g3pf4c3/binpass/pkg/importer"
 	"github.com/71g3pf4c3/binpass/pkg/secret"
+	"github.com/71g3pf4c3/binpass/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +29,11 @@ func newImportCmd(app *App) *cobra.Command {
 
 Auto-detects the format from the file content when --format is not given.
 Use --dry-run to preview what will be imported without writing anything.
+
+For the pass and gopass formats, FILE is the source store directory; entries
+are decrypted with the keys of the current user and re-encrypted for this
+store. Entries that cannot be decrypted are imported with their ciphertext
+as an attachment.
 
 Supported formats: Bitwarden, 1Password, LastPass, Chrome, Firefox, Enpass,
 KeePass (KDBX), pass, gopass.`,
@@ -91,18 +99,35 @@ func (a *App) runImport(path, format string, dryRun, force bool, encoding string
 		}
 	}
 
-	// Re-open the file for the importer (DetectReader consumed the reader).
-	// An explicit --encoding transcodes here, before any importer sees the
-	// bytes: importers work in UTF-8, and the store requires it.
-	raw, err := os.ReadFile(path) //nolint:gosec // user-provided path.
-	if err != nil {
-		return fmt.Errorf("import: %w", err)
+	// For pass and gopass, the argument is a source store directory rather
+	// than a file: bind it, plus a store to decrypt that directory through.
+	// These importers read by path, so there is no input stream to prepare —
+	// reading a directory as a file would fail before they even run.
+	dirBased := false
+	switch pi := imp.(type) {
+	case *importer.PassImporter:
+		a.bindPassImporter(pi, path)
+		dirBased = true
+	case *importer.GopassImporter:
+		a.bindPassImporter(&pi.PassImporter, path)
+		dirBased = true
 	}
-	raw, err = importer.Decode(raw, encoding)
-	if err != nil {
-		return fmt.Errorf("import: decoding as %q: %w", encoding, err)
+
+	var f io.Reader
+	if !dirBased {
+		// Re-open the file for the importer (DetectReader consumed the reader).
+		// An explicit --encoding transcodes here, before any importer sees the
+		// bytes: importers work in UTF-8, and the store requires it.
+		raw, err := os.ReadFile(path) //nolint:gosec // user-provided path.
+		if err != nil {
+			return fmt.Errorf("import: %w", err)
+		}
+		raw, err = importer.Decode(raw, encoding)
+		if err != nil {
+			return fmt.Errorf("import: decoding as %q: %w", encoding, err)
+		}
+		f = bytes.NewReader(raw)
 	}
-	f := bytes.NewReader(raw)
 
 	// For KeePass, we need a password from the terminal. Use readSecret
 	// (no echo) to avoid displaying the database password.
@@ -114,14 +139,16 @@ func (a *App) runImport(path, format string, dryRun, force bool, encoding string
 		kdbx.Password = pw
 	}
 
-	// For pass importer, set the source directory.
-	if passImp, ok := imp.(*importer.PassImporter); ok {
-		passImp.Dir = path
-	}
-
 	entries, err := importer.ImportAll(imp, f)
 	if err != nil {
 		return fmt.Errorf("import: %w", err)
+	}
+
+	// Entries that could not be decrypted arrive as ciphertext attachments;
+	// the importer does not abort on them, so summarise here where the
+	// operator is guaranteed to look.
+	if n := countCiphertextFallbacks(entries); n > 0 {
+		fmt.Fprintf(a.Err, "pass import: %d entries could not be decrypted; they were imported with their ciphertext as attachments\n", n)
 	}
 
 	if dryRun {
@@ -189,6 +216,41 @@ func (a *App) runExport(format string, args []string) error {
 		)
 	}
 	return nil
+}
+
+// bindPassImporter points a pass/gopass importer at a source store directory
+// and gives it a store to decrypt through, so imported entries are re-encrypted
+// for the destination's recipients instead of arriving as ciphertext
+// attachments.
+func (a *App) bindPassImporter(pi *importer.PassImporter, dir string) {
+	pi.Dir = dir
+	gpg := crypto.NewGPG(dir, a.Cfg.GPGBinary, a.Cfg.GPGOpts)
+	ageBackend := crypto.NewAge(dir, a.identities)
+	// The default backend only matters for writes, and a source store is
+	// never written; gpg keeps the lookup order pass-compatible anyway.
+	src, err := store.New(store.Options{
+		Dir:      dir,
+		Backends: []crypto.Crypto{gpg, ageBackend},
+		Default:  gpg,
+	})
+	if err == nil {
+		pi.Source = src
+	}
+}
+
+// countCiphertextFallbacks reports how many imported entries carry their
+// ciphertext as an attachment, i.e. could not be decrypted at import time.
+func countCiphertextFallbacks(entries []*importer.Entry) int {
+	n := 0
+	for _, e := range entries {
+		for _, att := range e.Attachments {
+			if strings.HasPrefix(att.Name, "_ciphertext") {
+				n++
+				break
+			}
+		}
+	}
+	return n
 }
 
 // csvEscape returns s quoted for CSV if it contains commas, quotes or newlines.

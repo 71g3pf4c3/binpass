@@ -107,6 +107,13 @@ func (n *treeNode) insert(path string) {
 				child.children = nil
 			}
 			cur.children[part] = child
+		} else if child.children == nil && i < len(parts)-1 {
+			// The path continues below a name that was inserted as a leaf
+			// before: promote it to a directory. On disk a file and a
+			// directory cannot share a name, but the importer's attachment
+			// sidecar convention ("entry" and "entry/_ciphertext.gpg.b64")
+			// produces exactly that shape in a listing.
+			child.children = map[string]*treeNode{}
 		}
 		cur = child
 	}

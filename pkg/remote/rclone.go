@@ -60,17 +60,23 @@ func NewRcloneRemote(opts RcloneOptions) (*RcloneRemote, error) {
 	}, nil
 }
 
-// realRclone returns the default runner: one exec per invocation, with
-// CombinedOutput so rclone's own diagnostics reach the error message.
+// realRclone returns the default runner: one exec per invocation. Stdout and
+// stderr are captured separately, because callers parse stdout (a lock file's
+// content, a listing) and rclone writes diagnostics — NOTICEs, retry
+// warnings — to stderr. CombinedOutput would splice those into the parsed
+// bytes; the lock protocol's write-read-back compare, byte-for-byte, then
+// reports our own lock as another device's.
 func realRclone(path string) func(ctx context.Context, args []string, stdin io.Reader) ([]byte, error) {
 	return func(ctx context.Context, args []string, stdin io.Reader) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // fixed binary, arguments built internally.
 		cmd.Stdin = stdin
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("rclone %s: %s: %w", strings.Join(args, " "), out, err)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("rclone %s: %s: %w", strings.Join(args, " "), stderr.String(), err)
 		}
-		return out, nil
+		return stdout.Bytes(), nil
 	}
 }
 

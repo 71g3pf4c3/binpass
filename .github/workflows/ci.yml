@@ -23,9 +23,14 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          # Pinned, not "latest": v6 of the action cannot install golangci-lint
+          # v2 at all (it rejected the v2.x version string, and its "latest"
+          # resolved to a go1.24 build that refused to load a go.mod targeting
+          # 1.26.5). v2.12.2 is what the nix dev shell ships, built with
+          # go1.26.5.
+          version: v2.12.2
           args: --timeout=5m
 
   test:

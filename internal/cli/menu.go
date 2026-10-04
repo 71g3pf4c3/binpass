@@ -102,9 +102,22 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 	// The usage history decides frequent and recent ordering — and a
 	// missing or corrupt file simply means nobody has used the menu yet.
 	usage := loadMenuUsage()
+	// The known-OTP cache is read here even when this is not an otp menu
+	// run: the full listing is already in hand, so this is the cheapest
+	// place to reconcile both state files against it — a record of an
+	// entry deleted from the store dies here instead of lingering until
+	// the file is removed by hand, and pruning costs one map pass rather
+	// than a store walk.
+	known := loadOTPKnown()
+	if usage.reconcile(names) {
+		saveMenuUsage(usage)
+	}
+	if known.reconcile(names) {
+		saveOTPKnown(known)
+	}
 	names = sortEntries(names, opts.sort, opts.reverse, usage)
 	if opts.field == "otp" {
-		names = floatOTPKnown(names, loadOTPKnown())
+		names = floatOTPKnown(names, known)
 	}
 
 	picker, err := detectPicker(opts.launcher)
@@ -293,6 +306,13 @@ type menuUse struct {
 	Last time.Time `json:"last"`
 }
 
+// usageRecordsMax caps how many per-entry records the menu state files keep.
+// Both files exist only to rank a picker list, which nobody scrolls beyond a
+// few hundred entries anyway; the cap keeps them from growing without bound
+// across years of store churn, where pruning alone cannot shrink a file whose
+// entries are all still alive.
+const usageRecordsMax = 500
+
 // mark records a choice of name.
 func (m menuUsage) mark(name string) {
 	u := m[name]
@@ -302,6 +322,50 @@ func (m menuUsage) mark(name string) {
 	}
 	u.Count++
 	u.Last = time.Now()
+}
+
+// reconcile drops records of entries that are no longer in the store and
+// reports whether anything was dropped. The caller runs it where the full
+// listing is already in hand — runMenu walks the store anyway to feed the
+// picker — so a deleted entry's record dies in one map pass instead of
+// lingering until the state file is removed by hand.
+func (m menuUsage) reconcile(names []string) bool {
+	live := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		live[name] = struct{}{}
+	}
+	dropped := false
+	for name := range m {
+		if _, ok := live[name]; !ok {
+			delete(m, name)
+			dropped = true
+		}
+	}
+	return dropped
+}
+
+// trim keeps at most max records, dropping the least chosen first and, among
+// equally chosen ones, the least recently used: a picker ranking loses the
+// least when those go.
+func (m menuUsage) trim(max int) {
+	if len(m) <= max {
+		return
+	}
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	// Worst first: fewer choices, then a longer time since the last one.
+	sort.Slice(names, func(i, j int) bool {
+		a, b := m[names[i]], m[names[j]]
+		if a.Count != b.Count {
+			return a.Count < b.Count
+		}
+		return a.Last.Before(b.Last)
+	})
+	for _, name := range names[:len(names)-max] {
+		delete(m, name)
+	}
 }
 
 // menuUsagePath is the file the usage lives in.
@@ -321,9 +385,12 @@ func loadMenuUsage() menuUsage {
 	return usage
 }
 
-// saveMenuUsage writes the usage file atomically: a half-written history is
-// worse than a lost one, because it silently reorders someone's menu.
+// saveMenuUsage writes the usage file atomically, first trimming the history
+// to usageRecordsMax so no write path can leave an unbounded file behind: a
+// half-written history is worse than a lost one, because it silently reorders
+// someone's menu.
 func saveMenuUsage(usage menuUsage) {
+	usage.trim(usageRecordsMax)
 	saveStateJSON(menuUsagePath(), usage)
 }
 
@@ -384,11 +451,54 @@ func loadOTPKnown() otpKnown {
 	return known
 }
 
+// reconcile drops records of entries that are no longer in the store and
+// reports whether anything was dropped. It runs where the full listing is
+// already in hand (see menuUsage.reconcile), so a deleted entry stops
+// floating in the otp menu as soon as any menu notices it is gone.
+func (k otpKnown) reconcile(names []string) bool {
+	live := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		live[name] = struct{}{}
+	}
+	dropped := false
+	for name := range k {
+		if _, ok := live[name]; !ok {
+			delete(k, name)
+			dropped = true
+		}
+	}
+	return dropped
+}
+
+// trim keeps at most max records, dropping the oldest known first: an entry
+// that has not produced a code in the longest time is the one the ranking
+// can least rely on anyway.
+func (k otpKnown) trim(max int) {
+	if len(k) <= max {
+		return
+	}
+	names := make([]string, 0, len(k))
+	for name := range k {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return k[names[i]].Before(k[names[j]]) })
+	for _, name := range names[:len(names)-max] {
+		delete(k, name)
+	}
+}
+
+// saveOTPKnown writes the known-OTP cache atomically, first trimming it to
+// usageRecordsMax so no write path can leave an unbounded file behind.
+func saveOTPKnown(known otpKnown) {
+	known.trim(usageRecordsMax)
+	saveStateJSON(otpKnownPath(), known)
+}
+
 // rememberOTPKnown records that name has produced a one-time password.
 func rememberOTPKnown(name string) {
 	known := loadOTPKnown()
 	known[name] = time.Now()
-	saveStateJSON(otpKnownPath(), known)
+	saveOTPKnown(known)
 }
 
 // forgetOTPKnown drops name from the known-OTP cache. An entry that no
@@ -455,7 +565,8 @@ func sortEntries(names []string, mode string, reverse bool, usage menuUsage) []s
 // produced inside each half. It runs after any --reverse on purpose: the
 // otp menu's whole point is reaching a code in one motion, and a flag meant
 // to flip a name sort must not bury the 2FA entries again. Entries removed
-// from the store never reach a picker list, so the cache needs no pruning.
+// from the store never reach a picker list; their records are reconciled out
+// of the cache file by runMenu, not here.
 func floatOTPKnown(names []string, known otpKnown) []string {
 	out := append([]string{}, names...)
 	sort.SliceStable(out, func(i, j int) bool {

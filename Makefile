@@ -28,8 +28,8 @@ snapshot: ## Build a local release snapshot with goreleaser (no publish).
 release: ## Cut a release with goreleaser (requires a tag + GITHUB_TOKEN).
 	goreleaser release --clean
 
-test: ## Run unit tests.
-	$(GO) test ./...
+test: ## Run unit tests (warns loudly when suites skip for missing tools).
+	@GO=$(GO) ./scripts/run-tests.sh
 
 containers: ## Build and run every container test suite (needs Docker).
 	./scripts/containers.sh

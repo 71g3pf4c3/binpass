@@ -12,7 +12,11 @@ non-trivial change.
 nix develop                      # dev shell: go, gopls, golangci-lint, goreleaser, syft,
                                   # plus real pass, gnupg, age, git, tree, qrencode,
                                   # rclone, restic, cryptsetup and menu pickers (fzf, rofi, …)
-make test                         # go test ./...   (CGO_ENABLED=0)
+make test                         # go test ./... (CGO_ENABLED=0), piped through
+                                  # internal/testreport: renders the same quiet
+                                  # output and appends a WARNING block naming
+                                  # the tools behind any skipped suite; exit
+                                  # code stays `go test`'s — skips don't fail
 make test-race                    # requires cgo — CI runs -race, local plain `make test` doesn't
 make cover                        # coverage with business-logic filter, gate is >=70%
 make build                        # bin/binpass with -trimpath and ldflags version stamping
@@ -44,11 +48,13 @@ they skip.
 
 - **Compatibility with pass is enforced by tests, not intent.** The golden
   suite in `internal/cli/golden/` runs the real `pass` and binpass on an
-  identical store and compares stdout byte for byte. If `pass` or `tree` is
-  missing from the environment, these tests **skip silently and prove
-  nothing** — that's why CI installs them explicitly. `tree(1)` renders
-  glyphs by locale and colours by `TERM`; the golden listing tests depend on
-  this behaviour.
+  identical store and compares stdout byte for byte. If `pass` is missing
+  from the environment, every test in the suite skips with a
+  "pass not on PATH" message — `make test` aggregates those into a warning
+  block (via `internal/testreport`) naming the missing tools and what
+  therefore remains unproven. That's why CI installs the tools explicitly.
+  `tree(1)` renders glyphs by locale and colours by `TERM`; the golden
+  listing tests depend on this behaviour.
 - **Never run tests against the developer's real home.** Not
   `~/.password-store`, not `~/.gnupg`, not the system clipboard. Use
   temp dirs/containers. This is not theoretical: a user's live clipboard was

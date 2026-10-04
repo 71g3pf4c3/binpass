@@ -21,11 +21,23 @@ import (
 // binpassBin is the path of the binary under test, built once per run.
 var binpassBin string
 
+// passFound reports whether the reference implementation is on PATH.
+//
+// Without it these tests prove nothing — but exiting TestMain with status 0
+// hides that completely: the package shows up as a green run with no test
+// events at all, and nothing downstream can tell "passed" from "never ran".
+// Skipping per test with a stable message lets the test runner aggregate the
+// gap into a loud warning instead.
+var passFound bool
+
 // TestMain builds binpass and checks that the reference tools are present.
 func TestMain(m *testing.M) {
-	if _, err := exec.LookPath("pass"); err != nil {
-		// Without the reference implementation these tests prove nothing.
-		os.Exit(0)
+	_, err := exec.LookPath("pass")
+	passFound = err == nil
+	if !passFound {
+		// Every test skips in newWorld; building binpass first would only
+		// burn time on a run that cannot compare anything.
+		os.Exit(m.Run())
 	}
 	dir, err := os.MkdirTemp("", "binpass-build-*")
 	if err != nil {
@@ -57,6 +69,15 @@ type world struct {
 // newWorld creates a keyring and two initialised, identical stores.
 func newWorld(t *testing.T) *world {
 	t.Helper()
+
+	if !passFound {
+		t.Skip("pass not on PATH: no reference implementation to compare against")
+	}
+	if _, err := exec.LookPath("gpg"); err != nil {
+		// Stated explicitly instead of letting the key generation below
+		// fail, so the skip names the missing tool rather than a symptom.
+		t.Skip("gpg not on PATH: cannot build the throwaway keyring both stores share")
+	}
 
 	// gpg-agent's socket path is length-limited, so the keyring cannot live
 	// under a long TMPDIR-derived path.

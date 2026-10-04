@@ -95,7 +95,7 @@ func TestNoopBackend(t *testing.T) {
 // not available.
 func TestGitBackendIntegration(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
+		t.Skip("git not found on PATH")
 	}
 
 	// Create a temp directory with a git repo.
@@ -164,7 +164,7 @@ func TestDetectBackend(t *testing.T) {
 
 	// Git dir should return GitBackend.
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
+		t.Skip("git not found on PATH")
 	}
 	runGit(t, tmpDir, "init")
 	runGit(t, tmpDir, "config", "user.email", "test@test.com")

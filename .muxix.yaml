@@ -20,6 +20,31 @@ merge_strategy: merge
 post_create:
   - nix develop -c go build ./...
 
+# Named layouts for `muxix add <branch> -l <name>`. The default pane pair
+# (agent + shell) comes from the global config; these are the Go-specific
+# working setups.
+layouts:
+  # Agent on top, a live test loop beneath it: gotestsum re-runs the suite
+  # on every file change, so the agent sees its own breakage the moment it
+  # saves rather than when it remembers to run make test.
+  watch:
+    panes:
+      - command: <agent>
+        focus: true
+      - split: horizontal
+        size: 35
+        command: nix develop -c gotestsum --watch ./...
+  # Same shape, but the second pane is a delve session on the binary. The
+  # CLI subcommands (not the TUI) debug cleanly headless: break on a store
+  # operation, inspect the secret pipeline.
+  debug:
+    panes:
+      - command: <agent>
+        focus: true
+      - split: horizontal
+        size: 50
+        command: nix develop -c dlv debug ./cmd/binpass
+
 # The merge gate: the same battery CI runs (see AGENTS.md), in the same
 # order CI runs it — fail fast on the build, then lint, then the suites.
 # Nothing merges without it, no matter who or what is merging.

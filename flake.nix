@@ -162,6 +162,10 @@
           gotestsum
           mockgen
           delve
+          # scripts/ci-parity.sh parses the two CI definitions with it;
+          # hand-rolled sh parsing of YAML is how the parity check itself
+          # would start to drift.
+          python3
         ];
       in
       {

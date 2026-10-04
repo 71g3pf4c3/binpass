@@ -82,6 +82,30 @@ coverage:
         coverage_format: cobertura
         path: coverage.filtered
 
+# ---- Container suites ----
+# Mirror the sync and desktop jobs of ci.yml. They need a runner whose
+# executor can start privileged service containers (docker:dind); the
+# Docker socket mounted into the sync container is the dind daemon's own,
+# which is what the MinIO-backed S3 tests talk to.
+
+sync:
+  stage: test
+  image: docker:cli
+  services:
+    - docker:dind
+  script:
+    - docker build -f Dockerfile.sync -t binpass-sync .
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock binpass-sync
+
+desktop:
+  stage: test
+  image: docker:cli
+  services:
+    - docker:dind
+  script:
+    - docker build -f Dockerfile.desktop -t binpass-desktop .
+    - docker run --rm binpass-desktop
+
 # ---- Build ----
 
 build-linux-amd64:

@@ -29,10 +29,16 @@ script discovers targets automatically; a fixed list would silently stop
 covering new ones.
 Container suites: `Dockerfile.test` (plain Debian + distro pass),
 `Dockerfile.e2e` (interactive flows), `Dockerfile.ss` (Secret Service over a
-real session bus), `Dockerfile.luks` (`--privileged`, dm-crypt). Use
-`scripts/e2e-session.sh` / `scripts/ss-session.sh` to enter those containers
-interactively. CI runs `.test`/`.ss`/`.luks`; the sync transport and
-snapshot tests also need real `rclone` and `restic` on PATH or they skip.
+real session bus), `Dockerfile.luks` (`--privileged`, dm-crypt),
+`Dockerfile.sync` (rclone/restic/git transports and snapshots; run it with
+the Docker socket mounted, or the MinIO-backed S3 tests refuse to run) and
+`Dockerfile.desktop` (real xclip/xsel/xdotool/xterm/dmenu on Xvfb; the
+Wayland halves live in `Dockerfile.e2e` instead). `make containers` builds
+and runs the whole matrix in one command. Use `scripts/e2e-session.sh` /
+`scripts/ss-session.sh` to enter those containers interactively. CI runs
+`.test`/`.ss`/`.luks`/`.sync`/`.desktop`; outside the containers the sync
+transport and snapshot tests also need real `rclone` and `restic` on PATH or
+they skip.
 
 ## Non-obvious constraints
 

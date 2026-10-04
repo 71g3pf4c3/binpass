@@ -1,0 +1,39 @@
+# Desktop integration image for binpass.
+#
+# The clipboard backends (xclip, xsel) and the X11 typing path (xdotool)
+# are only PATH-stub tested in the unit suite: the stubs prove where the
+# secret travels, not that a real X server accepts the arguments. This
+# image is where they meet the real tools on a real Xvfb display.
+#
+#   docker build -f Dockerfile.desktop -t binpass-desktop .
+#   docker run --rm binpass-desktop
+#
+# The Wayland halves (wl-copy, wtype) are out of scope here: they need a
+# compositor, and running one is what Dockerfile.e2e already does with sway.
+FROM golang:1.26-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	xvfb \
+	xdotool \
+	xclip \
+	xsel \
+	xterm \
+	xfonts-base \
+	dmenu \
+	fonts-dejavu-core \
+	age \
+	&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0
+ENV BINPASS_CONFIG=/nonexistent.yaml
+
+COPY scripts/desktop-session.sh /usr/local/bin/desktop-session.sh
+
+CMD ["bash", "/usr/local/bin/desktop-session.sh"]

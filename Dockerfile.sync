@@ -1,0 +1,40 @@
+# Sync transport and snapshot integration image for binpass.
+#
+# The rclone-backed WebDAV/S3 transports, the git remote and the restic
+# snapshots all skip silently when their binaries are missing from PATH,
+# so a green local run proves nothing about them. This image is where they
+# meet the real rclone, restic and git from Debian.
+#
+# The S3 transport is tested against a real MinIO started by the tests
+# themselves through testcontainers, which needs a Docker daemon: run the
+# image with the host socket mounted, the way CI does.
+#
+#   docker build -f Dockerfile.sync -t binpass-sync .
+#   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock binpass-sync
+#
+# Without the socket the suite refuses to start rather than letting the S3
+# tests skip silently: a skipped MinIO test is exactly the false green this
+# image exists to prevent.
+FROM golang:1.26-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	rclone \
+	restic \
+	git \
+	age \
+	gnupg \
+	&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0
+ENV BINPASS_CONFIG=/nonexistent.yaml
+
+COPY scripts/sync-session.sh /usr/local/bin/sync-session.sh
+
+CMD ["bash", "/usr/local/bin/sync-session.sh"]

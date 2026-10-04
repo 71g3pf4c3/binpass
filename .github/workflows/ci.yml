@@ -157,6 +157,31 @@ jobs:
           docker build -f Dockerfile.luks -t binpass-luks .
           docker run --rm --privileged binpass-luks
 
+  # The rclone transports, the git remote and the restic snapshots skip
+  # silently without their binaries, and the S3 tests skip without a Docker
+  # daemon. The socket is mounted so the MinIO-backed tests run for real,
+  # inside the same Debian userland users have.
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync transport and snapshot integration tests
+        run: |
+          docker build -f Dockerfile.sync -t binpass-sync .
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock binpass-sync
+
+  # The clipboard backends and the typer tools are stub-tested in the unit
+  # suite; this drives the real xclip, xsel, xdotool, xterm and dmenu on an
+  # Xvfb display. The Wayland halves run in the e2e image instead.
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Desktop integration tests
+        run: |
+          docker build -f Dockerfile.desktop -t binpass-desktop .
+          docker run --rm binpass-desktop
+
   nix:
     runs-on: ubuntu-latest
     steps:

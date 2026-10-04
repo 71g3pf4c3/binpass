@@ -13,7 +13,7 @@ LDFLAGS := -s -w \
 
 export CGO_ENABLED := 0
 
-.PHONY: all build test cover vet lint tidy clean snapshot release
+.PHONY: all build test cover vet lint tidy clean snapshot release containers
 
 all: build
 
@@ -30,6 +30,9 @@ release: ## Cut a release with goreleaser (requires a tag + GITHUB_TOKEN).
 
 test: ## Run unit tests.
 	$(GO) test ./...
+
+containers: ## Build and run every container test suite (needs Docker).
+	./scripts/containers.sh
 
 test-race: ## Run unit tests with the race detector (requires cgo).
 	CGO_ENABLED=1 $(GO) test -race ./...

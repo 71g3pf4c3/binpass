@@ -16,6 +16,20 @@ import (
 // gpgKeyUID identifies the throwaway key generated for the GPG tests.
 const gpgKeyUID = "binpass-test@example.invalid"
 
+// isRealPass reports whether the pass on PATH is pass(1) rather than
+// binpass installed under that name (the Nix pass-shim overlay). The
+// interop tests below claim "pass reads what binpass wrote"; against the
+// shim they would quietly measure binpass against itself, so they skip
+// instead. pass(1) answers --version with its banner, which binpass does
+// not define at all — that banner is the signal.
+func isRealPass(t *testing.T) {
+	t.Helper()
+	out, err := exec.Command("pass", "--version").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "standard unix password manager") {
+		t.Skipf("the pass on PATH is binpass under another name: not a pass(1) reference")
+	}
+}
+
 // newGPGHome creates an isolated GNUPGHOME holding one unprotected test key
 // and returns its recipient. The test is skipped when gpg is unavailable.
 func newGPGHome(t *testing.T) crypto.Recipient {
@@ -62,6 +76,7 @@ func TestGPGCiphertextIsReadableByPass(t *testing.T) {
 	if _, err := exec.LookPath("pass"); err != nil {
 		t.Skip("pass not on PATH")
 	}
+	isRealPass(t)
 	store := t.TempDir()
 	t.Setenv("PASSWORD_STORE_DIR", store)
 	require.NoError(t, os.WriteFile(filepath.Join(store, ".gpg-id"), []byte(rcp.String()+"\n"), 0o600))
@@ -82,6 +97,7 @@ func TestGPGReadsWhatPassWrote(t *testing.T) {
 	if _, err := exec.LookPath("pass"); err != nil {
 		t.Skip("pass not on PATH")
 	}
+	isRealPass(t)
 	store := t.TempDir()
 	t.Setenv("PASSWORD_STORE_DIR", store)
 	require.NoError(t, os.WriteFile(filepath.Join(store, ".gpg-id"), []byte(rcp.String()+"\n"), 0o600))

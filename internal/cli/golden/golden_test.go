@@ -7,6 +7,7 @@ package golden
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,17 @@ func TestMain(m *testing.M) {
 		// Without the reference implementation these tests prove nothing.
 		os.Exit(0)
 	}
+	if !isRealPass() {
+		// binpass is often installed as `pass` (the Nix pass-shim overlay,
+		// a release in ~/.nix-profile), so the suite must not mistake the
+		// program under test for the reference: comparing binpass against
+		// itself measures nothing and fails with a recipient-parser error
+		// instead of saying why. Skip loudly; the dev shell and CI put the
+		// real pass first on PATH, where the full comparison still runs.
+		fmt.Fprintf(os.Stderr, "golden: the pass on PATH is binpass under another name; "+
+			"comparing binpass against itself proves nothing — run in the dev shell or install pass(1)\n")
+		os.Exit(0)
+	}
 	dir, err := os.MkdirTemp("", "binpass-build-*")
 	if err != nil {
 		panic(err)
@@ -40,6 +52,19 @@ func TestMain(m *testing.M) {
 		panic(string(out))
 	}
 	os.Exit(m.Run())
+}
+
+// isRealPass reports whether the pass on PATH is the reference
+// implementation rather than binpass answering under that name.
+//
+// pass(1) answers --version with its banner; binpass has no --version flag
+// at all (its version is a subcommand), so the banner is the cheapest
+// signal that separates the reference from the impostor. A mismatch is a
+// skip, not a failure: the suite is a comparison, and without an
+// independent reference there is nothing to compare against.
+func isRealPass() bool {
+	out, err := exec.Command("pass", "--version").CombinedOutput()
+	return err == nil && strings.Contains(string(out), "standard unix password manager")
 }
 
 // world is a pair of identical stores, one driven by pass and one by binpass.

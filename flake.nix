@@ -21,12 +21,15 @@
           lib,
           buildGoModule,
           installShellFiles,
+          makeWrapper,
           gnupg,
           pass,
           age,
           git,
           qrencode,
           tree,
+          wtype,
+          xdotool,
         }:
         buildGoModule (finalAttrs: {
           pname = "binpass";
@@ -44,7 +47,10 @@
             "-X main.version=${finalAttrs.version}"
           ];
 
-          nativeBuildInputs = [ installShellFiles ];
+          nativeBuildInputs = [
+            installShellFiles
+            makeWrapper
+          ];
 
           nativeCheckInputs = [
             gnupg
@@ -77,6 +83,21 @@
               "$out/share/systemd/user/binpass-ss.service" \
               "$out/share/dbus-1/services/org.freedesktop.secrets.service" \
               --replace-fail /usr/bin/binpass "$out/bin/binpass"
+
+            # `binpass type` and the menu's --type drive wtype on Wayland and
+            # xdotool on X11; without them on PATH the feature errors out on a
+            # stock install. The wrapper carries both, gated per session by
+            # the tool itself, so neither ever runs in the wrong session.
+            # ydotool is deliberately not wrapped: it needs ydotoold running
+            # and membership of an input group, which are system-level
+            # decisions no wrapper can make.
+            wrapProgram "$out/bin/binpass" \
+              --prefix PATH : ${
+                lib.makeBinPath [
+                  wtype
+                  xdotool
+                ]
+              }
           '';
 
           meta = {

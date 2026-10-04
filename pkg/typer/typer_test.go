@@ -84,3 +84,92 @@ func TestType_NoToolAvailable(t *testing.T) {
 
 	assert.ErrorIs(t, err, ErrNoTool)
 }
+
+// toolStubs installs the named tools as stubs recording which of them ran
+// and what it was fed, so a test can prove which backend an override
+// selected. Shell builtins only, like typingStub above.
+func toolStubs(t *testing.T, bins ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, bin := range bins {
+		script := filepath.Join(dir, bin)
+		body := "#!/bin/sh\nIFS= read -r x\nprintf '%s' \"$x\" > \"$TYPED_STDIN\"\nprintf '%s\\n' \"${0##*/}\" > \"$TYPED_TOOL\"\n"
+		require.NoError(t, os.WriteFile(script, []byte(body), 0o700)) //nolint:gosec // a test stub.
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("TYPED_STDIN", filepath.Join(dir, "stdin.txt"))
+	t.Setenv("TYPED_TOOL", filepath.Join(dir, "tool.txt"))
+}
+
+// typedTool returns which tool stub ran last.
+func typedTool(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(os.Getenv("TYPED_TOOL"))
+	require.NoError(t, err)
+	return strings.TrimSpace(string(data))
+}
+
+// TestTypeWithTool_ForcesTheNamedTool covers the override: with every
+// backend installed and a session that would autodetect wtype, the named
+// tool runs instead — and the secret still travels over stdin.
+func TestTypeWithTool_ForcesTheNamedTool(t *testing.T) {
+	toolStubs(t, "wtype", "xdotool", "ydotool")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+
+	require.NoError(t, TypeWithTool(context.Background(), "xdotool", "s3cret pa$$word"))
+
+	assert.Equal(t, "s3cret pa$$word", typedStdin(t))
+	assert.Equal(t, "xdotool", typedTool(t), "the named tool runs, not the detected one")
+}
+
+// TestTypeWithTool_IgnoresSessionGates covers why the override exists: a
+// forced tool runs even when the session variables autodetection relies
+// on are absent, because they lie about the session as often as they
+// describe it.
+func TestTypeWithTool_IgnoresSessionGates(t *testing.T) {
+	toolStubs(t, "wtype")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", "")
+
+	// Autodetection finds nothing here; the override still works.
+	assert.ErrorIs(t, Type(context.Background(), "x"), ErrNoTool)
+	require.NoError(t, TypeWithTool(context.Background(), "wtype", "hunter2"))
+	assert.Equal(t, "hunter2", typedStdin(t))
+}
+
+// TestTypeWithTool_UnknownName covers the error contract: an invalid name
+// fails with the list of valid ones rather than falling back to
+// autodetection.
+func TestTypeWithTool_UnknownName(t *testing.T) {
+	err := TypeWithTool(context.Background(), "wtypo", "x")
+	require.Error(t, err)
+	for _, name := range []string{"wtype", "xdotool", "ydotool"} {
+		assert.ErrorContains(t, err, name)
+	}
+}
+
+// TestTypeWithTool_NotInstalled covers the missing-binary error: a forced
+// tool must fail loudly, never cascade to another candidate.
+func TestTypeWithTool_NotInstalled(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := TypeWithTool(context.Background(), "wtype", "x")
+
+	assert.ErrorContains(t, err, "wtype is not installed")
+}
+
+// TestParseTool covers the validation the commands run before touching
+// the store: every accepted name round-trips, anything else is rejected
+// with the valid ones.
+func TestParseTool(t *testing.T) {
+	for _, name := range append(ToolNames(), "") {
+		got, err := ParseTool(name)
+		require.NoError(t, err, name)
+		assert.Equal(t, name, got)
+	}
+
+	for _, name := range []string{"WType", "pass", "auto "} {
+		_, err := ParseTool(name)
+		assert.Error(t, err, name)
+	}
+}

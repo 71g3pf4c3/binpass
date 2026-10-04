@@ -59,6 +59,10 @@ type Config struct {
 	// registry. The config file rejects unknown names; the environment
 	// and the TUI itself fall back to the default theme instead.
 	Theme string
+	// TyperTool names the typing backend for `binpass type` and the
+	// menus: wtype, xdotool or ydotool. Empty and "auto" mean session
+	// autodetection.
+	TyperTool string
 	// NoColor disables coloured output when the NO_COLOR environment variable
 	// is set, following the https://no-color.org/ convention.
 	NoColor bool
@@ -207,6 +211,12 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("BINPASS_SYNC_DEFAULT_REMOTE"); v != "" {
 		cfg.Sync.DefaultRemote = v
+	}
+	// Deliberately unvalidated: a typo in BINPASS_TYPER_TOOL must fail
+	// the commands that type, not every binpass invocation from this
+	// shell.
+	if v := os.Getenv("BINPASS_TYPER_TOOL"); v != "" {
+		cfg.TyperTool = v
 	}
 }
 

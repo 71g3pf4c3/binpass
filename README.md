@@ -241,6 +241,7 @@ binpass menu                       # pick, copy the password
 binpass menu --field=username      # copy a field instead
 binpass menu --type                # type it into the focused window
 binpass menu --launcher=fzf        # force a picker
+binpass menu --type --tool=ydotool # force the typing backend too
 binpass menu -- -theme solarized   # arguments after -- go to the launcher
 ```
 
@@ -299,6 +300,12 @@ rather than a script this repository has to keep working on four desktops.
 Copying always restores the clipboard's previous contents afterwards, and only
 if the secret is still there, so it never clobbers something you copied in the
 meantime.
+
+`--type` picks its backend per session (wtype on Wayland, xdotool on X11,
+ydotool otherwise). When several are installed, or the session variables
+lie about the desktop, `--tool=wtype|xdotool|ydotool` on `binpass type`,
+`binpass menu` and `binpass otp menu` forces one; `BINPASS_TYPER_TOOL` and
+the `typer.tool` config setting do the same for every invocation.
 
 ## Hiding the store
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/71g3pf4c3/binpass/internal/theme"
+	"github.com/71g3pf4c3/binpass/pkg/typer"
 	"github.com/spf13/viper"
 )
 
@@ -89,6 +90,14 @@ func applyFile(cfg *Config) error {
 			return fmt.Errorf("config: ui.theme must be one of %s, got %q", theme.String(), s)
 		}
 		cfg.Theme = s
+	}
+	if s := v.GetString("typer.tool"); s != "" {
+		// A config file is written deliberately and read at startup, so
+		// a bad value is a load error here, unlike a shell variable.
+		if _, err := typer.ParseTool(s); err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+		cfg.TyperTool = s
 	}
 	if n := v.GetInt("generate.length"); n > 0 {
 		cfg.GeneratedLength = n

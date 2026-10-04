@@ -77,11 +77,17 @@ checksum:
 # carries the certificate and the signature together, which is the only
 # form current cosign emits since --output-certificate/--output-signature
 # were removed.
+#
+# signature names the file cosign actually writes: without it goreleaser
+# tracks the default ${artifact}.sig, uploads it into the release, and
+# fails on the missing file because the bundle landed under a different
+# name.
 signs:
   - cmd: cosign
+    signature: "${artifact}.bundle"
     args:
       - sign-blob
-      - "--bundle=${artifact}.bundle"
+      - "--bundle=${signature}"
       - "--yes"
       - "${artifact}"
     artifacts: checksum

@@ -1,7 +1,11 @@
 # muxix project configuration — binpass.
-# Global defaults (agent: opencode, pane layout, theme, worktree_dir,
-# window_prefix) come from ~/.config/muxix/config.yaml; this file only
-# decides what is specific to this repository.
+# Global defaults (pane layout, theme, worktree_dir, window_prefix) come
+# from ~/.config/muxix/config.yaml; this file only decides what is
+# specific to this repository.
+
+# The agent this project dispatches into worktrees. Pinned here so the
+# project is self-contained and does not drift with the global default.
+agent: opencode
 
 # Branch to merge into and to cut worktrees from.
 base_branch: main
@@ -16,11 +20,23 @@ merge_strategy: merge
 post_create:
   - nix develop -c go build ./...
 
-# Nothing merges without the same battery CI runs (see AGENTS.md): build,
-# lint, tests. gofmt is enforced through golangci-lint's gofmt linter.
-# The dev shell unsets PASSWORD_STORE_*/BINPASS_*, so the gate measures the
-# code, not the machine it runs on.
+# The merge gate: the same battery CI runs (see AGENTS.md), in the same
+# order CI runs it — fail fast on the build, then lint, then the suites.
+# Nothing merges without it, no matter who or what is merging.
+#
+# The cross-builds are the AGENTS.md rule that all platform pairs compile
+# (linux/darwin/windows × amd64/arm64); a build-tag slip in a _unix.go /
+# _windows.go pair only shows up there. The dev shell unsets
+# PASSWORD_STORE_*/BINPASS_*, so the gate measures the code, not the
+# machine it runs on. gofmt is enforced through golangci-lint's gofmt
+# linter; make cover enforces the >=70% business-logic coverage gate.
 pre_merge:
   - nix develop -c go build ./...
+  - nix develop -c sh -c 'GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./...'
+  - nix develop -c sh -c 'GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...'
+  - nix develop -c sh -c 'GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build ./...'
+  - nix develop -c sh -c 'GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...'
   - nix develop -c golangci-lint run ./...
   - nix develop -c make test
+  - nix develop -c make cover
+  - nix flake check --no-build

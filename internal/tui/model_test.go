@@ -1363,8 +1363,13 @@ func TestInsertPreviewApply(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m2 := updated.(Model)
-	if m2.view != viewTree {
-		t.Errorf("after apply should return to tree, got view=%d", m2.view)
+	// The entry is created immediately (insert's contract), and the
+	// editor opens on it so fields and notes can be added next.
+	if m2.view != viewEdit {
+		t.Errorf("after apply should open the editor, got view=%d", m2.view)
+	}
+	if m2.editor == nil || m2.editName != "new/entry" {
+		t.Error("editor should stage the new entry")
 	}
 	if !strings.Contains(m2.status, "created") {
 		t.Errorf("expected 'created' status, got: %q", m2.status)
@@ -1618,4 +1623,150 @@ func findChild(parent *treeNode, name string) *treeNode {
 		}
 	}
 	return nil
+}
+
+// --- Insert view: manual passwords and post-create editing ---
+
+// insertAtStep1 returns a model in insert step 1 with a fresh mock store.
+func insertAtStep1(t *testing.T, name string) (Model, *mockStore) {
+	t.Helper()
+	ms := newMockStore(map[string]string{"existing": "pw"})
+	cfg := config.Default()
+	cfg.NoColor = true
+	m, err := NewModel(Options{Store: ms, Cfg: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetSize(80, 24)
+	m.view = viewInsert
+	m.insertStep = 1
+	m.insertName = name
+	return m, ms
+}
+
+func TestInsertManualPasswordFlow(t *testing.T) {
+	m, ms := insertAtStep1(t, "bank/card")
+
+	// Switch to manual, type a password, create.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = updated.(Model)
+	if !m.insertManual {
+		t.Fatal("'m' must switch to manual entry")
+	}
+	if m.insertPassword != "" {
+		t.Error("switching to manual must clear any generated password")
+	}
+	for _, r := range "typed-secret" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	if m.insertPassword != "typed-secret" {
+		t.Fatalf("typed password = %q", m.insertPassword)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if ms.set["bank/card"] != "typed-secret" {
+		t.Errorf("store after create = %q, want typed-secret", ms.set["bank/card"])
+	}
+	if m.view != viewEdit || m.editor == nil {
+		t.Errorf("create must open the editor for fields, view=%d", m.view)
+	}
+	if m.current != "bank/card" {
+		t.Errorf("current = %q, want bank/card", m.current)
+	}
+}
+
+func TestInsertManualEmptyRejected(t *testing.T) {
+	m, _ := insertAtStep1(t, "bank/card")
+	m.insertManual = true
+	m.insertPassword = ""
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.view != viewInsert || m.insertStep != 1 {
+		t.Error("empty manual password must not create the entry")
+	}
+	if !strings.Contains(m.status, "empty") {
+		t.Errorf("status = %q, want empty-password error", m.status)
+	}
+}
+
+func TestInsertGeneratedEmptyRejected(t *testing.T) {
+	m, ms := insertAtStep1(t, "bank/card")
+	m.insertPassword = "" // generation still in flight
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if ms.set["bank/card"] != "" || ms.set["bank/card"] == "" && m.view == viewEdit {
+		t.Error("entry must not be created while the password is still generating")
+	}
+	if m.view != viewInsert {
+		t.Errorf("view = %d, want insert", m.view)
+	}
+}
+
+func TestInsertToggleBackToGenerator(t *testing.T) {
+	m, _ := insertAtStep1(t, "bank/card")
+	m.insertManual = true
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = updated.(Model)
+	if m.insertManual {
+		t.Error("second ctrl+g must switch back to the generator")
+	}
+	if cmd == nil {
+		t.Error("switching back to the generator must produce a generate command")
+	}
+}
+
+func TestInsertRegenerateIgnoredInManual(t *testing.T) {
+	m, _ := insertAtStep1(t, "bank/card")
+	m.insertManual = true
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	_ = updated.(Model)
+	if cmd != nil {
+		t.Error("'r' in manual mode must not regenerate")
+	}
+}
+
+func TestInsertCreateThenAddFields(t *testing.T) {
+	// End to end: name → manual password → create → add a field in the
+	// editor → save. The store must hold exactly password + field.
+	m, ms := insertAtStep1(t, "bank/card")
+	m.insertManual = true
+	for _, r := range "pw123" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Add a field in the opened editor.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(Model)
+	for _, r := range "username" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	for _, r := range "alice" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Save from the editor (adding a field is not destructive).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
+	m = updated.(Model)
+
+	if got := ms.entries["bank/card"].String(); got != "pw123\nusername: alice\n" {
+		t.Errorf("store after field add = %q", got)
+	}
+	if m.view != viewDetail {
+		t.Errorf("view after save = %d, want detail", m.view)
+	}
 }

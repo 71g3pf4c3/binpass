@@ -124,7 +124,8 @@ type Model struct {
 	// Insert view.
 	insertName     string // new entry name (user types it)
 	insertPassword string // generated password (filled async)
-	insertStep     int    // 0 = name input, 1 = password preview, 2 = done
+	insertManual   bool   // true when the user types the password by hand
+	insertStep     int    // 0 = name input, 1 = password, 2 = done
 
 	// History view.
 	histTarget string       // entry name
@@ -423,6 +424,7 @@ func (m Model) handleTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case m.km.NewEntry:
 		m.insertName = ""
 		m.insertPassword = ""
+		m.insertManual = false
 		m.insertStep = 0
 		m.view = viewInsert
 
@@ -962,26 +964,50 @@ func (m Model) handleInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case 1: // password preview
+	case 1: // password: generated or hand-typed
 		switch msg.String() {
 		case "enter":
-			// Apply: write to store.
+			if m.insertPassword == "" {
+				m.status = "insert: password is empty"
+				return m, nil
+			}
+			// Create the entry with the password right away — the
+			// same contract `insert` gives — then open the editor so
+			// fields and notes can be added before the user moves on.
 			sec := secret.New(m.insertPassword, "")
 			if err := m.store.Set(m.insertName, sec); err != nil {
 				m.status = "insert: " + err.Error()
-				m.view = viewTree
 				return m, nil
 			}
 			m.status = "created " + m.insertName
 			m.rebuildTree()
-			m.view = viewTree
+			m.current = m.insertName
+			m.sec = sec
+			m.startEdit()
 			return m, nil
 
-		case "r": // regenerate
-			return m, m.insertGenerateCmd(m.cfg.GeneratedLength)
+		case "ctrl+g": // toggle generator/manual
+			// A printable key cannot own this: in manual mode every
+			// printable rune belongs to the password being typed.
+			m.insertManual = !m.insertManual
+			if m.insertManual {
+				// A generated password must not silently masquerade
+				// as something the user chose to type.
+				m.insertPassword = ""
+			} else {
+				return m, m.insertGenerateCmd(m.cfg.GeneratedLength)
+			}
 
 		case m.km.Back:
 			m.insertStep = 0 // back to name input
+
+		default:
+			if !m.insertManual && msg.String() == "r" {
+				return m, m.insertGenerateCmd(m.cfg.GeneratedLength)
+			}
+			if m.insertManual {
+				applyInputKey(&m.insertPassword, msg)
+			}
 		}
 
 	case 2: // done — should not be reachable, return to tree.
@@ -1002,13 +1028,23 @@ func (m Model) viewInsert() string {
 		fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:next  esc:cancel  ctrl+u:clear"))
 
 	case 1:
-		fmt.Fprintf(&b, "  %s %s\n", m.st.header.Render("new entry:"), m.st.bold.Render(m.insertName))
+		mode := "generated"
+		if m.insertManual {
+			mode = "manual"
+		}
+		fmt.Fprintf(&b, "  %s %s  %s\n", m.st.header.Render("new entry:"), m.st.bold.Render(m.insertName), m.st.dimmed.Render("("+mode+")"))
 		if m.insertPassword != "" {
 			fmt.Fprintf(&b, "  %s %s\n", m.st.dimmed.Render("pass:"), m.st.visible.Render(m.insertPassword))
+		} else if m.insertManual {
+			fmt.Fprintf(&b, "  %s %s\n", m.st.dimmed.Render("pass:"), m.st.visible.Render("")+"▏")
 		} else {
 			fmt.Fprintln(&b, m.st.dimmed.Render("  generating..."))
 		}
-		fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:save  r:regenerate  esc:back"))
+		if m.insertManual {
+			fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:create  ctrl+g:use generator  esc:back"))
+		} else {
+			fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:create  r:regenerate  ctrl+g:type manually  esc:back"))
+		}
 	}
 
 	return b.String()

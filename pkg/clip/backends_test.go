@@ -149,3 +149,79 @@ func TestSelectionReachesEveryBackend(t *testing.T) {
 		}
 	}
 }
+
+// TestReportsExplainsEveryBackend covers the doctor surface: each
+// backend's availability, the reasons for the ones Detect cannot reach,
+// and the first available report being the backend Detect returns.
+func TestReportsExplainsEveryBackend(t *testing.T) {
+	pbcopyStubs(t)
+
+	reports := Reports("clipboard")
+	require.NotEmpty(t, reports)
+
+	byName := make(map[string]BackendReport)
+	for _, r := range reports {
+		byName[r.Name] = r
+	}
+	assert.True(t, byName["pbcopy"].Available)
+	assert.Empty(t, byName["pbcopy"].Missing)
+	assert.False(t, byName["xclip"].Available)
+	assert.Contains(t, byName["xclip"].Missing, "DISPLAY not set")
+	assert.Contains(t, byName["xclip"].Missing, "xclip not on PATH")
+	assert.False(t, byName["wl-clipboard"].Available)
+	assert.Contains(t, byName["wl-clipboard"].Missing, "WAYLAND_DISPLAY not set")
+	assert.Contains(t, byName["wl-clipboard"].Missing, "wl-copy not on PATH")
+	assert.Contains(t, byName["wl-clipboard"].Missing, "wl-paste not on PATH")
+
+	// The winner of Reports and the winner of Detect are the same
+	// backend, or doctor would explain a choice Detect never makes.
+	b, err := Detect("clipboard")
+	require.NoError(t, err)
+	first := ""
+	for _, r := range reports {
+		if r.Available {
+			first = r.Name
+			break
+		}
+	}
+	assert.Equal(t, b.Name(), first)
+}
+
+// TestReportsNamesBothHalvesMissing covers pbcopy's split binaries: a host
+// with only the writer installed reports the missing reader, which is
+// what keeps the restore path from running a missing binary.
+func TestReportsNamesBothHalvesMissing(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pbcopy"), []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // a test stub.
+	t.Setenv("PATH", dir)
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+
+	for _, r := range Reports("clipboard") {
+		if r.Name != "pbcopy" {
+			continue
+		}
+		assert.False(t, r.Available)
+		assert.Equal(t, []string{"pbpaste not on PATH"}, r.Missing)
+	}
+}
+
+// TestReportsWaylandBackendWhenSessionIsRight covers the positive
+// wl-clipboard line: with both binaries present and a Wayland session, the
+// backend reports available with nothing missing.
+func TestReportsWaylandBackendWhenSessionIsRight(t *testing.T) {
+	dir := t.TempDir()
+	for _, bin := range []string{"wl-copy", "wl-paste"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // a test stub.
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("DISPLAY", "")
+
+	reports := Reports("clipboard")
+
+	require.NotEmpty(t, reports)
+	assert.Equal(t, "wl-clipboard", reports[0].Name)
+	assert.True(t, reports[0].Available)
+	assert.Empty(t, reports[0].Missing)
+}

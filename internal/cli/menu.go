@@ -16,6 +16,7 @@ import (
 	"github.com/71g3pf4c3/binpass/pkg/otp"
 	"github.com/71g3pf4c3/binpass/pkg/secret"
 	"github.com/71g3pf4c3/binpass/pkg/store"
+	"github.com/71g3pf4c3/binpass/pkg/typer"
 	"github.com/spf13/cobra"
 )
 
@@ -113,25 +114,9 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 		return err
 	}
 
-	var value string
-	switch opts.field {
-	case "password":
-		value = sec.Password()
-	case "all":
-		value = sec.String()
-	case "otp":
-		// The one field that is not stored but computed. Sharing the code
-		// path with `otp` keeps HOTP counter advancement identical.
-		value, err = a.otpCode(s, choice, sec)
-		if err != nil {
-			return err
-		}
-	default:
-		v, ok := sec.Field(opts.field)
-		if !ok {
-			return fmt.Errorf("binpass: %s has no field %q", choice, opts.field)
-		}
-		value = v
+	value, err := a.fieldValue(s, choice, sec, opts.field)
+	if err != nil {
+		return err
 	}
 
 	switch {
@@ -139,9 +124,42 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 		fmt.Fprintln(a.Out, value)
 		return nil
 	case opts.typeIt:
-		return typeText(ctx, value)
+		// The picker's window has only just closed; give the session a
+		// beat to hand focus back before the first keystroke lands, or
+		// the head of the secret is typed into a dying window.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pickerSettle):
+		}
+		return typer.Type(ctx, value)
 	default:
 		return a.copyToClipboard(ctx, value, choice)
+	}
+}
+
+// pickerSettle is the pause between the picker closing and the first
+// keystroke of --type.
+const pickerSettle = 150 * time.Millisecond
+
+// fieldValue resolves what a menu or type invocation emits for an entry:
+// the password, the whole secret, the computed otp, or a named field.
+func (a *App) fieldValue(s *store.Store, choice string, sec *secret.Secret, field string) (string, error) {
+	switch field {
+	case "password":
+		return sec.Password(), nil
+	case "all":
+		return sec.String(), nil
+	case "otp":
+		// The one field that is not stored but computed. Sharing the code
+		// path with `otp` keeps HOTP counter advancement identical.
+		return a.otpCode(s, choice, sec)
+	default:
+		v, ok := sec.Field(field)
+		if !ok {
+			return "", fmt.Errorf("binpass: %s has no field %q", choice, field)
+		}
+		return v, nil
 	}
 }
 
@@ -243,35 +261,6 @@ func (p picker) pick(ctx context.Context, names []string, opts menuOpts) (string
 		return "", fmt.Errorf("binpass: %s: %w", p.bin, err)
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// typeText types a secret into the focused window using the session's
-// automation tool, so that a password reaches a form that refuses pasting.
-func typeText(ctx context.Context, text string) error {
-	type typer struct {
-		// bin is the executable to run.
-		bin string
-		// args builds its command line.
-		args []string
-		// stdin reports whether the text is fed on standard input.
-		stdin bool
-	}
-	candidates := []typer{
-		{bin: "wtype", args: []string{"-"}, stdin: true},
-		{bin: "ydotool", args: []string{"type", "--file", "-"}, stdin: true},
-		{bin: "xdotool", args: []string{"type", "--clearmodifiers", "--file", "-"}, stdin: true},
-	}
-	for _, c := range candidates {
-		if _, err := exec.LookPath(c.bin); err != nil {
-			continue
-		}
-		cmd := exec.CommandContext(ctx, c.bin, c.args...) //nolint:gosec // fixed table.
-		if c.stdin {
-			cmd.Stdin = strings.NewReader(text)
-		}
-		return cmd.Run()
-	}
-	return errors.New("binpass: no typing tool found; install wtype, ydotool or xdotool")
 }
 
 // menuUsage records how often and how recently each entry was chosen in the

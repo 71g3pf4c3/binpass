@@ -27,6 +27,42 @@ func newOTPCmd(app *App) *cobra.Command {
 	cmd.Flags().BoolVarP(&doClip, "clip", "c", false, "copy the code to the clipboard")
 	cmd.Flags().BoolVar(&watch, "watch", false, "keep printing codes as they roll over")
 	cmd.Flags().BoolVar(&showURI, "uri", false, "print the otpauth:// URI instead of a code")
+	cmd.AddCommand(newOTPCmdMenu(app))
+	return cmd
+}
+
+// newOTPCmdMenu builds `binpass otp menu`: pick an entry and its code goes
+// straight into the focused window, which is the whole point of a
+// one-time password — by the time the user has pasted it, seconds of its
+// validity are gone.
+func newOTPCmdMenu(app *App) *cobra.Command {
+	opts := menuOpts{launcher: "auto", field: "otp", prompt: "otp", sort: "name"}
+	var doPrint, doCopy bool
+	cmd := &cobra.Command{
+		Use:   "menu [-- launcher-args...]",
+		Short: "Pick an entry and type its one-time password",
+		Long: "Lists the store in an interactive picker and sends the chosen entry's\n" +
+			"current one-time password as keystrokes to the focused window.\n" +
+			"Entries are not decrypted until one is chosen; the code is computed\n" +
+			"and typed the moment it is picked.\n\n" +
+			"--print writes the code to stdout and --copy puts it on the clipboard\n" +
+			"instead of typing it. The same sorting options as `binpass menu`\n" +
+			"apply, sharing one usage history.",
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.args = args
+			opts.typeIt = !doPrint && !doCopy
+			opts.print = doPrint
+			return app.runMenu(cmd.Context(), opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.launcher, "launcher", "auto", "picker: auto|rofi|fzf|dmenu|wofi|wmenu")
+	cmd.Flags().StringVar(&opts.prompt, "prompt", "otp", "picker prompt")
+	cmd.Flags().StringVar(&opts.sort, "sort", "name", "list order: name, frequent, recent")
+	_ = cmd.RegisterFlagCompletionFunc("sort", completeSortModes)
+	cmd.Flags().BoolVar(&opts.reverse, "reverse", false, "flip the sort order")
+	cmd.Flags().BoolVar(&doPrint, "print", false, "write the code to stdout instead of typing it")
+	cmd.Flags().BoolVar(&doCopy, "copy", false, "copy the code to the clipboard instead of typing it")
 	return cmd
 }
 

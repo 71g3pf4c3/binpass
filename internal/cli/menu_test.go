@@ -259,6 +259,31 @@ func typedText(t *testing.T) string {
 	return string(data)
 }
 
+// typingToolsStub installs the named typing tools, each recording which of
+// them ran and what it was fed, so a test can prove which backend a
+// --tool override selected. Unlike typingToolStub it needs no session
+// variable: the override, not the detection, is what is under test.
+func typingToolsStub(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		script := filepath.Join(dir, name)
+		// Shell builtins only: the stubs run with a PATH that contains
+		// nothing but themselves.
+		body := "#!/bin/sh\nIFS= read -r x\nprintf '%s' \"$x\" > \"$TYPED_STDIN\"\nprintf '%s\\n' \"${0##*/}\" > \"$TYPED_TOOL\"\n"
+		require.NoError(t, os.WriteFile(script, []byte(body), 0o700)) //nolint:gosec // a test stub.
+	}
+	t.Setenv("TYPED_STDIN", filepath.Join(dir, "typed.txt"))
+	t.Setenv("TYPED_TOOL", filepath.Join(dir, "tool.txt"))
+}
+
+// typedTool returns which typing tool ran last.
+func typedTool(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(os.Getenv("TYPED_TOOL"))
+	require.NoError(t, err)
+	return strings.TrimSpace(string(data))
+}
+
 // TestRunMenu_Type covers --type: the chosen entry is typed into the
 // focused window instead of touching the clipboard.
 func TestRunMenu_Type(t *testing.T) {
@@ -380,4 +405,71 @@ func TestRunOTP_WatchTeachesTheOtpMenu(t *testing.T) {
 
 	_, ok := loadOTPKnown()["site"]
 	assert.True(t, ok, "a watched entry must be remembered")
+}
+
+// TestMenuCommand_ToolFlag wires the flag through: `binpass menu --type
+// --tool=...` reaches the named backend even without a session that
+// autodetection would accept.
+func TestMenuCommand_ToolFlag(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "site/login", "s3cret\n")
+
+	dir := t.TempDir()
+	choice := filepath.Join(dir, "rofi")
+	require.NoError(t, os.WriteFile(choice, []byte("#!/bin/sh\nwhile IFS= read -r line; do :; done\necho site/login\n"), 0o700)) //nolint:gosec // a test stub.
+	typingToolsStub(t, dir, "xdotool")
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", "")
+
+	cmd := newMenuCmd(app.App)
+	cmd.SetArgs([]string{"--type", "--tool=xdotool"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "xdotool", typedTool(t))
+	assert.Equal(t, "s3cret", typedText(t))
+}
+
+// TestMenuCommand_ToolFromConfig covers the setting path: what
+// BINPASS_TYPER_TOOL and typer.tool resolve to is used when --tool is
+// not passed.
+func TestMenuCommand_ToolFromConfig(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "site/login", "s3cret\n")
+	app.Cfg.TyperTool = "ydotool"
+
+	dir := t.TempDir()
+	choice := filepath.Join(dir, "rofi")
+	require.NoError(t, os.WriteFile(choice, []byte("#!/bin/sh\nwhile IFS= read -r line; do :; done\necho site/login\n"), 0o700)) //nolint:gosec // a test stub.
+	typingToolsStub(t, dir, "ydotool")
+	t.Setenv("PATH", dir)
+
+	cmd := newMenuCmd(app.App)
+	cmd.SetArgs([]string{"--type"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "ydotool", typedTool(t))
+	assert.Equal(t, "s3cret", typedText(t))
+}
+
+// TestOTPMenuCommand_ToolFlag covers the inheritance: `binpass otp menu`
+// carries the same --tool flag as `binpass menu`.
+func TestOTPMenuCommand_ToolFlag(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "twofa/github", "hunter2\notpauth://totp/example?secret=JBSWY3DPEHPK3PXP\n")
+
+	dir := t.TempDir()
+	choice := filepath.Join(dir, "rofi")
+	require.NoError(t, os.WriteFile(choice, []byte("#!/bin/sh\nwhile IFS= read -r line; do :; done\necho twofa/github\n"), 0o700)) //nolint:gosec // a test stub.
+	typingToolsStub(t, dir, "ydotool")
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", "")
+
+	cmd := newOTPCmdMenu(app.App)
+	cmd.SetArgs([]string{"--tool=ydotool"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "ydotool", typedTool(t))
+	assert.Regexp(t, `^\d{6}$`, typedText(t), "a six-digit TOTP code is typed")
 }

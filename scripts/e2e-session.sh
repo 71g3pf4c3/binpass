@@ -222,6 +222,9 @@ grep -q -- "--launcher" <<<"$menu_help" \
 grep -q -- "--type" <<<"$menu_help" \
 	&& ok "menu can type as well as copy" \
 	|| bad "menu cannot type the secret"
+grep -q -- "--tool" <<<"$menu_help" \
+	&& ok "menu exposes a typing tool choice" \
+	|| bad "menu has no --tool flag" "--tool" "$menu_help"
 
 # ----------------------------------------------------------------- completion
 

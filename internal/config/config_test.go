@@ -54,6 +54,34 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, pwgen.CharacterSet, cfg.CharacterSet)
 	assert.Contains(t, cfg.Dir, ".password-store")
 	assert.Equal(t, "default", cfg.Theme)
+	assert.Empty(t, cfg.TyperTool)
+}
+
+func TestTyperToolFromEnv(t *testing.T) {
+	isolate(t)
+	t.Setenv("BINPASS_TYPER_TOOL", "ydotool")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "ydotool", cfg.TyperTool)
+}
+
+func TestTyperToolEnvBeatsFile(t *testing.T) {
+	dir := isolate(t)
+	writeConfig(t, dir, "typer:\n  tool: xdotool\n")
+	t.Setenv("BINPASS_TYPER_TOOL", "ydotool")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "ydotool", cfg.TyperTool)
+}
+
+func TestInvalidTyperToolInFileIsAnError(t *testing.T) {
+	dir := isolate(t)
+	writeConfig(t, dir, "typer:\n  tool: wtypo\n")
+
+	_, err := config.Load()
+	assert.Error(t, err, "a config file is deliberate: a bad tool name must be reported at load")
 }
 
 func TestPasswordStoreEnvIsHonoured(t *testing.T) {

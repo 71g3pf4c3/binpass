@@ -56,6 +56,13 @@ func newOTPCmdMenu(app *App) *cobra.Command {
 			opts.args = args
 			opts.typeIt = !doPrint && !doCopy
 			opts.print = doPrint
+			// Resolved and validated before the picker is drawn, so a
+			// typo in the tool name fails fast.
+			tool, err := app.resolveTyperTool(cmd.Flags().Changed("tool"), opts.tool)
+			if err != nil {
+				return err
+			}
+			opts.tool = tool
 			return app.runMenu(cmd.Context(), opts)
 		},
 	}
@@ -64,6 +71,8 @@ func newOTPCmdMenu(app *App) *cobra.Command {
 	cmd.Flags().StringVar(&opts.sort, "sort", "name", "list order: name, frequent, recent")
 	_ = cmd.RegisterFlagCompletionFunc("sort", completeSortModes)
 	cmd.Flags().BoolVar(&opts.reverse, "reverse", false, "flip the sort order")
+	cmd.Flags().StringVar(&opts.tool, "tool", "auto", "typing tool: auto|wtype|xdotool|ydotool")
+	_ = cmd.RegisterFlagCompletionFunc("tool", completeTyperTools)
 	cmd.Flags().BoolVar(&doPrint, "print", false, "write the code to stdout instead of typing it")
 	cmd.Flags().BoolVar(&doCopy, "copy", false, "copy the code to the clipboard instead of typing it")
 	return cmd

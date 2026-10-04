@@ -28,6 +28,9 @@ type menuOpts struct {
 	field string
 	// typeIt types the secret into the focused window instead of copying it.
 	typeIt bool
+	// tool names the typing backend typeIt uses: "auto" or one of wtype,
+	// xdotool, ydotool. It is resolved by the command, not here.
+	tool string
 	// print writes the secret to stdout instead of the clipboard.
 	print bool
 	// prompt is the label shown by the picker.
@@ -58,6 +61,13 @@ func newMenuCmd(app *App) *cobra.Command {
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.args = args
+			// Resolved and validated before the picker is drawn, so a
+			// typo in the tool name fails fast.
+			tool, err := app.resolveTyperTool(cmd.Flags().Changed("tool"), opts.tool)
+			if err != nil {
+				return err
+			}
+			opts.tool = tool
 			return app.runMenu(cmd.Context(), opts)
 		},
 	}
@@ -66,6 +76,8 @@ func newMenuCmd(app *App) *cobra.Command {
 	_ = cmd.RegisterFlagCompletionFunc("launcher", completeLauncherNames)
 	_ = cmd.RegisterFlagCompletionFunc("field", app.completeFieldNames)
 	cmd.Flags().BoolVar(&opts.typeIt, "type", false, "type the secret into the focused window")
+	cmd.Flags().StringVar(&opts.tool, "tool", "auto", "typing tool: auto|wtype|xdotool|ydotool")
+	_ = cmd.RegisterFlagCompletionFunc("tool", completeTyperTools)
 	cmd.Flags().BoolVar(&opts.print, "print", false, "write the secret to stdout")
 	cmd.Flags().StringVar(&opts.prompt, "prompt", "pass", "picker prompt")
 	cmd.Flags().StringVar(&opts.sort, "sort", "name", "list order: name, frequent, recent")
@@ -136,7 +148,7 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 			return ctx.Err()
 		case <-time.After(pickerSettle):
 		}
-		return typer.Type(ctx, value)
+		return typer.TypeWithTool(ctx, opts.tool, value)
 	default:
 		return a.copyToClipboard(ctx, value, choice)
 	}

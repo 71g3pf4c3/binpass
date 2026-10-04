@@ -37,6 +37,18 @@ func newTombFixture(t *testing.T) *tombFixture {
 	dir := t.TempDir()
 	sidecar := t.TempDir()
 	t.Setenv("BINPASS_DATA_DIR", sidecar)
+
+	// The dev shell unsets BINPASS_*/PASSWORD_STORE_* so tests measure the
+	// code, not the machine; everywhere else they leak in. A leaked
+	// BINPASS_IDENTITY is the worst leak: the resolver treats it as the
+	// only identity source, so `tomb open` cannot find the fixture's key —
+	// after `tomb close` has already deleted the plaintext entries. That is
+	// a half-run reading the developer's real home. Neutralise every other
+	// identity source too, so the resolver's whole candidate list is inside
+	// this fixture's temp dirs and the test cannot touch anything real.
+	t.Setenv("BINPASS_IDENTITY", "")
+	t.Setenv("PASSAGE_IDENTITIES_FILE", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	// The tomb decrypts the coffin through the identity resolver, so the key
 	// has to be where that resolver looks — inside the test's own sidecar,
 	// never the developer's real one.

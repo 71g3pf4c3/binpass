@@ -38,7 +38,7 @@
 
           # Hash of the fetched module set. null would mean "the source
           # vendors its dependencies", which this repository does not.
-          vendorHash = "sha256-lhOt2faziYG7ad8vcJceCsoRdatQhG3Iv6cZwVCyzIk=";
+          vendorHash = "sha256-aFDzAA34ds8CAppbxRXvLIoIwqZFc3AJqF8X/2LsONY=";
 
           env.CGO_ENABLED = 0;
           ldflags = [
@@ -69,6 +69,13 @@
               --bash <($out/bin/binpass completion bash) \
               --zsh <($out/bin/binpass completion zsh) \
               --fish <($out/bin/binpass completion fish)
+
+            # Man pages come from the binary that ships in the package, the
+            # same way the completions above do, so a page can never document
+            # a flag the installed binary does not have. The generator
+            # already scrubs build-machine paths out of the flag defaults,
+            # which keeps the build reproducible.
+            "$out/bin/binpass" man "$out/share/man/man1"
 
             # The Secret Service provider is started by the bus on demand, so
             # the activation file has to name the installed binary rather

@@ -19,8 +19,8 @@
 | `03-plugins.md` | Три уровня плагинов, capability-модель | M6 | **✅ сделано** | — |
 | `04-import-export-audit.md` | Импорт 9 форматов, HIBP-аудит, binary secrets | M2 | **✅ сделано** | — |
 | `05-tui.md` | bubbletea TUI, history | M7 | **✅ сделано** (TUI, автолок, OTP, `history` через pkg/vcs; teatest-слой не добавлялся — модель тестируется напрямую) | — |
-| `06-current-wip.md` | Незакоммиченный WIP: фиксы, e2e, completion, GitLab CI | — | **✅ закрыт** (completion + GitLab CI сделаны; из хвоста — только winget/AUR и man pages, см. M8) | — |
-| `07-import-debt.md` | M2 debt: mock store, coverage gaps, bugs, improvements | M2 post | частично (1.x, 2.1–2.5, 5.2, 5.3 сделаны; открыты 3.x coverage polish, 4.x architectural improvements, 5.1 watch item, 6.x man pages) | да, в любое время |
+| `06-current-wip.md` | Незакоммиченный WIP: фиксы, e2e, completion, GitLab CI | — | **✅ закрыт** (completion + GitLab CI + man pages сделаны; из хвоста — только winget/AUR, см. M8) | — |
+| `07-import-debt.md` | M2 debt: mock store, coverage gaps, bugs, improvements | M2 post | частично (1.x, 2.1–2.5, 5.2, 5.3, 6.1 сделаны; открыты 3.x coverage polish, 4.x architectural improvements, 5.1 watch item) | да, в любое время |
 | `07-sync-hardening.md` | S3 conditional write, property-тесты, advisory lock, OAuth, sync history, cloud e2e | post-M4 | **✅ сделано** (merge `fix/sync-hardening` в main, 78d29c6) | — |
 
 ## Порядок

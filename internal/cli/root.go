@@ -168,6 +168,9 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newCompletionCmd(app),
 		newPluginCmd(app),
 		newVersionCmd(app, version, commit, buildDate),
+		// Hidden: packaging runs it to produce man pages, but it is not
+		// part of the pass command surface the help output promises.
+		newManCmd(app, version, buildDate),
 	)
 	registerCompletions(app, root)
 	return root

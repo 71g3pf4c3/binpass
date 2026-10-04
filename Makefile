@@ -13,7 +13,7 @@ LDFLAGS := -s -w \
 
 export CGO_ENABLED := 0
 
-.PHONY: all build test cover vet lint tidy clean snapshot release containers ci-parity
+.PHONY: all build test cover vet lint tidy clean snapshot release containers ci-parity man
 
 all: build
 
@@ -24,6 +24,15 @@ snapshot: ## Build a local release snapshot with goreleaser (no publish).
 	# Keyless signing needs the CI's OIDC identity, which a local run does
 	# not have; skipping it is what makes a local snapshot possible at all.
 	goreleaser release --snapshot --clean --skip=sign
+
+man: build ## Regenerate man pages into man/ for local preview (not committed).
+	# The pages are generated at build time by every packager (nix,
+	# goreleaser); this target is the same generation, run by hand, so
+	# `man ./man/binpass.1` shows exactly what a package would install.
+	# man/ is gitignored on purpose: a committed page can drift from the
+	# flags the binary actually accepts.
+	rm -rf man
+	./bin/binpass man man
 
 release: ## Cut a release with goreleaser (requires a tag + GITHUB_TOKEN).
 	goreleaser release --clean

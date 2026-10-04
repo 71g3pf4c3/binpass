@@ -60,17 +60,26 @@ func NewRcloneRemote(opts RcloneOptions) (*RcloneRemote, error) {
 	}, nil
 }
 
-// realRclone returns the default runner: one exec per invocation, with
-// CombinedOutput so rclone's own diagnostics reach the error message.
+// realRclone returns the default runner: one exec per invocation. The
+// command's data — file content for cat, a listing for lsf — travels on
+// stdout and must come back alone; rclone's diagnostics go to stderr and
+// are kept for the error message, the same split the restic runner makes.
+//
+// CombinedOutput was tried and broke every sync on a machine with no
+// rclone.conf: the "config file not found" notice rides along in the
+// output, the lock's read-back no longer matches what was written, and
+// the sync reports its own lock as a stranger's.
 func realRclone(path string) func(ctx context.Context, args []string, stdin io.Reader) ([]byte, error) {
 	return func(ctx context.Context, args []string, stdin io.Reader) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // fixed binary, arguments built internally.
 		cmd.Stdin = stdin
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("rclone %s: %s: %w", strings.Join(args, " "), out, err)
+		var out, errOut bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &errOut
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("rclone %s: %s: %w", strings.Join(args, " "), errOut.String(), err)
 		}
-		return out, nil
+		return out.Bytes(), nil
 	}
 }
 

@@ -17,9 +17,20 @@ let
   # Only the keys binpass actually reads are emitted. Writing a setting the
   # program ignores is worse than not offering it: the user configures
   # something, nothing happens, and nothing says why.
-  settingsFile = yamlFormat.generate "binpass-config.yaml" cfg.settings;
+  #
+  # The theme option joins the free-form settings in the generated file
+  # rather than the environment: a session variable reaches only login
+  # shells, and a config file reaches everything that runs binpass.
+  settings =
+    cfg.settings
+    // lib.optionalAttrs (cfg.theme != "default") {
+      ui = (cfg.settings.ui or { }) // {
+        theme = cfg.theme;
+      };
+    };
+  settingsFile = yamlFormat.generate "binpass-config.yaml" settings;
 
-  hasSettings = cfg.settings != { };
+  hasSettings = settings != { };
 in
 {
   options.programs.binpass = {
@@ -61,6 +72,29 @@ in
         key in the Nix store would make it world-readable, so the file has to
         be provisioned by something that keeps secrets out of the store, such
         as agenix, sops-nix, or your own hands.
+      '';
+    };
+
+    theme = lib.mkOption {
+      type = lib.types.enum [
+        "default"
+        "gruvbox"
+        "gruvbox-light"
+        "nord"
+        "dracula"
+      ];
+      default = "default";
+      description = ''
+        Colour theme for `binpass tui`.
+
+        The enum mirrors the registry in internal/theme: adding a theme
+        there without adding it here leaves Nix users unable to select it,
+        and adding one here without adding it there fails at startup
+        instead of at evaluation — which is the worse order to find out in.
+
+        Written to `ui.theme` in the generated config file, taking
+        precedence over `settings.ui.theme` when set to anything but
+        "default".
       '';
     };
 

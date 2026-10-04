@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/71g3pf4c3/binpass/internal/theme"
 	"github.com/spf13/viper"
 )
 
@@ -82,6 +83,12 @@ func applyFile(cfg *Config) error {
 	}
 	if d := v.GetDuration("clip.timeout"); d > 0 {
 		cfg.ClipTime = d
+	}
+	if s := v.GetString("ui.theme"); s != "" {
+		if !theme.Valid(s) {
+			return fmt.Errorf("config: ui.theme must be one of %s, got %q", theme.String(), s)
+		}
+		cfg.Theme = s
 	}
 	if n := v.GetInt("generate.length"); n > 0 {
 		cfg.GeneratedLength = n

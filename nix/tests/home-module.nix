@@ -83,6 +83,7 @@ let
     enable = true;
     storeDir = "/home/tester/.password-store";
     identityFile = "/home/tester/.local/share/binpass/identities.age";
+    theme = "gruvbox";
     replacePass = true;
     tomb = {
       enable = true;
@@ -100,15 +101,25 @@ let
     };
   };
 
+  # The theme option must win over the same key in free-form settings;
+  # two places claiming to configure one thing is a split-brain, and the
+  # dedicated option is the one that carries validation.
+  themePrecedence = evalWith {
+    enable = true;
+    theme = "gruvbox";
+    settings.ui.theme = "nord";
+  };
+
   # The default case: enabled and otherwise untouched.
   minimal = evalWith { enable = true; };
 
   configYaml = full.xdg.configFile."binpass/config.yaml".source;
+  themePrecedenceYaml = themePrecedence.xdg.configFile."binpass/config.yaml".source;
   tombService = full.systemd.user.services.binpass-tomb;
 in
 runCommand "binpass-home-module-test"
   {
-    inherit configYaml;
+    inherit configYaml themePrecedenceYaml;
     passAsFile = [ "checks" ];
     checks = ''
       # The generated config must be the YAML binpass parses, with the keys
@@ -118,6 +129,7 @@ runCommand "binpass-home-module-test"
       grep -q 'length: 25' "$configYaml"
       grep -q 'default_remote: origin' "$configYaml"
       grep -q 'conflict: keep-both' "$configYaml"
+      grep -q 'theme: gruvbox' "$configYaml"
     '';
 
     storeDirVar = full.home.sessionVariables.PASSWORD_STORE_DIR or "";
@@ -139,6 +151,10 @@ runCommand "binpass-home-module-test"
   ''
     set -eu
     bash "$checksPath"
+
+    # The theme option must override settings.ui.theme, not coexist with it.
+    grep -q 'theme: gruvbox' "$themePrecedenceYaml"
+    ! grep -q 'theme: nord' "$themePrecedenceYaml"
 
     # A store directory must reach both names: pass-era tools read one,
     # binpass prefers the other, and setting only one splits the store in two.

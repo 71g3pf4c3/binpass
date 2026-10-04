@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -171,6 +172,101 @@ func TestMenuUsageRoundTrip(t *testing.T) {
 	require.True(t, ok, "the saved entry must load back")
 	assert.Equal(t, 1, b.Count)
 	assert.False(t, a.Last.IsZero())
+}
+
+// TestRunMenu_PrunesUsageOfDeletedEntries covers the reconcile: the menu
+// already walks the store to feed the picker, so records of entries that are
+// gone are dropped there — even when the picker is then dismissed and no
+// choice is recorded.
+func TestRunMenu_PrunesUsageOfDeletedEntries(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "live", "one\n")
+
+	usage := menuUsage{}
+	usage.mark("live")
+	usage.mark("dead")
+	usage.mark("gone/nested")
+	saveMenuUsage(usage)
+
+	pickingPicker(t, "")
+	require.NoError(t, app.runMenu(context.Background(), menuOpts{launcher: "rofi", field: "password", print: true}))
+
+	loaded := loadMenuUsage()
+	live, ok := loaded["live"]
+	require.True(t, ok, "a record of a live entry must survive the reconcile")
+	assert.Equal(t, 1, live.Count, "the surviving record keeps its history")
+	_, ok = loaded["dead"]
+	assert.False(t, ok, "a record of a deleted entry must be pruned")
+	_, ok = loaded["gone/nested"]
+	assert.False(t, ok, "a record of a deleted nested entry must be pruned")
+}
+
+// TestRunMenu_PrunesOTPKnownOfDeletedEntries covers the same reconcile for
+// the known-OTP cache — and on a plain menu run, not an otp one, because the
+// cache is healed wherever the full listing is in hand.
+func TestRunMenu_PrunesOTPKnownOfDeletedEntries(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "live", "hunter2\n")
+
+	rememberOTPKnown("live")
+	rememberOTPKnown("dead")
+
+	pickingPicker(t, "")
+	require.NoError(t, app.runMenu(context.Background(), menuOpts{launcher: "rofi", field: "password", print: true}))
+
+	known := loadOTPKnown()
+	_, ok := known["live"]
+	assert.True(t, ok, "a record of a live entry must survive the reconcile")
+	_, ok = known["dead"]
+	assert.False(t, ok, "a record of a deleted entry must be pruned")
+}
+
+// TestMenuUsageBound covers the cap: the history file cannot grow unbounded,
+// and when the cap bites it drops the least chosen first, then the least
+// recently used.
+func TestMenuUsageBound(t *testing.T) {
+	// The history lives in the state directory; pointing it at a scratch
+	// dir keeps the round trip away from the developer's real menu history.
+	t.Setenv("BINPASS_STATE_DIR", t.TempDir())
+
+	base := time.Now()
+	usage := menuUsage{
+		// The least chosen record is the first to go.
+		"few": {Count: 1, Last: base},
+		// Same count as the crowd but the oldest last use, so it is the
+		// second to go: ties are broken by recency.
+		"stale": {Count: 5, Last: base.Add(-time.Hour)},
+	}
+	for i := 0; i < usageRecordsMax; i++ {
+		usage[fmt.Sprintf("entry%03d", i)] = &menuUse{Count: 5, Last: base.Add(time.Duration(i) * time.Minute)}
+	}
+	saveMenuUsage(usage)
+
+	loaded := loadMenuUsage()
+	assert.Len(t, loaded, usageRecordsMax, "the history is capped on save")
+	assert.NotContains(t, loaded, "few", "the least chosen record is dropped first")
+	assert.NotContains(t, loaded, "stale", "count ties are broken by recency: the oldest goes")
+	assert.Contains(t, loaded, "entry000")
+	assert.Contains(t, loaded, fmt.Sprintf("entry%03d", usageRecordsMax-1))
+}
+
+// TestOTPKnownBound covers the same cap for the known-OTP cache, which has
+// no counts and so keeps the most recently known entries.
+func TestOTPKnownBound(t *testing.T) {
+	t.Setenv("BINPASS_STATE_DIR", t.TempDir())
+
+	base := time.Now()
+	known := otpKnown{"oldest": base.Add(-time.Hour)}
+	for i := 0; i < usageRecordsMax; i++ {
+		known[fmt.Sprintf("entry%03d", i)] = base.Add(time.Duration(i) * time.Minute)
+	}
+	saveOTPKnown(known)
+
+	loaded := loadOTPKnown()
+	assert.Len(t, loaded, usageRecordsMax, "the cache is capped on save")
+	assert.NotContains(t, loaded, "oldest", "the least recently known entry is dropped first")
+	assert.Contains(t, loaded, "entry000")
+	assert.Contains(t, loaded, fmt.Sprintf("entry%03d", usageRecordsMax-1))
 }
 
 // TestRunMenu_FrequentSortOrdersThePickerList covers the whole loop: a

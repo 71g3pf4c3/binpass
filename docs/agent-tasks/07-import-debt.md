@@ -286,6 +286,13 @@ fields: все поля проходят через `Lines()`/`Password()`, ко
 `binpass import --help`, `binpass audit --help` — есть. Man pages — нет.
 M8 milestone, не блокирует.
 
+**✅ Закрыто (M8):** скрытая команда `binpass man <dir>` (internal/cli/man.go)
+генерирует страницы из живого дерева команд через cobra/doc. Nix-пакет,
+pass-shim (как `pass.1`) и goreleaser (archives + deb/rpm/apk/archlinux)
+генерируют их из бинаря, который шипят — как и completions. Коммитить
+страницы не нужно и нельзя: сгенерированные из бинаря, они не могут
+разойтись с его флагами. `make man` — локальный превью в gitignored `man/`.
+
 ### 6.2. ARCHITECTURE.md §14: M2 mark as done
 
 На ветке уже помечен как done. При merge в main — нужно обновить.

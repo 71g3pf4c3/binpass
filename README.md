@@ -124,12 +124,13 @@ The flake ships an overlay and a module for each.
 }
 ```
 
-`replacePass` installs binpass under the name `pass`, with completions
-generated for that name. The binary answers to whichever name it was invoked
-under, so `pass --help` says `pass` and tab completion completes `pass` —
-scripts and browser extensions calling `pass` keep working against the same
-store. It is off by default, because shadowing a command nobody asked to have
-shadowed is not a decision a module should make quietly.
+`replacePass` installs binpass under the name `pass`, with completions and
+man pages generated for that name. The binary answers to whichever name it
+was invoked under, so `pass --help` says `pass`, tab completion completes
+`pass`, and `man pass` documents `pass` — scripts and browser extensions
+calling `pass` keep working against the same store. It is off by default,
+because shadowing a command nobody asked to have shadowed is not a decision
+a module should make quietly.
 
 `settings` is written to the Nix store, which every user on the machine can
 read. Keep secrets out of it: for a restic repository password use

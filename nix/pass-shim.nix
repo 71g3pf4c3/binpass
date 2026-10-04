@@ -32,4 +32,13 @@ runCommand "pass-${binpass.version}"
       "$out/share/zsh/site-functions/_pass"
     install -Dm444 <("$out/bin/pass" completion fish) \
       "$out/share/fish/vendor_completions.d/pass.fish"
+
+    # Man pages follow the same rule as the completions above: generated
+    # under the name the binary is invoked as, so `man pass` documents the
+    # command the user actually types instead of pointing at binpass(1).
+    # The generator names every page after the root command it was given,
+    # and the root answers to `pass` here. Compressed by hand because
+    # runCommand skips the fixup phase that does it for real packages.
+    "$out/bin/pass" man "$out/share/man/man1"
+    gzip -9 "$out/share/man/man1"/*.1
   ''

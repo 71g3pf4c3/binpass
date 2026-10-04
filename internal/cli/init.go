@@ -17,15 +17,18 @@ func newInitCmd(app *App) *cobra.Command {
 		Short: "Initialise a new password store",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			var kind config.Backend
 			switch {
 			case useAge && useGPG:
 				return fmt.Errorf("Error: choose either --age or --gpg, not both.") //nolint:revive,staticcheck // diagnostic style.
 			case useAge:
+				kind = config.BackendAge
 				app.Cfg.Default = config.BackendAge
 			case useGPG:
+				kind = config.BackendGPG
 				app.Cfg.Default = config.BackendGPG
 			}
-			return app.runInit(path, args)
+			return app.runInit(path, args, kind)
 		},
 	}
 	cmd.Flags().StringVarP(&path, "path", "p", "", "initialise a subfolder only")
@@ -35,8 +38,11 @@ func newInitCmd(app *App) *cobra.Command {
 }
 
 // runInit writes the recipients file and reencrypts any existing entries for
-// the new recipient set, as pass does.
-func (a *App) runInit(sub string, recipients []string) error {
+// the new recipient set, as pass does. An explicit kind also migrates the
+// entries into that backend: init --age on a gpg store that only refreshed
+// recipients would leave every entry encrypted for the old ones, which the
+// help text promises does not happen.
+func (a *App) runInit(sub string, recipients []string, kind config.Backend) error {
 	s, err := a.Store()
 	if err != nil {
 		return err
@@ -53,6 +59,13 @@ func (a *App) runInit(sub string, recipients []string) error {
 	fmt.Fprintf(a.Out, "Password store initialized for %s\n", joinRecipients(rcp))
 	if !existed {
 		return nil
+	}
+	if kind != "" {
+		target, err := a.cryptoFor(kind)
+		if err != nil {
+			return err
+		}
+		return s.Reencrypt(sub, target)
 	}
 	// An existing store must be rewritten, or the previous recipients would
 	// keep their access to every entry already there.

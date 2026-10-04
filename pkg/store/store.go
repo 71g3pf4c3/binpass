@@ -101,6 +101,31 @@ func (s *Store) Initialised() bool {
 	return false
 }
 
+// EntryInfo names an entry and the backend extension it currently uses.
+type EntryInfo struct {
+	// Name is the entry name relative to the store root, without extension.
+	Name string
+	// Ext is the extension of the file holding the entry, including the
+	// leading dot: ".gpg" or ".age".
+	Ext string
+}
+
+// EntryInfos lists the entries under sub with the extension each currently
+// uses, so a caller can tell what a reencrypt to a fixed backend would
+// rewrite and which entries would change format, without globbing the tree
+// itself.
+func (s *Store) EntryInfos(sub string) ([]EntryInfo, error) {
+	entries, err := s.fs.Entries(sub, s.exts())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EntryInfo, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, EntryInfo{Name: e.Name, Ext: e.Ext})
+	}
+	return out, nil
+}
+
 // Init writes the recipients file for sub (empty for the store root) using the
 // default backend, creating the store directory if needed.
 func (s *Store) Init(sub string, rcp []crypto.Recipient) error {

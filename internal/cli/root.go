@@ -137,6 +137,7 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 
 	root.AddCommand(
 		newInitCmd(app),
+		newRecryptCmd(app),
 		newListCmd(app),
 		newShowCmd(app),
 		newFindCmd(app),

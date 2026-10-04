@@ -135,18 +135,32 @@ binpass doctor
 **Pros:** zero risk, gradual migration, instant rollback (delete `.age-recipients`).
 **Cons:** two crypto backends in one tree, GPG dependency does not go away.
 
-### 4.2 Full migration via `binpass reencrypt` (not yet implemented)
+### 4.2 Full migration via `binpass recrypt` (works now)
 
-The architecture specifies:
+One command re-encrypts every entry in the store for the chosen backend:
 
 ```sh
-binpass reencrypt --to=age [--dry-run] [path]
+# Preview first: lists what would change, touches nothing.
+binpass recrypt --age --dry-run
+
+# Migrate: every .gpg becomes .age, existing .age entries are rewritten
+# for the current .age-recipients.
+binpass recrypt --age
+
+# Verify, then commit.
+binpass doctor
+binpass git add -A && binpass git commit -m "migrate store to age"
 ```
 
-This would re-encrypt every `.gpg` file as `.age`, update `.age-recipients`,
-and remove `.gpg-id`. `--dry-run` would show the plan without making changes.
+`recrypt --gpg` does the reverse. Without a flag the configured default
+backend is the target. An interrupted run can simply be run again: each
+entry is rewritten before its old file is removed, so the second pass
+picks up where the first stopped. `binpass init --age <recipient>` on an
+existing store also migrates, since init reencrypts for the recipients it
+writes.
 
-**Status: not implemented.** When it ships, this will be the recommended path.
+`reencrypt` is an alias for `recrypt`, for the architecture's original
+spelling of the command.
 
 ### 4.3 Manual migration (works now)
 

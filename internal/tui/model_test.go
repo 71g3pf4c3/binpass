@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/71g3pf4c3/binpass/internal/config"
+	"github.com/71g3pf4c3/binpass/internal/theme"
 	"github.com/71g3pf4c3/binpass/pkg/otp"
 	"github.com/71g3pf4c3/binpass/pkg/secret"
 	"github.com/71g3pf4c3/binpass/pkg/vcs"
@@ -331,7 +332,7 @@ func TestModelLockedView(t *testing.T) {
 	m := Model{
 		cfg:    cfg,
 		km:     defaultKeymap(),
-		st:     newStyles(true),
+		st:     newStyles(true, theme.Default()),
 		view:   viewLocked,
 		locked: true,
 	}
@@ -349,7 +350,7 @@ func TestModelAutolock(t *testing.T) {
 	m := Model{
 		cfg:          cfg,
 		km:           defaultKeymap(),
-		st:           newStyles(true),
+		st:           newStyles(true, theme.Default()),
 		view:         viewTree,
 		lastActivity: time.Now().Add(-6 * time.Minute),
 		sec:          secret.New("password", ""),
@@ -372,7 +373,7 @@ func TestModelUnlockFromLocked(t *testing.T) {
 	m := Model{
 		cfg:          cfg,
 		km:           defaultKeymap(),
-		st:           newStyles(true),
+		st:           newStyles(true, theme.Default()),
 		view:         viewLocked,
 		locked:       true,
 		lastActivity: time.Now(),

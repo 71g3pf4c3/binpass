@@ -356,6 +356,37 @@ It runs on the alternate screen, so nothing that was displayed survives in
 scrollback, and the session locks itself after five minutes of inactivity,
 clearing decrypted secrets from memory.
 
+### Themes
+
+The TUI follows your terminal's own palette by default. To dress it in a
+named one:
+
+```sh
+binpass tui --theme=gruvbox
+```
+
+The same choice persists in the config file:
+
+```yaml
+# ~/.config/binpass/config.yaml
+ui:
+  theme: gruvbox   # default | gruvbox | gruvbox-light | nord | dracula
+```
+
+`BINPASS_THEME=gruvbox` covers the environment, and `NO_COLOR` still wins
+over all of them. Themes colour the TUI only — command output stays
+byte-identical to pass, so scripts and the golden compatibility suite never
+see a difference. A theme assumes the matching terminal background:
+gruvbox colours on a stock black terminal work, but they look right on a
+gruvbox one.
+
+On Nix / home-manager the theme is an option, so a typo fails at
+evaluation rather than at startup:
+
+```nix
+programs.binpass.theme = "gruvbox";
+```
+
 `binpass history ENTRY` lists the git revisions that touched an entry. It
 reads commit metadata only and decrypts nothing, so no password can be
 revealed by it.

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/71g3pf4c3/binpass/internal/theme"
 	"github.com/71g3pf4c3/binpass/pkg/pwgen"
 )
 
@@ -54,6 +55,10 @@ type Config struct {
 	Identity string
 	// XSelection is the X11 selection used for clipboard operations.
 	XSelection string
+	// Theme is the TUI colour theme, by name in the internal/theme
+	// registry. The config file rejects unknown names; the environment
+	// and the TUI itself fall back to the default theme instead.
+	Theme string
 	// NoColor disables coloured output when the NO_COLOR environment variable
 	// is set, following the https://no-color.org/ convention.
 	NoColor bool
@@ -115,6 +120,7 @@ func Default() Config {
 		CharacterSet:          pwgen.CharacterSet,
 		CharacterSetNoSymbols: pwgen.CharacterSetNoSymbols,
 		XSelection:            "clipboard",
+		Theme:                 theme.DefaultName,
 		NoColor:               os.Getenv("NO_COLOR") != "",
 		ErrWriter:             os.Stderr,
 		Sync: SyncConfig{
@@ -174,6 +180,12 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("X_SELECTION"); ok {
 		cfg.XSelection = v
+	}
+	// An unknown theme from the environment is ignored rather than reported:
+	// the same fallback every other invalid env value gets, so a typo in a
+	// shell profile degrades to default colours instead of breaking startup.
+	if v := os.Getenv("BINPASS_THEME"); v != "" && theme.Valid(v) {
+		cfg.Theme = v
 	}
 	if v := os.Getenv("BINPASS_IDENTITY"); v != "" {
 		cfg.Identity = expand(v)

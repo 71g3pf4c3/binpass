@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/71g3pf4c3/binpass/internal/config"
+	"github.com/71g3pf4c3/binpass/internal/theme"
 	"github.com/71g3pf4c3/binpass/pkg/clip"
 	"github.com/71g3pf4c3/binpass/pkg/otp"
 	"github.com/71g3pf4c3/binpass/pkg/pwgen"
@@ -174,7 +175,7 @@ func NewModel(opts Options) (Model, error) {
 
 	noColor := opts.Cfg.NoColor
 	km := defaultKeymap()
-	st := newStyles(noColor)
+	st := newStyles(noColor, theme.Get(opts.Cfg.Theme))
 
 	cb, _ := clip.Detect(opts.Cfg.XSelection)
 	// Clip backend may be nil (e.g. headless CI). Operations that need it

@@ -53,6 +53,7 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, pwgen.DefaultLength, cfg.GeneratedLength)
 	assert.Equal(t, pwgen.CharacterSet, cfg.CharacterSet)
 	assert.Contains(t, cfg.Dir, ".password-store")
+	assert.Equal(t, "default", cfg.Theme)
 }
 
 func TestPasswordStoreEnvIsHonoured(t *testing.T) {
@@ -168,6 +169,41 @@ func TestTildeIsExpanded(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(home, "store"), cfg.Dir)
+}
+
+func TestThemeFromFile(t *testing.T) {
+	dir := isolate(t)
+	writeConfig(t, dir, "ui:\n  theme: gruvbox\n")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "gruvbox", cfg.Theme)
+}
+
+func TestInvalidThemeInFileIsAnError(t *testing.T) {
+	dir := isolate(t)
+	writeConfig(t, dir, "ui:\n  theme: solarized\n")
+
+	_, err := config.Load()
+	require.Error(t, err, "a typo in ui.theme must be reported, not silently themed away")
+}
+
+func TestThemeFromEnv(t *testing.T) {
+	isolate(t)
+	t.Setenv("BINPASS_THEME", "nord")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "nord", cfg.Theme)
+}
+
+func TestInvalidThemeFromEnvFallsBackToDefault(t *testing.T) {
+	isolate(t)
+	t.Setenv("BINPASS_THEME", "solarized")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "default", cfg.Theme)
 }
 
 // writeConfig places a config file where the loader will find it.

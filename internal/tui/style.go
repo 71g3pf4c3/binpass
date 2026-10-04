@@ -1,6 +1,9 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/71g3pf4c3/binpass/internal/theme"
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Styles centralises the visual presentation so that NO_COLOR and narrow
 // terminals degrade gracefully. When noColor is true every style becomes a
@@ -25,9 +28,10 @@ type styles struct {
 	statusBar lipgloss.Style
 }
 
-// newStyles builds the style set, disabling colour when the environment
-// requests it.
-func newStyles(noColor bool) styles {
+// newStyles builds the style set from a theme palette, disabling colour
+// when the environment requests it. NO_COLOR wins over any theme: the
+// palette only chooses colours, never whether to emit them.
+func newStyles(noColor bool, p theme.Palette) styles {
 	if noColor {
 		s := styles{noColor: true}
 		s.selected = lipgloss.NewStyle().Bold(true)
@@ -38,58 +42,58 @@ func newStyles(noColor bool) styles {
 	s := styles{}
 
 	s.branch = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("12")). // bright blue
+		Foreground(lipgloss.Color(p.Branch)).
 		Bold(true)
 
 	s.leaf = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("15")) // white
+		Foreground(lipgloss.Color(p.Leaf))
 
 	s.selected = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("230")). // cornsilk1
-		Background(lipgloss.Color("62")).  // steel blue
+		Foreground(lipgloss.Color(p.SelectedFg)).
+		Background(lipgloss.Color(p.SelectedBg)).
 		Bold(true)
 
 	s.dimmed = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("245")) // grey58
+		Foreground(lipgloss.Color(p.Dimmed))
 
 	s.bold = lipgloss.NewStyle().Bold(true)
 
 	s.header = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("86")). // aquamarine1
+		Foreground(lipgloss.Color(p.Header)).
 		Bold(true)
 
 	s.errorMsg = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("196")). // red1
+		Foreground(lipgloss.Color(p.Error)).
 		Bold(true)
 
 	s.masked = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("245")) // grey58
+		Foreground(lipgloss.Color(p.Dimmed))
 
 	s.visible = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("46")). // spring green
+		Foreground(lipgloss.Color(p.Visible)).
 		Bold(true)
 
 	s.otpCode = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("220")). // gold1
+		Foreground(lipgloss.Color(p.OTPCode)).
 		Bold(true)
 
 	s.otpTimer = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("208")) // dark orange
+		Foreground(lipgloss.Color(p.OTPTimer))
 
 	s.search = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("214")). // orange1
+		Foreground(lipgloss.Color(p.Search)).
 		Bold(true)
 
 	s.confirm = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("196")). // red1
+		Foreground(lipgloss.Color(p.Confirm)).
 		Bold(true)
 
 	s.border = lipgloss.NewStyle().
-		BorderForeground(lipgloss.Color("62")) // steel blue
+		BorderForeground(lipgloss.Color(p.Border))
 
 	s.statusBar = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252")). // grey78
-		Background(lipgloss.Color("236"))  // dark grey
+		Foreground(lipgloss.Color(p.StatusFg)).
+		Background(lipgloss.Color(p.StatusBg))
 
 	return s
 }

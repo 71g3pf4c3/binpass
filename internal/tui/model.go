@@ -45,6 +45,7 @@ const (
 	viewInsert               // insert new entry
 	viewHistory              // git history for an entry
 	viewLocked               // autolock screen
+	viewEdit                 // staged entry editor
 )
 
 // tickMsg is sent every second to drive the OTP countdown timer and the
@@ -130,6 +131,15 @@ type Model struct {
 	histList   []vcs.Commit // commit history
 	histCur    int          // selected commit index
 	histErr    error
+
+	// Edit view (staged edits to the open or newly created entry).
+	editor    *entryEditor // staged plaintext copy; nil outside the editor
+	editName  string       // entry the staged edits belong to
+	editNew   bool         // true when the editor is creating a new entry
+	editCur   int          // selected row: 0 = password, i+1 = rows[i]
+	editMode  int          // editBrowse or one of the input modes
+	editInput string       // contents of the bottom input line
+	editKey   string       // staged key of the field being added
 
 	// VCS backend (nil when the store is not a git repo).
 	vcs vcs.Backend
@@ -306,6 +316,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleInsert(msg)
 		case viewHistory:
 			return m.handleHistory(msg)
+		case viewEdit:
+			return m.handleEdit(msg)
 		}
 
 	case tea.MouseMsg:
@@ -340,6 +352,8 @@ func (m Model) View() string {
 		return m.viewInsert()
 	case viewHistory:
 		return m.viewHistory()
+	case viewEdit:
+		return m.viewEdit()
 	}
 	return ""
 }
@@ -568,6 +582,11 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.copyOTPCodeCmd()
 		}
 
+	case m.km.Edit:
+		if m.sec != nil {
+			m.startEdit()
+		}
+
 	case m.km.Delete:
 		m.confirmAction = "delete"
 		m.confirmTarget = m.current
@@ -655,7 +674,7 @@ func (m Model) viewDetail() string {
 		}
 	}
 
-	bar := m.statusBar("p:toggle  c:copy  o:otp  d:delete  r:rename  g:generate  y:history  esc:back")
+	bar := m.statusBar("p:toggle  e:edit  c:copy  o:otp  d:delete  r:rename  g:generate  y:history  esc:back")
 	return b.String() + bar
 }
 
@@ -672,24 +691,41 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmFocus++
 		}
 	case "enter":
-		if m.confirmFocus == 0 {
-			// Confirmed.
-			switch m.confirmAction {
-			case "delete":
-				if err := m.store.Remove(m.confirmTarget); err != nil {
-					m.status = fmt.Sprintf("delete failed: %s", err)
-				} else {
-					m.status = "deleted " + m.confirmTarget
-				}
+		if m.confirmFocus != 0 {
+			// Declined. The editor keeps its staged copy so the user
+			// can reconsider; the delete flow keeps its historical
+			// "back to the tree" behaviour.
+			if m.confirmAction == "save-edit" || m.confirmAction == "discard-edit" {
+				m.view = viewEdit
+			} else {
+				m.view = viewTree
+			}
+			return m, nil
+		}
+
+		switch m.confirmAction {
+		case "delete":
+			if err := m.store.Remove(m.confirmTarget); err != nil {
+				m.status = "delete failed: " + err.Error()
+			} else {
+				m.status = "deleted " + m.confirmTarget
 			}
 			m.closeEntry()
 			m.rebuildTree()
+			m.view = viewTree
+		case "save-edit":
+			m.saveEditor()
+		case "discard-edit":
+			m.status = "changes discarded"
+			m.closeEditor(false)
 		}
-		// Cancelled or done.
-		m.view = viewTree
 		return m, nil
 
 	case m.km.Back:
+		if m.confirmAction == "save-edit" || m.confirmAction == "discard-edit" {
+			m.view = viewEdit
+			return m, nil
+		}
 		m.view = viewDetail
 		return m, nil
 	}
@@ -699,8 +735,7 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) viewConfirm() string {
 	var b strings.Builder
 	fmt.Fprintln(&b)
-	action := m.confirmAction
-	fmt.Fprintf(&b, "  %s %s?\n\n", m.st.confirm.Render(action+":"), m.st.bold.Render(m.confirmTarget))
+	fmt.Fprintf(&b, "  %s %s?\n\n", m.st.confirm.Render(confirmLabel(m.confirmAction)+":"), m.st.bold.Render(m.confirmTarget))
 
 	yes := " [Yes] "
 	no := "  No  "
@@ -712,6 +747,20 @@ func (m Model) viewConfirm() string {
 	fmt.Fprintf(&b, "  %s%s\n", yes, no)
 	bar := m.statusBar("enter:confirm  esc:cancel")
 	return b.String() + bar
+}
+
+// confirmLabel humanises the internal action name for the confirmation
+// prompt.
+func confirmLabel(action string) string {
+	switch action {
+	case "delete":
+		return "delete"
+	case "save-edit":
+		return "save (overwrites password or deletes lines)"
+	case "discard-edit":
+		return "discard unsaved changes"
+	}
+	return action
 }
 
 // --- view: rename ---
@@ -1192,10 +1241,12 @@ func (m Model) copyOTPCodeCmd() tea.Cmd {
 	}
 }
 
-// lock clears all decrypted secrets from memory.
+// lock clears all decrypted secrets from memory, including any staged
+// editor copy — it is plaintext just like the open entry.
 func (m *Model) lock() {
 	m.locked = true
 	m.sec = nil
+	m.editor = nil
 	m.otpCfg = nil
 	m.otpCode = ""
 	m.showPass = false

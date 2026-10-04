@@ -29,6 +29,7 @@ type keymap struct {
 	Back           string
 	Generate       string
 	History        string
+	Edit           string
 
 	// Search view.
 	ClearSearch string
@@ -52,6 +53,7 @@ func defaultKeymap() keymap {
 		Back:           "esc",
 		Generate:       "g",
 		History:        "y",
+		Edit:           "e",
 		ClearSearch:    "esc",
 	}
 }

@@ -145,6 +145,51 @@ func TestNewResolverReadsEnvironment(t *testing.T) {
 	assert.Equal(t, "/from/flag", identity.NewResolver("/from/flag").Explicit, "the flag beats the environment")
 }
 
+// isolateHome points every directory override at an empty fake home, so
+// DefaultFiles cannot pick up identity files from the developer's real XDG
+// locations or the real home. There is no t.Unsetenv, so the XDG variables
+// are pointed at paths inside the fake home that hold no key files.
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("BINPASS_DATA_DIR", filepath.Join(home, ".local", "share", "binpass"))
+	t.Setenv("PASSAGE_IDENTITIES_FILE", filepath.Join(home, "no-passage-ids"))
+	return home
+}
+
+// TestEnvIdentityTildeIsExpanded guards the trap where
+// BINPASS_IDENTITY="~/.age/identities.age" (quoted in the shell, so the tilde
+// never expands) made NewResolver().Load() fail with
+// "open ~/.age/identities.age: no such file or directory" on a file that
+// visibly exists.
+func TestEnvIdentityTildeIsExpanded(t *testing.T) {
+	home := isolateHome(t)
+	id := writeKey(t, filepath.Join(home, ".age", "identities.age"))
+
+	t.Setenv("BINPASS_IDENTITY", "~/.age/identities.age")
+
+	ids, err := identity.NewResolver("").Load()
+	require.NoError(t, err, "a literal ~ in BINPASS_IDENTITY must resolve against HOME")
+	require.Len(t, ids, 1)
+	assert.Equal(t, id.Recipient().String(), ids[0].(*age.X25519Identity).Recipient().String())
+}
+
+// TestPassageIdentitiesFileTildeIsExpanded covers the same trap for
+// PASSAGE_IDENTITIES_FILE, which DefaultFiles reads directly from the
+// environment.
+func TestPassageIdentitiesFileTildeIsExpanded(t *testing.T) {
+	home := isolateHome(t)
+	writeKey(t, filepath.Join(home, ".age", "identities.age"))
+
+	t.Setenv("PASSAGE_IDENTITIES_FILE", "~/.age/identities.age")
+
+	assert.Contains(t, identity.DefaultFiles(),
+		filepath.Join(home, ".age", "identities.age"))
+}
+
 func TestDefaultFilesOrder(t *testing.T) {
 	t.Setenv("BINPASS_DATA_DIR", "/data")
 	t.Setenv("XDG_CONFIG_HOME", "/config")

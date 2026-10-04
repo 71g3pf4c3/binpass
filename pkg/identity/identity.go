@@ -72,17 +72,19 @@ func DefaultFiles() []string {
 			filepath.Join(dir, "age", "keys.txt"),
 		)
 	}
-	if p := os.Getenv("PASSAGE_IDENTITIES_FILE"); p != "" {
+	if p := expandTilde(os.Getenv("PASSAGE_IDENTITIES_FILE")); p != "" {
 		out = append(out, p)
 	}
 	return out
 }
 
 // NewResolver builds a resolver from the environment and an optional explicit
-// path taken from --identity.
+// path taken from --identity. A tilde in the env value is expanded here, not
+// left to the caller, so direct consumers of the resolver do not hit a literal
+// "~" path that only the CLI path happens to expand.
 func NewResolver(explicit string) *Resolver {
 	if explicit == "" {
-		explicit = os.Getenv("BINPASS_IDENTITY")
+		explicit = expandTilde(os.Getenv("BINPASS_IDENTITY"))
 	}
 	return &Resolver{Explicit: explicit, Files: DefaultFiles()}
 }

@@ -146,13 +146,28 @@ type result struct {
 
 // env returns the environment for a run against dir.
 //
+// Everything PASSWORD_STORE_* and BINPASS_* is stripped from the inherited
+// environment before the intended values are set: binpass prefers BINPASS_*
+// over PASSWORD_STORE_*, so an inherited BINPASS_DIR points every run at the
+// developer's real store even with PASSWORD_STORE_DIR pinned to a temp dir.
+// The dev shell unsets these, but a login shell exports them all the time,
+// and a golden run outside the dev shell deleted a live store this way.
+//
 // tree(1) picks its glyphs from the locale codeset and its colours from TERM,
 // and honours LS_COLORS when set. All three are pinned so that the comparison
 // measures binpass rather than the machine it happens to run on.
 func (w *world) env(dir string) []string {
-	return append(os.Environ(),
+	base := make([]string, 0, len(os.Environ())+8)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "PASSWORD_STORE_") || strings.HasPrefix(kv, "BINPASS_") {
+			continue
+		}
+		base = append(base, kv)
+	}
+	return append(base,
 		"GNUPGHOME="+w.gnupgHome,
 		"PASSWORD_STORE_DIR="+dir,
+		"BINPASS_DIR="+dir,
 		"LS_COLORS=",
 		"TERM=xterm",
 		"LC_ALL=C.UTF-8",

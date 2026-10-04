@@ -40,6 +40,12 @@ func TestScripts(t *testing.T) {
 			env.Setenv("BINPASS_IDENTITY", keyFile)
 			env.Setenv("BINPASS_CONFIG", env.WorkDir+"/nonexistent.yaml")
 			env.Setenv("PASSWORD_STORE_DIR", env.WorkDir+"/store")
+			// binpass prefers BINPASS_* over PASSWORD_STORE_*, so an
+			// inherited BINPASS_DIR would point every script at the
+			// developer's real store even with PASSWORD_STORE_DIR pinned
+			// above. The golden suite deleted a live store exactly that
+			// way; the dev shell unsets these, a login shell does not.
+			env.Setenv("BINPASS_DIR", env.WorkDir+"/store")
 			env.Setenv("RECIPIENT", id.Recipient().String())
 			// Pin tree's rendering inputs so scenarios can assert on exact
 			// output regardless of the host locale.

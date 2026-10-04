@@ -143,6 +143,11 @@ func (a *App) completeFieldNames(_ *cobra.Command, args []string, toComplete str
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	names := []string{"password"}
+	if _, ok := sec.OTP(); ok {
+		// Only offered when the entry actually has one: a completion that
+		// lies about what it can emit costs a round-trip to the help.
+		names = append(names, "otp")
+	}
 	for _, f := range sec.Fields() {
 		names = append(names, f.Key)
 	}

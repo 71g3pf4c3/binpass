@@ -54,23 +54,10 @@ func (a *App) runOTP(ctx context.Context, name string, doClip, watch, showURI bo
 		return err
 	}
 
-	// A HOTP code is only valid once, so generating one has to advance the
-	// stored counter; a TOTP entry is never rewritten.
-	if cfg.Kind == otp.HOTP {
-		code, err := cfg.Code(time.Now())
-		if err != nil {
-			return err
-		}
-		if err := a.advanceHOTP(s, name, sec, uri, cfg); err != nil {
-			return err
-		}
-		return a.emitOTP(ctx, code, name, doClip)
-	}
-
 	if watch {
 		return a.watchOTP(ctx, cfg)
 	}
-	code, err := cfg.Code(time.Now())
+	code, err := a.otpCode(s, name, sec)
 	if err != nil {
 		return err
 	}

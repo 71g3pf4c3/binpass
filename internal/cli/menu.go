@@ -2,12 +2,20 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/71g3pf4c3/binpass/internal/config"
+	"github.com/71g3pf4c3/binpass/pkg/otp"
+	"github.com/71g3pf4c3/binpass/pkg/secret"
+	"github.com/71g3pf4c3/binpass/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +31,11 @@ type menuOpts struct {
 	print bool
 	// prompt is the label shown by the picker.
 	prompt string
+	// sort orders the list before it reaches the picker: by name, by how
+	// often an entry was chosen, or by how recently.
+	sort string
+	// reverse flips the order the sort produced.
+	reverse bool
 	// args are extra arguments passed straight to the picker.
 	args []string
 }
@@ -36,7 +49,10 @@ func newMenuCmd(app *App) *cobra.Command {
 		Short: "Pick a password with rofi, fzf, dmenu or wofi",
 		Long: "Lists the store in an interactive picker and copies, prints or types the\n" +
 			"chosen secret. Replaces passmenu, rofi-pass and fzf-pass without a wrapper\n" +
-			"script: the store is never decrypted until an entry is actually chosen.",
+			"script: the store is never decrypted until an entry is actually chosen.\n\n" +
+			"--sort=frequent and --sort=recent order the list by how the entry has been\n" +
+			"used in this menu before, so the daily ones float to the top; --field=otp\n" +
+			"generates the entry's one-time password instead of its first line.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.args = args
@@ -50,6 +66,9 @@ func newMenuCmd(app *App) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.typeIt, "type", false, "type the secret into the focused window")
 	cmd.Flags().BoolVar(&opts.print, "print", false, "write the secret to stdout")
 	cmd.Flags().StringVar(&opts.prompt, "prompt", "pass", "picker prompt")
+	cmd.Flags().StringVar(&opts.sort, "sort", "name", "list order: name, frequent, recent")
+	_ = cmd.RegisterFlagCompletionFunc("sort", completeSortModes)
+	cmd.Flags().BoolVar(&opts.reverse, "reverse", false, "flip the sort order")
 	return cmd
 }
 
@@ -66,6 +85,10 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 	if len(names) == 0 {
 		return errors.New("binpass: the password store is empty")
 	}
+	// The usage history decides frequent and recent ordering — and a
+	// missing or corrupt file simply means nobody has used the menu yet.
+	usage := loadMenuUsage()
+	names = sortEntries(names, opts.sort, opts.reverse, usage)
 
 	picker, err := detectPicker(opts.launcher)
 	if err != nil {
@@ -80,6 +103,11 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 		return nil
 	}
 
+	// A choice is a use, even if the clipboard later fails: the user went
+	// looking for this entry, and that is what frequent and recent rank.
+	usage.mark(choice)
+	saveMenuUsage(usage)
+
 	sec, err := s.Get(choice)
 	if err != nil {
 		return err
@@ -91,6 +119,13 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 		value = sec.Password()
 	case "all":
 		value = sec.String()
+	case "otp":
+		// The one field that is not stored but computed. Sharing the code
+		// path with `otp` keeps HOTP counter advancement identical.
+		value, err = a.otpCode(s, choice, sec)
+		if err != nil {
+			return err
+		}
 	default:
 		v, ok := sec.Field(opts.field)
 		if !ok {
@@ -237,4 +272,156 @@ func typeText(ctx context.Context, text string) error {
 		return cmd.Run()
 	}
 	return errors.New("binpass: no typing tool found; install wtype, ydotool or xdotool")
+}
+
+// menuUsage records how often and how recently each entry was chosen in the
+// menu, which is all the frequent and recent sorts have to go on. It lives in
+// the state directory, never in the store: usage counts are binpass's own
+// bookkeeping, and the store must stay exactly what pass understands.
+type menuUsage map[string]*menuUse
+
+// menuUse is the usage record of one entry.
+type menuUse struct {
+	// Count is how many times the entry was chosen in the menu.
+	Count int `json:"count"`
+	// Last is when it was last chosen, RFC 3339.
+	Last time.Time `json:"last"`
+}
+
+// mark records a choice of name.
+func (m menuUsage) mark(name string) {
+	u := m[name]
+	if u == nil {
+		u = &menuUse{}
+		m[name] = u
+	}
+	u.Count++
+	u.Last = time.Now()
+}
+
+// menuUsagePath is the file the usage lives in.
+func menuUsagePath() string {
+	return filepath.Join(config.StateDir(), "menu-usage.json")
+}
+
+// loadMenuUsage reads the usage file, treating anything unreadable as no
+// history: sorting must never fail the picker over its own bookkeeping.
+func loadMenuUsage() menuUsage {
+	usage := menuUsage{}
+	data, err := os.ReadFile(menuUsagePath()) //nolint:gosec // a fixed path in the state directory.
+	if err != nil {
+		return usage
+	}
+	_ = json.Unmarshal(data, &usage)
+	return usage
+}
+
+// saveMenuUsage writes the usage file atomically: a half-written history is
+// worse than a lost one, because it silently reorders someone's menu.
+func saveMenuUsage(usage menuUsage) {
+	path := menuUsagePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	data, err := json.Marshal(usage)
+	if err != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".menu-usage-*") // 0600 by default.
+	if err != nil {
+		return
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return
+	}
+	_ = os.Rename(name, path)
+}
+
+// sortEntries orders names for the picker. name is the store's own order;
+// frequent ranks by how often an entry was chosen, recent by how lately —
+// an entry never chosen ranks by name at the end. reverse flips whatever
+// the mode produced.
+func sortEntries(names []string, mode string, reverse bool, usage menuUsage) []string {
+	out := append([]string{}, names...)
+	switch mode {
+	case "frequent":
+		sort.SliceStable(out, func(i, j int) bool {
+			a, b := usage[out[i]], usage[out[j]]
+			ai, bi := 0, 0
+			if a != nil {
+				ai = a.Count
+			}
+			if b != nil {
+				bi = b.Count
+			}
+			if ai != bi {
+				return ai > bi
+			}
+			return out[i] < out[j]
+		})
+	case "recent":
+		sort.SliceStable(out, func(i, j int) bool {
+			a, b := usage[out[i]], usage[out[j]]
+			if a != nil && b != nil && !a.Last.Equal(b.Last) {
+				return a.Last.After(b.Last)
+			}
+			if (a == nil) != (b == nil) {
+				return b == nil // never-used goes last
+			}
+			return out[i] < out[j]
+		})
+	case "name", "":
+		sort.Strings(out)
+	default:
+		sort.Strings(out)
+	}
+	if reverse {
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
+	return out
+}
+
+// completeSortModes completes the --sort flag.
+func completeSortModes(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	modes := []string{"name", "frequent", "recent"}
+	var out []string
+	for _, m := range modes {
+		if strings.HasPrefix(m, toComplete) {
+			out = append(out, m)
+		}
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// otpCode produces the current one-time password for an entry, advancing a
+// HOTP counter exactly as the otp command does — the menu and the command
+// must not disagree about which code is current.
+func (a *App) otpCode(s *store.Store, name string, sec *secret.Secret) (string, error) {
+	uri, ok := sec.OTP()
+	if !ok {
+		return "", fmt.Errorf("Error: %s has no otpauth:// URI.", name) //nolint:revive,staticcheck // pass-otp's diagnostic style.
+	}
+	cfg, err := otp.Parse(uri)
+	if err != nil {
+		return "", err
+	}
+	code, err := cfg.Code(time.Now())
+	if err != nil {
+		return "", err
+	}
+	if cfg.Kind == otp.HOTP {
+		if err := a.advanceHOTP(s, name, sec, uri, cfg); err != nil {
+			return "", err
+		}
+	}
+	return code, nil
 }

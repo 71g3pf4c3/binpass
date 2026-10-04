@@ -151,6 +151,12 @@ func TestSortEntries(t *testing.T) {
 }
 
 func TestMenuUsageRoundTrip(t *testing.T) {
+	// The history lives in the state directory; pointing it at a scratch
+	// dir keeps the round trip away from the developer's real menu history
+	// and makes the test pass in the Nix build sandbox, where the real
+	// state directory is not writable.
+	t.Setenv("BINPASS_STATE_DIR", t.TempDir())
+
 	usage := menuUsage{}
 	usage.mark("a")
 	usage.mark("a")
@@ -158,9 +164,13 @@ func TestMenuUsageRoundTrip(t *testing.T) {
 	saveMenuUsage(usage)
 
 	loaded := loadMenuUsage()
-	assert.Equal(t, 2, loaded["a"].Count)
-	assert.Equal(t, 1, loaded["b"].Count)
-	assert.False(t, loaded["a"].Last.IsZero())
+	a, ok := loaded["a"]
+	require.True(t, ok, "the saved entry must load back")
+	assert.Equal(t, 2, a.Count)
+	b, ok := loaded["b"]
+	require.True(t, ok, "the saved entry must load back")
+	assert.Equal(t, 1, b.Count)
+	assert.False(t, a.Last.IsZero())
 }
 
 // TestRunMenu_FrequentSortOrdersThePickerList covers the whole loop: a
@@ -227,4 +237,62 @@ func TestRunMenu_OTPField(t *testing.T) {
 		t.Fatalf("menu printed %q, want the current TOTP code (%q or %q)", got, before, after)
 	}
 	assert.NotEqual(t, "hunter2", got, "the code, not the password line")
+}
+
+// typingToolStub installs a fake wtype alongside whatever stubs already
+// live on PATH, recording what it was fed on standard input. It needs a
+// Wayland session to be picked, which tests declare explicitly.
+func typingToolStub(t *testing.T, dir string) {
+	t.Helper()
+	script := filepath.Join(dir, "wtype")
+	body := "#!/bin/sh\nIFS= read -r x\nprintf '%s' \"$x\" > \"$TYPED_STDIN\"\n"
+	require.NoError(t, os.WriteFile(script, []byte(body), 0o700)) //nolint:gosec // a test stub.
+	t.Setenv("TYPED_STDIN", filepath.Join(dir, "typed.txt"))
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+}
+
+// typedText returns what the typing tool last received.
+func typedText(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(os.Getenv("TYPED_STDIN"))
+	require.NoError(t, err)
+	return string(data)
+}
+
+// TestRunMenu_Type covers --type: the chosen entry is typed into the
+// focused window instead of touching the clipboard.
+func TestRunMenu_Type(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "site/login", "s3cret\n")
+
+	// One stub directory serves both the picker and the typing tool: the
+	// menu runs both with the PATH it is given.
+	dir := t.TempDir()
+	choice := filepath.Join(dir, "rofi")
+	require.NoError(t, os.WriteFile(choice, []byte("#!/bin/sh\nwhile IFS= read -r line; do :; done\necho site/login\n"), 0o700)) //nolint:gosec // a test stub.
+	typingToolStub(t, dir)
+	t.Setenv("PATH", dir)
+
+	require.NoError(t, app.runMenu(context.Background(), menuOpts{launcher: "rofi", field: "password", typeIt: true}))
+
+	assert.Equal(t, "s3cret", typedText(t), "the password is typed")
+}
+
+// TestRunOTPMenu_TypesCode covers `otp menu`: the picked entry's code is
+// computed and typed in one motion.
+func TestRunOTPMenu_TypesCode(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "twofa/github", "hunter2\notpauth://totp/example?secret=JBSWY3DPEHPK3PXP\n")
+
+	dir := t.TempDir()
+	choice := filepath.Join(dir, "rofi")
+	require.NoError(t, os.WriteFile(choice, []byte("#!/bin/sh\nwhile IFS= read -r line; do :; done\necho twofa/github\n"), 0o700)) //nolint:gosec // a test stub.
+	typingToolStub(t, dir)
+	t.Setenv("PATH", dir)
+
+	require.NoError(t, app.runMenu(context.Background(), menuOpts{launcher: "rofi", field: "otp", typeIt: true}))
+
+	code := typedText(t)
+	assert.Regexp(t, `^\d{6}$`, code, "a six-digit TOTP code is typed")
+	assert.NotEqual(t, "hunter2", code, "the code, not the password line")
 }

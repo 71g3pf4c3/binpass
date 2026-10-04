@@ -33,7 +33,11 @@
         }:
         buildGoModule (finalAttrs: {
           pname = "binpass";
-          version = "0.1.0";
+          # Bumped by hand at release time; the release workflow refuses to
+          # publish a tag whose version does not match this string, so a
+          # forgotten bump fails loudly instead of shipping a binary that
+          # misreports itself.
+          version = "0.2.0";
           src = ./.;
 
           # Hash of the fetched module set. null would mean "the source
@@ -41,10 +45,16 @@
           vendorHash = "sha256-aFDzAA34ds8CAppbxRXvLIoIwqZFc3AJqF8X/2LsONY=";
 
           env.CGO_ENABLED = 0;
+          # The Nix build stamps everything `binpass version` prints, so a
+          # binary on a host names the exact tree it came from. The flake's
+          # own metadata is the source: rev for a clean tree or a locked
+          # input, dirtyRev for a locally modified one.
           ldflags = [
             "-s"
             "-w"
             "-X main.version=${finalAttrs.version}"
+            "-X main.commit=${self.rev or self.dirtyRev or "unknown"}"
+            "-X main.buildDate=${self.lastModifiedDate or "unknown"}"
           ];
 
           nativeBuildInputs = [

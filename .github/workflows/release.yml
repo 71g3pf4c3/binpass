@@ -49,6 +49,18 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+      # The flake's version is what every nix-built binary reports; a tag
+      # that disagrees with it publishes binaries misreporting themselves
+      # (v0.2.0 shipped saying 0.1.0 exactly this way).
+      - name: flake version matches the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          flake="$(grep -m1 -oP '^\s*version = "\K[^"]+' flake.nix)"
+          if [ "$tag" != "$flake" ]; then
+            echo "::error::flake.nix says version \"$flake\" but the tag is $GITHUB_REF_NAME — bump the flake"
+            exit 1
+          fi
+
   goreleaser:
     needs: verify
     runs-on: ubuntu-latest

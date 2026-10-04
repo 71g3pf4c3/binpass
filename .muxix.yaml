@@ -1,0 +1,26 @@
+# muxix project configuration — binpass.
+# Global defaults (agent: opencode, pane layout, theme, worktree_dir,
+# window_prefix) come from ~/.config/muxix/config.yaml; this file only
+# decides what is specific to this repository.
+
+# Branch to merge into and to cut worktrees from.
+base_branch: main
+
+# The repo's history is merge commits (see git log): --no-ff merges keep
+# each task's commits grouped behind its merge. muxix merge defaults to a
+# plain merge for the same reason.
+merge_strategy: merge
+
+# A worktree that cannot build is an agent debugging the wrong thing, so
+# every new worktree compiles before its window opens.
+post_create:
+  - nix develop -c go build ./...
+
+# Nothing merges without the same battery CI runs (see AGENTS.md): build,
+# lint, tests. gofmt is enforced through golangci-lint's gofmt linter.
+# The dev shell unsets PASSWORD_STORE_*/BINPASS_*, so the gate measures the
+# code, not the machine it runs on.
+pre_merge:
+  - nix develop -c go build ./...
+  - nix develop -c golangci-lint run ./...
+  - nix develop -c make test

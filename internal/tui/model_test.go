@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/71g3pf4c3/binpass/internal/theme"
 	"github.com/71g3pf4c3/binpass/pkg/otp"
 	"github.com/71g3pf4c3/binpass/pkg/secret"
+	"github.com/71g3pf4c3/binpass/pkg/store"
 	"github.com/71g3pf4c3/binpass/pkg/vcs"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -76,6 +78,53 @@ func (m *mockStore) Move(from, to string) error {
 	return nil
 }
 
+func (m *mockStore) Copy(from, to string) error {
+	sec, ok := m.entries[from]
+	if !ok {
+		return fmt.Errorf("store: entry not found: %s", from)
+	}
+	m.entries[to] = sec
+	return nil
+}
+
+func (m *mockStore) RemoveDir(name string) error {
+	prefix := name + "/"
+	for k := range m.entries {
+		if strings.HasPrefix(k, prefix) {
+			delete(m.entries, k)
+		}
+	}
+	m.removed = append(m.removed, name+"/")
+	return nil
+}
+
+func (m *mockStore) IsDir(name string) bool {
+	prefix := name + "/"
+	for k := range m.entries {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *mockStore) Grep(_ string, match func(string) bool) ([]store.Match, error) {
+	var out []store.Match
+	for name, sec := range m.entries {
+		var lines []string
+		for _, line := range sec.Lines() {
+			if match(line) {
+				lines = append(lines, line)
+			}
+		}
+		if len(lines) > 0 {
+			out = append(out, store.Match{Name: name, Lines: lines})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 func (m *mockStore) Exists(name string) bool {
 	_, ok := m.entries[name]
 	return ok
@@ -140,8 +189,14 @@ func (s *missingIdentityStore) Get(string) (*secret.Secret, error) {
 func (s *missingIdentityStore) Set(string, *secret.Secret) error { return nil }
 func (s *missingIdentityStore) Remove(string) error              { return nil }
 func (s *missingIdentityStore) Move(string, string) error        { return nil }
-func (s *missingIdentityStore) Exists(string) bool               { return true }
-func (s *missingIdentityStore) Dir() string                      { return "/tmp/test-store" }
+func (s *missingIdentityStore) Copy(string, string) error        { return nil }
+func (s *missingIdentityStore) RemoveDir(string) error           { return nil }
+func (s *missingIdentityStore) IsDir(string) bool                { return false }
+func (s *missingIdentityStore) Grep(string, func(string) bool) ([]store.Match, error) {
+	return nil, nil
+}
+func (s *missingIdentityStore) Exists(string) bool { return true }
+func (s *missingIdentityStore) Dir() string        { return "/tmp/test-store" }
 
 func TestPasswordMaskedByDefault(t *testing.T) {
 	m := buildTestModel(map[string]string{

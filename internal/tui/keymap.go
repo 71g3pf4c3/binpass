@@ -20,6 +20,8 @@ type keymap struct {
 	Quit     string
 	NewEntry string
 	Attach   string
+	Grep     string
+	Audit    string
 
 	// Detail view.
 	TogglePassword string
@@ -34,6 +36,7 @@ type keymap struct {
 	History        string
 	Edit           string
 	Extract        string
+	Duplicate      string
 
 	// Tree view (status).
 	Status string
@@ -53,6 +56,8 @@ func defaultKeymap() keymap {
 		Quit:           "q",
 		NewEntry:       "n",
 		Attach:         "b",
+		Grep:           "F",
+		Audit:          "A",
 		TogglePassword: "p",
 		CopyPassword:   "c",
 		CopyField:      "C",
@@ -65,6 +70,7 @@ func defaultKeymap() keymap {
 		History:        "y",
 		Edit:           "e",
 		Extract:        "x",
+		Duplicate:      "Y",
 		Status:         "S",
 		ClearSearch:    "esc",
 	}

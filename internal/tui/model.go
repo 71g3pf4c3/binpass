@@ -8,11 +8,13 @@ import (
 
 	"github.com/71g3pf4c3/binpass/internal/config"
 	"github.com/71g3pf4c3/binpass/internal/theme"
+	"github.com/71g3pf4c3/binpass/pkg/audit"
 	"github.com/71g3pf4c3/binpass/pkg/binary"
 	"github.com/71g3pf4c3/binpass/pkg/clip"
 	"github.com/71g3pf4c3/binpass/pkg/otp"
 	"github.com/71g3pf4c3/binpass/pkg/pwgen"
 	"github.com/71g3pf4c3/binpass/pkg/secret"
+	"github.com/71g3pf4c3/binpass/pkg/store"
 	"github.com/71g3pf4c3/binpass/pkg/vcs"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,6 +29,10 @@ type Store interface {
 	Set(name string, sec *secret.Secret) error
 	Remove(name string) error
 	Move(from, to string) error
+	Copy(from, to string) error
+	RemoveDir(name string) error
+	IsDir(name string) bool
+	Grep(sub string, match func(string) bool) ([]store.Match, error)
 	Exists(name string) bool
 	Dir() string
 }
@@ -50,6 +56,9 @@ const (
 	viewBinName               // attachment entry-name input
 	viewFieldPick             // copy-a-field picker
 	viewStatus                // read-only store status (git, sync)
+	viewDup                   // duplicate-entry name input
+	viewGrep                  // search across decrypted contents
+	viewAudit                 // read-only store audit report
 )
 
 // tickMsg is sent every second to drive the OTP countdown timer and the
@@ -113,9 +122,10 @@ type Model struct {
 	fieldCur  int            // selected row in the field picker
 
 	// Confirm view.
-	confirmAction string // "delete"
+	confirmAction string // "delete", "delete-dir", "save-edit", …
 	confirmTarget string
-	confirmFocus  int // 0 = yes, 1 = no
+	confirmFocus  int  // 0 = yes, 1 = no
+	confirmFrom   View // view the confirmation was triggered from
 
 	// Rename view.
 	renameFrom string
@@ -167,6 +177,22 @@ type Model struct {
 
 	// Status view.
 	statRes *statusResult // collected store status, nil while loading
+
+	// Duplicate view.
+	dupFrom string // entry being duplicated
+	dupTo   string // proposed copy name
+
+	// Grep view.
+	grepQuery   string        // pattern being typed
+	grepMatches []store.Match // results of the last run
+	grepErr     error
+	grepCur     int  // selected result
+	grepDone    bool // true once results are displayed
+
+	// Audit view.
+	auditRep *audit.Report // collected audit, nil while loading
+	auditErr error
+	auditCur int
 
 	// VCS backend (nil when the store is not a git repo).
 	vcs vcs.Backend
@@ -312,6 +338,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statRes = &msg
 		return m, nil
 
+	case hotpResult:
+		if msg.err != nil {
+			m.status = "otp: " + msg.err.Error()
+			return m, nil
+		}
+		// The stored entry now carries the advanced counter; re-arm the
+		// OTP state from it so the next reveal starts from the new one.
+		m.sec = msg.sec
+		m.initOTP()
+		m.status = "HOTP code copied, counter advanced"
+		return m, nil
+
+	case grepResult:
+		m.grepDone = true
+		m.grepErr = msg.err
+		m.grepMatches = msg.matches
+		m.grepCur = 0
+		return m, nil
+
+	case auditResult:
+		if msg.err != nil {
+			m.auditErr = msg.err
+		} else {
+			m.auditRep = msg.report
+			m.auditCur = 0
+		}
+		return m, nil
+
 	case generateResult:
 		if msg.err != nil {
 			m.status = "generate: " + msg.err.Error()
@@ -367,6 +421,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleFieldPick(msg)
 		case viewStatus:
 			return m.handleStatus(msg)
+		case viewDup:
+			return m.handleDup(msg)
+		case viewGrep:
+			return m.handleGrep(msg)
+		case viewAudit:
+			return m.handleAudit(msg)
 		}
 
 	case tea.MouseMsg:
@@ -411,6 +471,12 @@ func (m Model) View() string {
 		return m.viewFieldPick()
 	case viewStatus:
 		return m.viewStatus()
+	case viewDup:
+		return m.viewDup()
+	case viewGrep:
+		return m.viewGrep()
+	case viewAudit:
+		return m.viewAudit()
 	}
 	return ""
 }
@@ -511,6 +577,35 @@ func (m Model) handleTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statRes = nil
 		m.view = viewStatus
 		return m, m.statusCmd()
+
+	case m.km.Grep: // shift+f = search decrypted contents
+		m.grepQuery = ""
+		m.grepMatches = nil
+		m.grepErr = nil
+		m.grepCur = 0
+		m.grepDone = false
+		m.view = viewGrep
+
+	case m.km.Audit: // shift+a = store audit
+		m.auditRep = nil
+		m.auditErr = nil
+		m.auditCur = 0
+		m.view = viewAudit
+		return m, m.auditCmd()
+
+	case m.km.Delete: // delete the selected entry or directory
+		if len(m.flat) > 0 {
+			item := m.flat[m.cursor]
+			if item.node.entry {
+				m.confirmAction = "delete"
+			} else {
+				m.confirmAction = "delete-dir"
+			}
+			m.confirmTarget = item.node.path
+			m.confirmFocus = 1 // default to "no"
+			m.confirmFrom = viewTree
+			m.view = viewConfirm
+		}
 	}
 
 	return m, nil
@@ -558,7 +653,7 @@ func (m Model) viewTree() string {
 	}
 
 	// Status bar.
-	bar := m.statusBar("q:quit  /:search  n:new  enter:open  h:collapse  E:expand-all  C:collapse-all  j/k:nav")
+	bar := m.statusBar("q:quit  /:search  n:new  b:attach  d:delete  F:grep  A:audit  S:status  enter:open  h:collapse  E:expand-all  C:collapse-all  j/k:nav")
 	return b.String() + bar
 }
 
@@ -669,8 +764,20 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case m.km.CopyOTP:
+		if m.otpCfg != nil && m.otpCfg.Kind == otp.HOTP && m.sec != nil {
+			// HOTP codes do not exist until asked for: revealing one
+			// advances the counter and persists it, exactly as the
+			// otp command does.
+			m.status = "computing HOTP code and advancing the counter..."
+			return m, m.hotpRevealCmd()
+		}
 		if m.otpCode != "" {
 			return m, m.copyOTPCodeCmd()
+		}
+
+	case m.km.Duplicate:
+		if m.sec != nil {
+			m.startDup()
 		}
 
 	case m.km.Edit:
@@ -682,12 +789,18 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmAction = "delete"
 		m.confirmTarget = m.current
 		m.confirmFocus = 1 // default to "no"
+		m.confirmFrom = viewDetail
 		m.view = viewConfirm
 
 	case m.km.Rename:
 		m.renameFrom = m.current
 		m.renameTo = m.current
 		m.view = viewRename
+
+	case m.km.Duplicate:
+		if m.sec != nil {
+			m.startDup()
+		}
 
 	case m.km.Generate:
 		m.genTarget = m.current
@@ -740,6 +853,7 @@ func (m Model) handleDetailBinary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmAction = "delete"
 		m.confirmTarget = m.current
 		m.confirmFocus = 1 // default to "no"
+		m.confirmFrom = viewDetail
 		m.view = viewConfirm
 
 	case m.km.Rename:
@@ -806,11 +920,16 @@ func (m Model) viewDetail() string {
 
 	// OTP.
 	if m.otpCfg != nil {
-		fmt.Fprintf(&b, "\n  %s %s%ds\n",
-			m.st.otpCode.Render("OTP: "+m.otpCode),
-			m.st.dimmed.Render("expires in "),
-			m.otpRemain,
-		)
+		if m.otpCfg.Kind == otp.HOTP {
+			fmt.Fprintf(&b, "\n  %s\n",
+				m.st.otpCode.Render("OTP: HOTP")+m.st.dimmed.Render("  o: reveal code & advance counter"))
+		} else {
+			fmt.Fprintf(&b, "\n  %s %s%ds\n",
+				m.st.otpCode.Render("OTP: "+m.otpCode),
+				m.st.dimmed.Render("expires in "),
+				m.otpRemain,
+			)
+		}
 	}
 
 	// Remaining body lines (free text after fields).
@@ -830,7 +949,7 @@ func (m Model) viewDetail() string {
 		}
 	}
 
-	bar := m.statusBar("p:toggle  e:edit  c:copy  C:field  t:type  o:otp  d:delete  r:rename  g:generate  y:history  esc:back")
+	bar := m.statusBar("p:toggle  e:edit  c:copy  C:field  t:type  o:otp  Y:duplicate  d:delete  r:rename  g:generate  y:history  esc:back")
 	return b.String() + bar
 }
 
@@ -856,6 +975,8 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.view = viewEdit
 			case "bin-overwrite":
 				m.view = viewBinName
+			case "dup-overwrite":
+				m.view = viewDup
 			default:
 				m.view = viewTree
 			}
@@ -872,6 +993,14 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeEntry()
 			m.rebuildTree()
 			m.view = viewTree
+		case "delete-dir":
+			if err := m.store.RemoveDir(m.confirmTarget); err != nil {
+				m.status = "delete failed: " + err.Error()
+			} else {
+				m.status = "deleted directory " + m.confirmTarget
+			}
+			m.rebuildTree()
+			m.view = viewTree
 		case "save-edit":
 			m.saveEditor()
 		case "discard-edit":
@@ -881,6 +1010,8 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd := m.attachCmd(m.binFile, m.binName)
 			m.view = m.binFrom
 			return m, cmd
+		case "dup-overwrite":
+			m.dupApply()
 		}
 		return m, nil
 
@@ -890,6 +1021,16 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = viewEdit
 		case "bin-overwrite":
 			m.view = viewBinName
+		case "dup-overwrite":
+			m.view = viewDup
+		case "delete", "delete-dir":
+			// Escape goes back where the action came from; declining
+			// (above) keeps the historical return-to-tree.
+			if m.confirmFrom == viewTree {
+				m.view = viewTree
+			} else {
+				m.view = viewDetail
+			}
 		default:
 			m.view = viewDetail
 		}
@@ -921,10 +1062,16 @@ func confirmLabel(action string) string {
 	switch action {
 	case "delete":
 		return "delete"
+	case "delete-dir":
+		return "delete directory and all its entries"
 	case "save-edit":
 		return "save (overwrites password or deletes lines)"
 	case "discard-edit":
 		return "discard unsaved changes"
+	case "bin-overwrite":
+		return "overwrite the existing binary entry"
+	case "dup-overwrite":
+		return "overwrite the existing entry with the copy"
 	}
 	return action
 }

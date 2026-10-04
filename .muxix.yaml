@@ -61,7 +61,11 @@ pre_merge:
   - nix develop -c sh -c 'GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...'
   - nix develop -c sh -c 'GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build ./...'
   - nix develop -c sh -c 'GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...'
-  - nix develop -c golangci-lint run ./...
+  # The lint cache is shared across worktrees; a removed worktree leaves
+  # stale findings behind that fail the next run with issues pointing at
+  # deleted paths. Cleaning first makes the gate immune to muxix's own
+  # cleanup. It costs a cold run; a falsely blocked merge costs more.
+  - nix develop -c sh -c 'golangci-lint cache clean && golangci-lint run ./...'
   - nix develop -c make test
   - nix develop -c make cover
   - nix flake check --no-build

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -37,18 +36,20 @@ type Store interface {
 type View int
 
 const (
-	viewTree     View = iota // top-level tree browser
-	viewSearch               // fuzzy search input
-	viewDetail               // decrypted entry view
-	viewConfirm              // destructive action confirmation
-	viewRename               // rename input
-	viewGenerate             // generate new password
-	viewInsert               // insert new entry
-	viewHistory              // git history for an entry
-	viewLocked               // autolock screen
-	viewEdit                 // staged entry editor
-	viewFiles                // local-filesystem picker (attach/extract)
-	viewBinName              // attachment entry-name input
+	viewTree      View = iota // top-level tree browser
+	viewSearch                // fuzzy search input
+	viewDetail                // decrypted entry view
+	viewConfirm               // destructive action confirmation
+	viewRename                // rename input
+	viewGenerate              // generate new password
+	viewInsert                // insert new entry
+	viewHistory               // git history for an entry
+	viewLocked                // autolock screen
+	viewEdit                  // staged entry editor
+	viewFiles                 // local-filesystem picker (attach/extract)
+	viewBinName               // attachment entry-name input
+	viewFieldPick             // copy-a-field picker
+	viewStatus                // read-only store status (git, sync)
 )
 
 // tickMsg is sent every second to drive the OTP countdown timer and the
@@ -109,6 +110,7 @@ type Model struct {
 	otpCfg    *otp.Config    // parsed OTP config, nil if entry has none
 	otpCode   string         // current OTP code
 	otpRemain int            // seconds until next TOTP code
+	fieldCur  int            // selected row in the field picker
 
 	// Confirm view.
 	confirmAction string // "delete"
@@ -122,12 +124,15 @@ type Model struct {
 	// Generate view.
 	genTarget  string
 	genLength  int
+	genSymbols bool
 	genPreview string
 
 	// Insert view.
 	insertName     string // new entry name (user types it)
 	insertPassword string // generated password (filled async)
 	insertManual   bool   // true when the user types the password by hand
+	insertLen      int    // generator length for this insert
+	insertSymbols  bool   // generator alphabet for this insert
 	insertStep     int    // 0 = name input, 1 = password, 2 = done
 
 	// History view.
@@ -159,6 +164,9 @@ type Model struct {
 	binSize     int64    // decoded size of the open binary entry
 	binSum      string   // SHA-256 of the open binary entry's content
 	binBackdrop bool     // true when the open entry is a .b64 attachment
+
+	// Status view.
+	statRes *statusResult // collected store status, nil while loading
 
 	// VCS backend (nil when the store is not a git repo).
 	vcs vcs.Backend
@@ -300,6 +308,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case statusResult:
+		m.statRes = &msg
+		return m, nil
+
 	case generateResult:
 		if msg.err != nil {
 			m.status = "generate: " + msg.err.Error()
@@ -351,6 +363,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleFiles(msg)
 		case viewBinName:
 			return m.handleBinName(msg)
+		case viewFieldPick:
+			return m.handleFieldPick(msg)
+		case viewStatus:
+			return m.handleStatus(msg)
 		}
 
 	case tea.MouseMsg:
@@ -391,6 +407,10 @@ func (m Model) View() string {
 		return m.viewFiles()
 	case viewBinName:
 		return m.viewBinName()
+	case viewFieldPick:
+		return m.viewFieldPick()
+	case viewStatus:
+		return m.viewStatus()
 	}
 	return ""
 }
@@ -461,6 +481,8 @@ func (m Model) handleTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.insertName = ""
 		m.insertPassword = ""
 		m.insertManual = false
+		m.insertLen = m.cfg.GeneratedLength
+		m.insertSymbols = true
 		m.insertStep = 0
 		m.view = viewInsert
 
@@ -484,6 +506,11 @@ func (m Model) handleTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		collapseAll(m.tree)
 		m.flat = flatten(m.tree)
 		m.cursor = 0
+
+	case m.km.Status: // shift+s = store status
+		m.statRes = nil
+		m.view = viewStatus
+		return m, m.statusCmd()
 	}
 
 	return m, nil
@@ -630,6 +657,17 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.copyPasswordCmd()
 		}
 
+	case m.km.CopyField:
+		if m.sec != nil {
+			m.startFieldPick()
+		}
+
+	case m.km.Type:
+		if m.sec != nil {
+			m.status = "typing in a moment — switch to the target window"
+			return m, m.typeValueCmd("password", m.sec.Password())
+		}
+
 	case m.km.CopyOTP:
 		if m.otpCode != "" {
 			return m, m.copyOTPCodeCmd()
@@ -654,9 +692,10 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case m.km.Generate:
 		m.genTarget = m.current
 		m.genLength = m.cfg.GeneratedLength
+		m.genSymbols = true
 		m.genPreview = ""
 		m.view = viewGenerate
-		return m, m.generateCmd(m.genLength)
+		return m, m.generateCmd(m.genLength, m.genSymbols)
 
 	case m.km.History:
 		m.histTarget = m.current
@@ -791,7 +830,7 @@ func (m Model) viewDetail() string {
 		}
 	}
 
-	bar := m.statusBar("p:toggle  e:edit  c:copy  o:otp  d:delete  r:rename  g:generate  y:history  esc:back")
+	bar := m.statusBar("p:toggle  e:edit  c:copy  C:field  t:type  o:otp  d:delete  r:rename  g:generate  y:history  esc:back")
 	return b.String() + bar
 }
 
@@ -971,7 +1010,21 @@ func (m Model) handleGenerate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "r": // regenerate
-		return m, m.generateCmd(m.genLength)
+		return m, m.generateCmd(m.genLength, m.genSymbols)
+
+	case "+", "=": // longer, with a live preview
+		if m.genLength < pwgenMaxLen {
+			m.genLength++
+			return m, m.generateCmd(m.genLength, m.genSymbols)
+		}
+	case "-":
+		if m.genLength > pwgenMinLen {
+			m.genLength--
+			return m, m.generateCmd(m.genLength, m.genSymbols)
+		}
+	case "s": // toggle the symbol alphabet
+		m.genSymbols = !m.genSymbols
+		return m, m.generateCmd(m.genLength, m.genSymbols)
 
 	case m.km.Back:
 		m.view = viewDetail
@@ -979,6 +1032,13 @@ func (m Model) handleGenerate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// pwgen length bounds: pwgen itself has no hard floor, but a 1-character
+// password from a slipped keypress is never what the user wanted.
+const (
+	pwgenMinLen = 4
+	pwgenMaxLen = 128
+)
 
 func (m Model) viewGenerate() string {
 	var b strings.Builder
@@ -989,7 +1049,12 @@ func (m Model) viewGenerate() string {
 	} else {
 		fmt.Fprintln(&b, m.st.dimmed.Render("  generating..."))
 	}
-	fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:apply  r:regenerate  esc:cancel"))
+	sym := "symbols"
+	if !m.genSymbols {
+		sym = "no symbols"
+	}
+	fmt.Fprintf(&b, "  %s %d   %s\n", m.st.dimmed.Render("length:"), m.genLength, m.st.dimmed.Render("("+sym+")"))
+	fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:apply  r:regenerate  +/-:length  s:symbols  esc:cancel"))
 	return b.String()
 }
 
@@ -1068,7 +1133,10 @@ func (m Model) handleInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			// Generate password and move to preview.
 			m.insertStep = 1
-			return m, m.insertGenerateCmd(m.cfg.GeneratedLength)
+			if m.insertLen == 0 {
+				m.insertLen = m.cfg.GeneratedLength
+			}
+			return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
 
 		case m.km.Back:
 			m.view = viewTree
@@ -1120,17 +1188,30 @@ func (m Model) handleInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// as something the user chose to type.
 				m.insertPassword = ""
 			} else {
-				return m, m.insertGenerateCmd(m.cfg.GeneratedLength)
+				return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
 			}
 
 		case m.km.Back:
 			m.insertStep = 0 // back to name input
 
 		default:
-			if !m.insertManual && msg.String() == "r" {
-				return m, m.insertGenerateCmd(m.cfg.GeneratedLength)
-			}
-			if m.insertManual {
+			switch s := msg.String(); {
+			case !m.insertManual && s == "r":
+				return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+			case !m.insertManual && (s == "+" || s == "="):
+				if m.insertLen < pwgenMaxLen {
+					m.insertLen++
+					return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+				}
+			case !m.insertManual && s == "-":
+				if m.insertLen > pwgenMinLen {
+					m.insertLen--
+					return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+				}
+			case !m.insertManual && s == "s":
+				m.insertSymbols = !m.insertSymbols
+				return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+			case m.insertManual:
 				applyInputKey(&m.insertPassword, msg)
 			}
 		}
@@ -1168,7 +1249,12 @@ func (m Model) viewInsert() string {
 		if m.insertManual {
 			fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:create  ctrl+g:use generator  esc:back"))
 		} else {
-			fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:create  r:regenerate  ctrl+g:type manually  esc:back"))
+			sym := "symbols"
+			if !m.insertSymbols {
+				sym = "no symbols"
+			}
+			fmt.Fprintf(&b, "  %s %d   %s\n", m.st.dimmed.Render("length:"), m.insertLen, m.st.dimmed.Render("("+sym+")"))
+			fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:create  r:regenerate  +/-:length  s:symbols  ctrl+g:type manually  esc:back"))
 		}
 	}
 
@@ -1176,8 +1262,8 @@ func (m Model) viewInsert() string {
 }
 
 // insertGenerateCmd returns a tea.Cmd that generates a password for the new entry.
-func (m Model) insertGenerateCmd(length int) tea.Cmd {
-	charset := m.cfg.CharacterSet
+func (m Model) insertGenerateCmd(length int, symbols bool) tea.Cmd {
+	charset := m.genCharset(symbols)
 	return func() tea.Msg {
 		pw, err := pwgen.Generate(length, charset)
 		if err != nil {
@@ -1334,12 +1420,22 @@ func (m Model) unlockCmd(name string) tea.Cmd {
 }
 
 // generateCmd returns a tea.Cmd that generates a new password.
-func (m Model) generateCmd(length int) tea.Cmd {
-	charset := m.cfg.CharacterSet
+func (m Model) generateCmd(length int, symbols bool) tea.Cmd {
+	charset := m.genCharset(symbols)
 	return func() tea.Msg {
 		pw, err := pwgen.Generate(length, charset)
 		return generateResult{password: pw, err: err}
 	}
+}
+
+// genCharset picks the generation alphabet. The no-symbols alphabet
+// matches the CLI's --no-symbols setting, so a password copied out of the
+// TUI obeys the same policy as one from `generate`.
+func (m Model) genCharset(symbols bool) string {
+	if symbols {
+		return m.cfg.CharacterSet
+	}
+	return m.cfg.CharacterSetNoSymbols
 }
 
 // historyCmd returns a tea.Cmd that loads the git history for an entry.
@@ -1395,39 +1491,12 @@ func (m *Model) updateOTP() {
 
 // copyPasswordCmd returns a tea.Cmd that copies the password to the clipboard.
 func (m Model) copyPasswordCmd() tea.Cmd {
-	pw := m.sec.Password()
-	name := m.current
-	cb := m.clipBackend
-	dur := m.cfg.ClipTime
-	return func() tea.Msg {
-		if cb == nil {
-			return statusMsg("no clipboard backend")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), dur+time.Second)
-		defer cancel()
-		if err := clip.CopyWithTimeout(ctx, cb, pw, dur); err != nil {
-			return statusMsg("clipboard: " + err.Error())
-		}
-		return statusMsg("copied " + name + " to clipboard")
-	}
+	return m.copyValueCmd(m.current, m.sec.Password())
 }
 
 // copyOTPCodeCmd returns a tea.Cmd that copies the current OTP code.
 func (m Model) copyOTPCodeCmd() tea.Cmd {
-	code := m.otpCode
-	cb := m.clipBackend
-	dur := m.cfg.ClipTime
-	return func() tea.Msg {
-		if cb == nil {
-			return statusMsg("no clipboard backend")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), dur+time.Second)
-		defer cancel()
-		if err := clip.CopyWithTimeout(ctx, cb, code, dur); err != nil {
-			return statusMsg("clipboard: " + err.Error())
-		}
-		return statusMsg("copied OTP code to clipboard")
-	}
+	return m.copyValueCmd("OTP code", m.otpCode)
 }
 
 // lock clears all decrypted secrets from memory, including any staged

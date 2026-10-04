@@ -23,6 +23,7 @@ type mockStore struct {
 	moved   [][2]string // (from, to) pairs from Move calls
 	removed []string
 	set     map[string]string // name → password from Set calls
+	dir     string            // returned by Dir(); zero means the default
 }
 
 func newMockStore(entries map[string]string) *mockStore {
@@ -80,7 +81,12 @@ func (m *mockStore) Exists(name string) bool {
 	return ok
 }
 
-func (m *mockStore) Dir() string { return "/tmp/test-store" }
+func (m *mockStore) Dir() string {
+	if m.dir != "" {
+		return m.dir
+	}
+	return "/tmp/test-store"
+}
 
 // buildTestModel creates a Model backed by a mockStore with the given entries.
 func buildTestModel(entries map[string]string) Model {
@@ -1477,7 +1483,7 @@ func TestUnlockCmdError(t *testing.T) {
 
 func TestGenerateCmdSuccess(t *testing.T) {
 	m := buildTestModel(map[string]string{"entry": "pw"})
-	cmd := m.generateCmd(16)
+	cmd := m.generateCmd(16, true)
 	msg := cmd()
 	res, ok := msg.(generateResult)
 	if !ok {
@@ -1488,6 +1494,19 @@ func TestGenerateCmdSuccess(t *testing.T) {
 	}
 	if len(res.password) != 16 {
 		t.Errorf("generated password length = %d, want 16", len(res.password))
+	}
+
+	// The no-symbols alphabet must produce passwords without any of the
+	// configured symbol characters.
+	cmd = m.generateCmd(24, false)
+	res = cmd().(generateResult) //nolint:forcetypeassert // shape is fixed.
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	for _, r := range res.password {
+		if strings.ContainsRune(m.cfg.CharacterSet, r) && !strings.ContainsRune(m.cfg.CharacterSetNoSymbols, r) {
+			t.Errorf("no-symbols password contains symbol %q: %s", r, res.password)
+		}
 	}
 }
 

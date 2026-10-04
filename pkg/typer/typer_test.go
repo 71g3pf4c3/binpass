@@ -173,3 +173,52 @@ func TestParseTool(t *testing.T) {
 		assert.Error(t, err, name)
 	}
 }
+
+// TestReportMirrorsWhatTypeWouldRun is the contract doctor relies on: the
+// backend Report names as picked is the one Type actually runs in the
+// same session.
+func TestReportMirrorsWhatTypeWouldRun(t *testing.T) {
+	toolStubs(t, "wtype", "xdotool", "ydotool")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+
+	reports, picked := Report()
+	assert.Equal(t, "wtype", picked)
+	require.Len(t, reports, 3)
+
+	require.NoError(t, Type(context.Background(), "x"))
+	assert.Equal(t, "wtype", typedTool(t))
+}
+
+// TestReportNamesWhyEachToolIsUnavailable covers the diagnostic surface:
+// the session gate and PATH presence of every backend, and an empty pick
+// when nothing clears both.
+func TestReportNamesWhyEachToolIsUnavailable(t *testing.T) {
+	toolStubs(t, "xdotool")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", "")
+
+	reports, picked := Report()
+	assert.Empty(t, picked, "xdotool is installed but DISPLAY gates it off")
+
+	byName := make(map[string]ToolReport)
+	for _, r := range reports {
+		byName[r.Name] = r
+	}
+	assert.False(t, byName["wtype"].EnvSet, "no WAYLAND_DISPLAY in the session")
+	assert.False(t, byName["wtype"].Installed)
+	assert.True(t, byName["xdotool"].Installed)
+	assert.Equal(t, "WAYLAND_DISPLAY", byName["wtype"].RequiresEnv)
+	assert.Empty(t, byName["ydotool"].RequiresEnv, "ydotool has no session gate")
+}
+
+// TestReportPicksTheX11ToolOnAnXSession covers the fallback order: without
+// a Wayland session the X11 tool takes over.
+func TestReportPicksTheX11ToolOnAnXSession(t *testing.T) {
+	toolStubs(t, "xdotool")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", ":0")
+
+	_, picked := Report()
+
+	assert.Equal(t, "xdotool", picked)
+}

@@ -56,13 +56,46 @@ func ToolNames() []string {
 	return names
 }
 
-// Type types text into the window that has focus, using the first tool
-// this session can run.
-//
-// The tool's own failure is returned as-is rather than cascaded to the
-// next candidate: a half-typed password from a broken tool followed by a
-// full retry from another would corrupt whatever field received it.
-func Type(ctx context.Context, text string) error {
+// ToolReport describes one typing backend as a diagnostician sees it: the
+// session gate and PATH presence that decide whether autodetection can run
+// it. It carries no state of its own, so it can never disagree with a Type
+// call made in the same moment.
+type ToolReport struct {
+	// Name is the backend's command name, as --tool accepts it.
+	Name string
+	// RequiresEnv is the session variable the backend cannot work
+	// without, empty for ydotool.
+	RequiresEnv string
+	// EnvSet reports whether RequiresEnv is present and non-empty. It is
+	// meaningless when RequiresEnv is empty.
+	EnvSet bool
+	// Installed reports whether the binary is on PATH.
+	Installed bool
+}
+
+// Report describes every backend's state in this session, in preference
+// order, and names the backend autodetection would run right now. picked
+// is empty when nothing is runnable. It exists so `binpass doctor` can
+// explain a choice — or its absence — without typing anything.
+func Report() ([]ToolReport, string) {
+	reports := make([]ToolReport, 0, len(tools))
+	for _, tl := range tools {
+		reports = append(reports, ToolReport{
+			Name:        tl.bin,
+			RequiresEnv: tl.needs,
+			EnvSet:      envSet(tl.needs),
+			Installed:   onPath(tl.bin),
+		})
+	}
+	picked := ""
+	if tl, ok := pick(); ok {
+		picked = tl.bin
+	}
+	return reports, picked
+}
+
+// pick returns the first backend this session can run.
+func pick() (tool, bool) {
 	for _, tl := range tools {
 		if tl.needs != "" && !envSet(tl.needs) {
 			continue
@@ -70,9 +103,29 @@ func Type(ctx context.Context, text string) error {
 		if _, err := exec.LookPath(tl.bin); err != nil {
 			continue
 		}
-		return tl.run(ctx, text)
+		return tl, true
 	}
-	return ErrNoTool
+	return tool{}, false
+}
+
+// onPath reports whether bin is executable through the current PATH.
+func onPath(bin string) bool {
+	_, err := exec.LookPath(bin)
+	return err == nil
+}
+
+// Type types text into the window that has focus, using the first tool
+// this session can run.
+//
+// The tool's own failure is returned as-is rather than cascaded to the
+// next candidate: a half-typed password from a broken tool followed by a
+// full retry from another would corrupt whatever field received it.
+func Type(ctx context.Context, text string) error {
+	tl, ok := pick()
+	if !ok {
+		return ErrNoTool
+	}
+	return tl.run(ctx, text)
 }
 
 // TypeWithTool types text with the backend named on the command line

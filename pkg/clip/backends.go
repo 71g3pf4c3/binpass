@@ -139,3 +139,74 @@ func (w *wlClipboard) Paste(ctx context.Context) (string, error) {
 	}
 	return out, nil
 }
+
+// BackendReport explains one clipboard backend's state in this session: why
+// Detect would or would not reach it. It carries no state of its own beyond
+// what Available computes, so it can never disagree with a Detect call made
+// in the same moment.
+type BackendReport struct {
+	// Name identifies the backend.
+	Name string
+	// Available reports whether the backend can run here.
+	Available bool
+	// Missing lists what keeps the backend down: unset session variables
+	// and binaries absent from PATH. It is empty when Available is set.
+	Missing []string
+}
+
+// Reports describes every backend for selection in priority order. The
+// first Available entry is the one Detect returns, so a diagnostician can
+// name the winner and explain the losers without duplicating the
+// detection logic.
+func Reports(selection string) []BackendReport {
+	out := make([]BackendReport, 0)
+	for _, b := range backends(selection) {
+		r := BackendReport{Name: b.Name(), Available: b.Available()}
+		if !r.Available {
+			switch v := b.(type) {
+			case *wlClipboard:
+				r.Missing = wlMissing()
+			case *tool:
+				r.Missing = v.missing()
+			}
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// wlMissing names what keeps the wl-clipboard backend down. The reasons are
+// collected separately from Available because Available only answers yes or
+// no, while a doctor has to say what to fix.
+func wlMissing() []string {
+	var m []string
+	if os.Getenv("WAYLAND_DISPLAY") == "" {
+		m = append(m, "WAYLAND_DISPLAY not set")
+	}
+	if _, err := exec.LookPath("wl-copy"); err != nil {
+		m = append(m, "wl-copy not on PATH")
+	}
+	if _, err := exec.LookPath("wl-paste"); err != nil {
+		m = append(m, "wl-paste not on PATH")
+	}
+	return m
+}
+
+// missing names what keeps a command backend down, in the order Available
+// checks them: session first, then binaries. A backend whose read and
+// write halves are one binary reports it once.
+func (t *tool) missing() []string {
+	var m []string
+	if t.requiresEnv != "" && os.Getenv(t.requiresEnv) == "" {
+		m = append(m, t.requiresEnv+" not set")
+	}
+	if _, err := exec.LookPath(t.bin); err != nil {
+		m = append(m, t.bin+" not on PATH")
+	}
+	if t.copyBin != t.bin {
+		if _, err := exec.LookPath(t.copyBin); err != nil {
+			m = append(m, t.copyBin+" not on PATH")
+		}
+	}
+	return m
+}

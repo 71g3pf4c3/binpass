@@ -337,7 +337,13 @@ func normaliseCounter(sec *secret.Secret, cfg *otp.Config, targetCounter uint64)
 //
 // Example: "github.com/alice.gpg" with device "thinkpad" at 2026-08-08T14:22:33
 // becomes "github.com/alice.conflict-thinkpad-20260808T142233.gpg".
+//
+// The device and timestamp are reduced to name-safe characters first: both
+// end up inside a file the store must treat as data, and a path separator
+// smuggled into either would move the conflict copy out of the store.
 func ConflictName(path string, device DeviceID, timestamp string) string {
+	device = DeviceID(nameSafe(string(device)))
+	timestamp = nameSafe(timestamp)
 	// Find the extension: the last dot after the last slash. Without this,
 	// "github.com/alice" would split on the dot in "github.com".
 	slash := strings.LastIndex(path, "/")
@@ -348,4 +354,22 @@ func ConflictName(path string, device DeviceID, timestamp string) string {
 	ext := path[dot:]
 	base := path[:dot]
 	return base + ".conflict-" + string(device) + "-" + timestamp + ext
+}
+
+// nameSafe drops every character that cannot appear in a single name
+// component: separators, NUL and the remaining control characters. Dots stay
+// — a dot inside a component is harmless, only a whole ".." component would
+// traverse, and no caller builds one from these parts.
+func nameSafe(s string) string {
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '.', r == '_', r == ':':
+			return r
+		default:
+			return -1
+		}
+	}, s)
+	return clean
 }

@@ -22,6 +22,7 @@ func NewRegistry() *Registry {
 		&EnpassImporter{},
 		&KeePassImporter{},
 		&PassImporter{},
+		&GopassImporter{},
 	)
 	return r
 }

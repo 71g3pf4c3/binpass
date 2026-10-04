@@ -47,7 +47,9 @@ gofmt:
 
 golangci-lint:
   stage: lint
-  image: golangci/golangci-lint:latest
+  # Pinned, not :latest — a binary built with an older Go than go.mod targets
+  # refuses to load the config. v2.12.2 matches the nix dev shell (go1.26.5).
+  image: golangci/golangci-lint:v2.12.2
   script:
     - golangci-lint run --timeout=5m ./...
   allow_failure: false

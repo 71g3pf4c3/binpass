@@ -78,7 +78,9 @@ they skip.
   the reference example.
 - CI exists twice and must stay in sync: `.github/workflows/ci.yml` and
   `.gitlab-ci.yml` (the latter references design decisions in
-  `docs/agent-tasks/06-current-wip.md`).
+  `docs/agent-tasks/06-current-wip.md`); `make ci-parity`
+  (scripts/ci-parity.sh) diffs the comparable surface of the two and fails
+  on drift.
 - Nix: `nix flake check --no-build` must pass; format with `nix fmt`
   (nixfmt-rfc-style). After changing Go dependencies, update `vendorHash` in
   `flake.nix`. `docs/agent-tasks/README.md` tracks which task files are done

@@ -9,8 +9,13 @@ import (
 
 // ToSecret converts an Entry into a pass-format secret. The first line is the
 // password; subsequent lines carry structured fields, the OTP URI, and free-form
-// notes, in that order.
+// notes, in that order. An entry carrying Raw — one read from another
+// pass-format store — is returned unchanged, so the source plaintext survives
+// the transfer byte for byte.
 func (e *Entry) ToSecret() *secret.Secret {
+	if e.Raw != nil {
+		return e.Raw
+	}
 	var body strings.Builder
 
 	// Structured fields first, for easy --field access.

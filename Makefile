@@ -13,7 +13,7 @@ LDFLAGS := -s -w \
 
 export CGO_ENABLED := 0
 
-.PHONY: all build test cover vet lint tidy clean snapshot release containers
+.PHONY: all build test cover vet lint tidy clean snapshot release containers ci-parity
 
 all: build
 
@@ -44,6 +44,9 @@ cover: ## Run tests and report business-logic coverage (excludes mocks/gen).
 
 vet: ## Run go vet.
 	$(GO) vet ./...
+
+ci-parity: ## Verify .github/workflows/ci.yml and .gitlab-ci.yml stay in sync.
+	./scripts/ci-parity.sh
 
 tidy: ## Tidy the module.
 	$(GO) mod tidy

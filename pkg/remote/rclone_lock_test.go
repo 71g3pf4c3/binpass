@@ -261,3 +261,24 @@ func TestRcloneRemote_ListReal(t *testing.T) {
 	assert.ElementsMatch(t, []string{"github.com/alice.age", "toplevel.gpg"}, paths,
 		"nested and top-level entries alike, and nothing that is not a store file")
 }
+
+// TestRcloneRemote_LockIgnoresStderrDiagnostics pins the fix for runs on
+// machines with no rclone config file: every rclone invocation then prints
+// "NOTICE: Config file ... not found" on stderr, and a runner that spliced
+// stderr into stdout made the lock's byte-for-byte read-back fail against
+// the caller's own lock — every sync on a fresh install reported the
+// machine's own lock as held.
+func TestRcloneRemote_LockIgnoresStderrDiagnostics(t *testing.T) {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone not on PATH")
+	}
+	dir := t.TempDir()
+	t.Setenv("RCLONE_CONFIG", filepath.Join(dir, "nonexistent.conf"))
+	a, err := NewRcloneRemote(RcloneOptions{Name: "a", Remote: dir, Device: "thinkpad"})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	unlock, err := a.Lock(ctx)
+	require.NoError(t, err, "stderr diagnostics must not reach the parsed output")
+	require.NoError(t, unlock.Unlock(ctx))
+}

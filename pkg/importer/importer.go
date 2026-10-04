@@ -14,6 +14,8 @@ package importer
 import (
 	"io"
 	"iter"
+
+	"github.com/71g3pf4c3/binpass/pkg/secret"
 )
 
 // Entry is a single secret extracted from a foreign format, before it has been
@@ -38,6 +40,14 @@ type Entry struct {
 
 	// Password is the primary secret.
 	Password string
+
+	// Raw is a pre-rendered pass-format secret to carry to the store
+	// verbatim. Importers that read from another pass-format store set it,
+	// because the structured fields above cannot express an arbitrary body
+	// (line order, duplicate keys, free-form text) and a rebuild through
+	// ToSecret would silently rewrite the entry. When set, ToSecret returns
+	// it unchanged.
+	Raw *secret.Secret
 
 	// Username is the login name, written as a "username:" field.
 	Username string

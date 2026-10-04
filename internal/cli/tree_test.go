@@ -86,3 +86,21 @@ func TestRenderTreeEmpty(t *testing.T) {
 	require.NoError(t, renderTreeStyled(&buf, "Password Store", nil, detectStyle(envOf(nil))))
 	assert.Equal(t, "Password Store\n", buf.String())
 }
+
+func TestRenderTreeEntryWithAttachmentSidecar(t *testing.T) {
+	// The importer's fallback writes an entry and its ciphertext sidecar
+	// under the same name ("entry" plus "entry/_ciphertext.gpg.b64"). On disk
+	// a file and a directory cannot share a name, so tree(1) never sees this
+	// shape — the renderer must not panic on it, and shows the entry as a
+	// directory holding the sidecar.
+	var buf bytes.Buffer
+	names := []string{"Broken", "Broken/_ciphertext.gpg.b64", "Social/Twitter"}
+	require.NoError(t, renderTreeStyled(&buf, "Password Store", names, detectStyle(envOf(nil))))
+
+	want := "Password Store\n" +
+		"|-- Broken\n" +
+		"|   `-- _ciphertext.gpg.b64\n" +
+		"`-- Social\n" +
+		"    `-- Twitter\n"
+	assert.Equal(t, want, buf.String())
+}

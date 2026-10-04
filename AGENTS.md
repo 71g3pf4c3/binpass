@@ -10,21 +10,29 @@ non-trivial change.
 
 ```sh
 nix develop                      # dev shell: go, gopls, golangci-lint, goreleaser, syft,
-                                  # plus real pass, gnupg, age, git, tree, qrencode
+                                  # plus real pass, gnupg, age, git, tree, qrencode,
+                                  # rclone, restic, cryptsetup and menu pickers (fzf, rofi, …)
 make test                         # go test ./...   (CGO_ENABLED=0)
 make test-race                    # requires cgo — CI runs -race, local plain `make test` doesn't
 make cover                        # coverage with business-logic filter, gate is >=70%
 make build                        # bin/binpass with -trimpath and ldflags version stamping
+make snapshot                     # goreleaser local snapshot; --skip=sign because keyless
+                                  # signing needs the CI's OIDC identity, which local runs lack
 golangci-lint run                 # must be 0 issues (v2 config, see .golangci.yml)
 gofmt -l .                        # must be empty
 ```
 
 Single package / single test: `go test ./pkg/sync/ -run TestScan_Basic`.
 Fuzz targets (failures are saved as seed corpora under `**/testdata/fuzz/`,
-which are permanent regressions — keep them): `./scripts/fuzz.sh 20`.
+which are permanent regressions — keep them): `./scripts/fuzz.sh 20`. The
+script discovers targets automatically; a fixed list would silently stop
+covering new ones.
 Container suites: `Dockerfile.test` (plain Debian + distro pass),
 `Dockerfile.e2e` (interactive flows), `Dockerfile.ss` (Secret Service over a
-real session bus), `Dockerfile.luks` (`--privileged`, dm-crypt).
+real session bus), `Dockerfile.luks` (`--privileged`, dm-crypt). Use
+`scripts/e2e-session.sh` / `scripts/ss-session.sh` to enter those containers
+interactively. CI runs `.test`/`.ss`/`.luks`; the sync transport and
+snapshot tests also need real `rclone` and `restic` on PATH or they skip.
 
 ## Non-obvious constraints
 
@@ -77,4 +85,9 @@ importer, secretservice, …) — each with its own tests and `doc.go`.
 `internal/cli` is the cobra command surface (one file per command).
 `internal/tui` is the bubbletea TUI. `internal/config` is viper-based
 config (YAML + env; `BINPASS_*` overrides `PASSWORD_STORE_*`).
+`nix/` holds the NixOS and home-manager modules plus `pass-shim.nix` (the
+`binpass-pass` overlay that installs binpass under the name `pass` — the
+binary answers to whichever name it was invoked under).
 `share/` holds systemd/DBus unit files installed by the Nix package.
+`docs/` has topic guides (sync remotes, tomb, plugins, Secret Service,
+migration, macOS) — check them before changing those subsystems.

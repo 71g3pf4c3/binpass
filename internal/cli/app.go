@@ -48,9 +48,17 @@ type App struct {
 	cachedGuard *plugin.Guard
 
 	// hibpClient stands in for the HIBP breach database in tests; nil
-	// means the real one, which talks to the network and has no place
+	// means the real one, which talks to the network and has no place in
 	// there.
 	hibpClient audit.HIBPChecker
+
+	// identityMu guards identityFiles, which decrypts on any goroutine can
+	// grow through the lazy identity resolution.
+	identityMu sync.Mutex
+	// identityFiles records where the identities handed to age were loaded
+	// from, so a failed decrypt can name the files that were tried instead
+	// of age's opaque "incorrect identity for recipient block".
+	identityFiles []string
 }
 
 // Guard returns the capability guard for this invocation.
@@ -84,12 +92,17 @@ func (a *App) Store() (*store.Store, error) {
 func (a *App) newStore() (*store.Store, error) {
 	gpg := crypto.NewGPG(a.Cfg.Dir, a.Cfg.GPGBinary, a.Cfg.GPGOpts)
 	ageBackend := crypto.NewAge(a.Cfg.Dir, a.identities)
+	// Only the age backend is wrapped: gpg reports its own failures, while
+	// age's recipient-mismatch error names neither the identities tried nor
+	// the recipients file, and that is exactly what a key migration turns
+	// into guesswork.
+	diag := ageDiagnostics{Crypto: ageBackend, app: a}
 
 	// Lookup order decides which file wins when an entry exists in both
 	// formats; pass's own .gpg comes first for compatibility.
-	backends := []crypto.Crypto{gpg, ageBackend}
+	backends := []crypto.Crypto{gpg, diag}
 
-	var def crypto.Crypto = ageBackend
+	var def crypto.Crypto = diag
 	if a.Cfg.Default == config.BackendGPG {
 		def = gpg
 	}
@@ -102,11 +115,33 @@ func (a *App) newStore() (*store.Store, error) {
 }
 
 // identities resolves age identities on demand, so that no key file is read
-// and no hardware token is woken until a decryption needs one.
+// and no hardware token is woken until a decryption needs one. The files the
+// keys came from are recorded, never the key material itself.
 func (a *App) identities() ([]age.Identity, error) {
 	r := identity.NewResolver(a.Cfg.Identity)
 	r.PluginUI = identity.TerminalUI()
-	return r.Load()
+	sources, err := r.LoadSources()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]age.Identity, 0, len(sources))
+	files := make([]string, 0, len(sources))
+	for _, s := range sources {
+		ids = append(ids, s.Identities...)
+		files = append(files, s.Path)
+	}
+	a.identityMu.Lock()
+	a.identityFiles = files
+	a.identityMu.Unlock()
+	return ids, nil
+}
+
+// triedIdentityFiles returns the paths the identities for the last decryption
+// were loaded from.
+func (a *App) triedIdentityFiles() []string {
+	a.identityMu.Lock()
+	defer a.identityMu.Unlock()
+	return a.identityFiles
 }
 
 // requireStore returns the store, refusing to continue when it has not been

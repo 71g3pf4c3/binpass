@@ -91,7 +91,7 @@ func NewResolver(explicit string) *Resolver {
 // exist are skipped; a source that exists but cannot be parsed is an error,
 // because silently ignoring a broken key file hides the real problem.
 func (r *Resolver) Load() ([]age.Identity, error) {
-	sources, err := r.Sources()
+	sources, err := r.LoadSources()
 	if err != nil {
 		return nil, err
 	}
@@ -99,10 +99,25 @@ func (r *Resolver) Load() ([]age.Identity, error) {
 	for _, s := range sources {
 		out = append(out, s.Identities...)
 	}
-	if len(out) == 0 {
+	return out, nil
+}
+
+// LoadSources is Load with the provenance kept: it returns the sources, not
+// just the flattened identities, so a caller reporting why decryption failed
+// can name the files the keys came from.
+func (r *Resolver) LoadSources() ([]Source, error) {
+	sources, err := r.Sources()
+	if err != nil {
+		return nil, err
+	}
+	n := 0
+	for _, s := range sources {
+		n += len(s.Identities)
+	}
+	if n == 0 {
 		return nil, r.notFound()
 	}
-	return out, nil
+	return sources, nil
 }
 
 // notFound builds an error naming every location that was searched. "No

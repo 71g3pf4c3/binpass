@@ -107,6 +107,38 @@ func TestSourcesReportsOrigin(t *testing.T) {
 	assert.Equal(t, identity.KindFile, sources[0].Kind)
 }
 
+// TestLoadSourcesKeepsProvenance guards the diagnostics contract: Load and
+// LoadSources must be the same resolution seen two ways, so the CLI can name
+// the files a failed decryption tried without a second, diverging lookup.
+func TestLoadSourcesKeepsProvenance(t *testing.T) {
+	dir := t.TempDir()
+	one := writeKey(t, filepath.Join(dir, "one.txt"))
+	two := writeKey(t, filepath.Join(dir, "two.txt"))
+	paths := []string{filepath.Join(dir, "one.txt"), filepath.Join(dir, "two.txt")}
+
+	sources, err := (&identity.Resolver{Files: paths}).LoadSources()
+	require.NoError(t, err)
+	require.Len(t, sources, 2)
+	for i, p := range paths {
+		assert.Equal(t, p, sources[i].Path, "source %d keeps its file", i)
+	}
+
+	ids, err := (&identity.Resolver{Files: paths}).Load()
+	require.NoError(t, err)
+	require.Len(t, ids, 2)
+	assert.Equal(t, one.Recipient().String(), ids[0].(*age.X25519Identity).Recipient().String())
+	assert.Equal(t, two.Recipient().String(), ids[1].(*age.X25519Identity).Recipient().String())
+}
+
+// TestLoadSourcesReportsNoIdentity keeps LoadSources' failure identical to
+// Load's: the searched-locations diagnostic must not depend on which of the
+// two the caller used.
+func TestLoadSourcesReportsNoIdentity(t *testing.T) {
+	r := &identity.Resolver{Files: []string{filepath.Join(t.TempDir(), "nope.txt")}}
+	_, err := r.LoadSources()
+	assert.ErrorIs(t, err, identity.ErrNone)
+}
+
 func TestNewResolverReadsEnvironment(t *testing.T) {
 	t.Setenv("BINPASS_IDENTITY", "/from/env")
 	assert.Equal(t, "/from/env", identity.NewResolver("").Explicit)

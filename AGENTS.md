@@ -77,6 +77,12 @@ snapshot tests also need real `rclone` and `restic` on PATH or they skip.
   (nixfmt-rfc-style). After changing Go dependencies, update `vendorHash` in
   `flake.nix`. `docs/agent-tasks/README.md` tracks which task files are done
   vs WIP.
+- Parallel work runs through muxix (`.muxix.yaml` is committed): worktrees
+  branch from `main`, merges are plain merge commits, and `muxix merge`
+  refuses to merge a branch that has not passed the pre_merge gate — build,
+  lint, tests, the same battery CI runs. Worktree agents get their task via a
+  prompt file (`muxix add <branch> -b -P <file>`), commit to their branch
+  only, and never push or touch `main`.
 
 ## Layout
 

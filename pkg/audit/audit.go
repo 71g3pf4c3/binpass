@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/71g3pf4c3/binpass/pkg/secret"
-	"github.com/71g3pf4c3/binpass/pkg/store"
 )
 
 // Severity classifies audit findings.
@@ -136,10 +135,19 @@ func DefaultOptions() Options {
 	}
 }
 
+// Store is the store surface the auditor needs: listing entries and
+// decrypting them. *store.Store satisfies it, and so does any other
+// caller (the TUI) or test double — everything runs the same audit the
+// `audit` command runs.
+type Store interface {
+	List(sub string) ([]string, error)
+	Get(name string) (*secret.Secret, error)
+}
+
 // Auditor runs an audit against a store.
 type Auditor struct {
 	// Store is the password store to audit.
-	Store *store.Store
+	Store Store
 	// Opts controls which checks are run.
 	Opts Options
 	// HIBPClient checks passwords against the HIBP database.

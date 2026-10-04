@@ -19,16 +19,27 @@ type keymap struct {
 	Search   string
 	Quit     string
 	NewEntry string
+	Attach   string
+	Grep     string
+	Audit    string
 
 	// Detail view.
 	TogglePassword string
 	CopyPassword   string
+	CopyField      string
+	Type           string
 	CopyOTP        string
 	Delete         string
 	Rename         string
 	Back           string
 	Generate       string
 	History        string
+	Edit           string
+	Extract        string
+	Duplicate      string
+
+	// Tree view (status).
+	Status string
 
 	// Search view.
 	ClearSearch string
@@ -44,14 +55,23 @@ func defaultKeymap() keymap {
 		Search:         "/",
 		Quit:           "q",
 		NewEntry:       "n",
+		Attach:         "b",
+		Grep:           "F",
+		Audit:          "A",
 		TogglePassword: "p",
 		CopyPassword:   "c",
+		CopyField:      "C",
+		Type:           "t",
 		CopyOTP:        "o",
 		Delete:         "d",
 		Rename:         "r",
 		Back:           "esc",
 		Generate:       "g",
 		History:        "y",
+		Edit:           "e",
+		Extract:        "x",
+		Duplicate:      "Y",
+		Status:         "S",
 		ClearSearch:    "esc",
 	}
 }

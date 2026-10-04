@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/71g3pf4c3/binpass/internal/theme"
 	"github.com/71g3pf4c3/binpass/pkg/otp"
 	"github.com/71g3pf4c3/binpass/pkg/secret"
+	"github.com/71g3pf4c3/binpass/pkg/store"
 	"github.com/71g3pf4c3/binpass/pkg/vcs"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -23,6 +25,7 @@ type mockStore struct {
 	moved   [][2]string // (from, to) pairs from Move calls
 	removed []string
 	set     map[string]string // name → password from Set calls
+	dir     string            // returned by Dir(); zero means the default
 }
 
 func newMockStore(entries map[string]string) *mockStore {
@@ -75,12 +78,64 @@ func (m *mockStore) Move(from, to string) error {
 	return nil
 }
 
+func (m *mockStore) Copy(from, to string) error {
+	sec, ok := m.entries[from]
+	if !ok {
+		return fmt.Errorf("store: entry not found: %s", from)
+	}
+	m.entries[to] = sec
+	return nil
+}
+
+func (m *mockStore) RemoveDir(name string) error {
+	prefix := name + "/"
+	for k := range m.entries {
+		if strings.HasPrefix(k, prefix) {
+			delete(m.entries, k)
+		}
+	}
+	m.removed = append(m.removed, name+"/")
+	return nil
+}
+
+func (m *mockStore) IsDir(name string) bool {
+	prefix := name + "/"
+	for k := range m.entries {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *mockStore) Grep(_ string, match func(string) bool) ([]store.Match, error) {
+	var out []store.Match
+	for name, sec := range m.entries {
+		var lines []string
+		for _, line := range sec.Lines() {
+			if match(line) {
+				lines = append(lines, line)
+			}
+		}
+		if len(lines) > 0 {
+			out = append(out, store.Match{Name: name, Lines: lines})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 func (m *mockStore) Exists(name string) bool {
 	_, ok := m.entries[name]
 	return ok
 }
 
-func (m *mockStore) Dir() string { return "/tmp/test-store" }
+func (m *mockStore) Dir() string {
+	if m.dir != "" {
+		return m.dir
+	}
+	return "/tmp/test-store"
+}
 
 // buildTestModel creates a Model backed by a mockStore with the given entries.
 func buildTestModel(entries map[string]string) Model {
@@ -134,8 +189,14 @@ func (s *missingIdentityStore) Get(string) (*secret.Secret, error) {
 func (s *missingIdentityStore) Set(string, *secret.Secret) error { return nil }
 func (s *missingIdentityStore) Remove(string) error              { return nil }
 func (s *missingIdentityStore) Move(string, string) error        { return nil }
-func (s *missingIdentityStore) Exists(string) bool               { return true }
-func (s *missingIdentityStore) Dir() string                      { return "/tmp/test-store" }
+func (s *missingIdentityStore) Copy(string, string) error        { return nil }
+func (s *missingIdentityStore) RemoveDir(string) error           { return nil }
+func (s *missingIdentityStore) IsDir(string) bool                { return false }
+func (s *missingIdentityStore) Grep(string, func(string) bool) ([]store.Match, error) {
+	return nil, nil
+}
+func (s *missingIdentityStore) Exists(string) bool { return true }
+func (s *missingIdentityStore) Dir() string        { return "/tmp/test-store" }
 
 func TestPasswordMaskedByDefault(t *testing.T) {
 	m := buildTestModel(map[string]string{
@@ -1363,8 +1424,13 @@ func TestInsertPreviewApply(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m2 := updated.(Model)
-	if m2.view != viewTree {
-		t.Errorf("after apply should return to tree, got view=%d", m2.view)
+	// The entry is created immediately (insert's contract), and the
+	// editor opens on it so fields and notes can be added next.
+	if m2.view != viewEdit {
+		t.Errorf("after apply should open the editor, got view=%d", m2.view)
+	}
+	if m2.editor == nil || m2.editName != "new/entry" {
+		t.Error("editor should stage the new entry")
 	}
 	if !strings.Contains(m2.status, "created") {
 		t.Errorf("expected 'created' status, got: %q", m2.status)
@@ -1472,7 +1538,7 @@ func TestUnlockCmdError(t *testing.T) {
 
 func TestGenerateCmdSuccess(t *testing.T) {
 	m := buildTestModel(map[string]string{"entry": "pw"})
-	cmd := m.generateCmd(16)
+	cmd := m.generateCmd(16, true)
 	msg := cmd()
 	res, ok := msg.(generateResult)
 	if !ok {
@@ -1483,6 +1549,19 @@ func TestGenerateCmdSuccess(t *testing.T) {
 	}
 	if len(res.password) != 16 {
 		t.Errorf("generated password length = %d, want 16", len(res.password))
+	}
+
+	// The no-symbols alphabet must produce passwords without any of the
+	// configured symbol characters.
+	cmd = m.generateCmd(24, false)
+	res = cmd().(generateResult) //nolint:forcetypeassert // shape is fixed.
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	for _, r := range res.password {
+		if strings.ContainsRune(m.cfg.CharacterSet, r) && !strings.ContainsRune(m.cfg.CharacterSetNoSymbols, r) {
+			t.Errorf("no-symbols password contains symbol %q: %s", r, res.password)
+		}
 	}
 }
 
@@ -1618,4 +1697,150 @@ func findChild(parent *treeNode, name string) *treeNode {
 		}
 	}
 	return nil
+}
+
+// --- Insert view: manual passwords and post-create editing ---
+
+// insertAtStep1 returns a model in insert step 1 with a fresh mock store.
+func insertAtStep1(t *testing.T, name string) (Model, *mockStore) {
+	t.Helper()
+	ms := newMockStore(map[string]string{"existing": "pw"})
+	cfg := config.Default()
+	cfg.NoColor = true
+	m, err := NewModel(Options{Store: ms, Cfg: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetSize(80, 24)
+	m.view = viewInsert
+	m.insertStep = 1
+	m.insertName = name
+	return m, ms
+}
+
+func TestInsertManualPasswordFlow(t *testing.T) {
+	m, ms := insertAtStep1(t, "bank/card")
+
+	// Switch to manual, type a password, create.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = updated.(Model)
+	if !m.insertManual {
+		t.Fatal("'m' must switch to manual entry")
+	}
+	if m.insertPassword != "" {
+		t.Error("switching to manual must clear any generated password")
+	}
+	for _, r := range "typed-secret" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	if m.insertPassword != "typed-secret" {
+		t.Fatalf("typed password = %q", m.insertPassword)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if ms.set["bank/card"] != "typed-secret" {
+		t.Errorf("store after create = %q, want typed-secret", ms.set["bank/card"])
+	}
+	if m.view != viewEdit || m.editor == nil {
+		t.Errorf("create must open the editor for fields, view=%d", m.view)
+	}
+	if m.current != "bank/card" {
+		t.Errorf("current = %q, want bank/card", m.current)
+	}
+}
+
+func TestInsertManualEmptyRejected(t *testing.T) {
+	m, _ := insertAtStep1(t, "bank/card")
+	m.insertManual = true
+	m.insertPassword = ""
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.view != viewInsert || m.insertStep != 1 {
+		t.Error("empty manual password must not create the entry")
+	}
+	if !strings.Contains(m.status, "empty") {
+		t.Errorf("status = %q, want empty-password error", m.status)
+	}
+}
+
+func TestInsertGeneratedEmptyRejected(t *testing.T) {
+	m, ms := insertAtStep1(t, "bank/card")
+	m.insertPassword = "" // generation still in flight
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if ms.set["bank/card"] != "" || ms.set["bank/card"] == "" && m.view == viewEdit {
+		t.Error("entry must not be created while the password is still generating")
+	}
+	if m.view != viewInsert {
+		t.Errorf("view = %d, want insert", m.view)
+	}
+}
+
+func TestInsertToggleBackToGenerator(t *testing.T) {
+	m, _ := insertAtStep1(t, "bank/card")
+	m.insertManual = true
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = updated.(Model)
+	if m.insertManual {
+		t.Error("second ctrl+g must switch back to the generator")
+	}
+	if cmd == nil {
+		t.Error("switching back to the generator must produce a generate command")
+	}
+}
+
+func TestInsertRegenerateIgnoredInManual(t *testing.T) {
+	m, _ := insertAtStep1(t, "bank/card")
+	m.insertManual = true
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	_ = updated.(Model)
+	if cmd != nil {
+		t.Error("'r' in manual mode must not regenerate")
+	}
+}
+
+func TestInsertCreateThenAddFields(t *testing.T) {
+	// End to end: name → manual password → create → add a field in the
+	// editor → save. The store must hold exactly password + field.
+	m, ms := insertAtStep1(t, "bank/card")
+	m.insertManual = true
+	for _, r := range "pw123" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Add a field in the opened editor.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(Model)
+	for _, r := range "username" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	for _, r := range "alice" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Save from the editor (adding a field is not destructive).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
+	m = updated.(Model)
+
+	if got := ms.entries["bank/card"].String(); got != "pw123\nusername: alice\n" {
+		t.Errorf("store after field add = %q", got)
+	}
+	if m.view != viewDetail {
+		t.Errorf("view after save = %d, want detail", m.view)
+	}
 }

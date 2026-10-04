@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -9,10 +8,13 @@ import (
 
 	"github.com/71g3pf4c3/binpass/internal/config"
 	"github.com/71g3pf4c3/binpass/internal/theme"
+	"github.com/71g3pf4c3/binpass/pkg/audit"
+	"github.com/71g3pf4c3/binpass/pkg/binary"
 	"github.com/71g3pf4c3/binpass/pkg/clip"
 	"github.com/71g3pf4c3/binpass/pkg/otp"
 	"github.com/71g3pf4c3/binpass/pkg/pwgen"
 	"github.com/71g3pf4c3/binpass/pkg/secret"
+	"github.com/71g3pf4c3/binpass/pkg/store"
 	"github.com/71g3pf4c3/binpass/pkg/vcs"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,6 +29,10 @@ type Store interface {
 	Set(name string, sec *secret.Secret) error
 	Remove(name string) error
 	Move(from, to string) error
+	Copy(from, to string) error
+	RemoveDir(name string) error
+	IsDir(name string) bool
+	Grep(sub string, match func(string) bool) ([]store.Match, error)
 	Exists(name string) bool
 	Dir() string
 }
@@ -36,15 +42,23 @@ type Store interface {
 type View int
 
 const (
-	viewTree     View = iota // top-level tree browser
-	viewSearch               // fuzzy search input
-	viewDetail               // decrypted entry view
-	viewConfirm              // destructive action confirmation
-	viewRename               // rename input
-	viewGenerate             // generate new password
-	viewInsert               // insert new entry
-	viewHistory              // git history for an entry
-	viewLocked               // autolock screen
+	viewTree      View = iota // top-level tree browser
+	viewSearch                // fuzzy search input
+	viewDetail                // decrypted entry view
+	viewConfirm               // destructive action confirmation
+	viewRename                // rename input
+	viewGenerate              // generate new password
+	viewInsert                // insert new entry
+	viewHistory               // git history for an entry
+	viewLocked                // autolock screen
+	viewEdit                  // staged entry editor
+	viewFiles                 // local-filesystem picker (attach/extract)
+	viewBinName               // attachment entry-name input
+	viewFieldPick             // copy-a-field picker
+	viewStatus                // read-only store status (git, sync)
+	viewDup                   // duplicate-entry name input
+	viewGrep                  // search across decrypted contents
+	viewAudit                 // read-only store audit report
 )
 
 // tickMsg is sent every second to drive the OTP countdown timer and the
@@ -105,11 +119,13 @@ type Model struct {
 	otpCfg    *otp.Config    // parsed OTP config, nil if entry has none
 	otpCode   string         // current OTP code
 	otpRemain int            // seconds until next TOTP code
+	fieldCur  int            // selected row in the field picker
 
 	// Confirm view.
-	confirmAction string // "delete"
+	confirmAction string // "delete", "delete-dir", "save-edit", …
 	confirmTarget string
-	confirmFocus  int // 0 = yes, 1 = no
+	confirmFocus  int  // 0 = yes, 1 = no
+	confirmFrom   View // view the confirmation was triggered from
 
 	// Rename view.
 	renameFrom string
@@ -118,18 +134,65 @@ type Model struct {
 	// Generate view.
 	genTarget  string
 	genLength  int
+	genSymbols bool
 	genPreview string
 
 	// Insert view.
 	insertName     string // new entry name (user types it)
 	insertPassword string // generated password (filled async)
-	insertStep     int    // 0 = name input, 1 = password preview, 2 = done
+	insertManual   bool   // true when the user types the password by hand
+	insertLen      int    // generator length for this insert
+	insertSymbols  bool   // generator alphabet for this insert
+	insertStep     int    // 0 = name input, 1 = password, 2 = done
 
 	// History view.
 	histTarget string       // entry name
 	histList   []vcs.Commit // commit history
 	histCur    int          // selected commit index
 	histErr    error
+
+	// Edit view (staged edits to the open or newly created entry).
+	editor    *entryEditor // staged plaintext copy; nil outside the editor
+	editName  string       // entry the staged edits belong to
+	editNew   bool         // true when the editor is creating a new entry
+	editCur   int          // selected row: 0 = password, i+1 = rows[i]
+	editMode  int          // editBrowse or one of the input modes
+	editInput string       // contents of the bottom input line
+	editKey   string       // staged key of the field being added
+
+	// File picker and binary attachments.
+	filesDir    string   // directory being browsed
+	filesList   []string // its full listing (dirs carry a trailing "/")
+	filesVis    []string // query-filtered view of filesList
+	filesCur    int      // selected picker row
+	filesQuery  string   // fuzzy filter for the listing
+	pickDir     bool     // true when choosing an extract destination
+	binFrom     View     // view to return to after the picker flow
+	binFile     string   // source file of an in-flight attach
+	binName     string   // entry name of an in-flight attach or extract
+	binContext  string   // entry the attach was initiated from (naming hint)
+	binSize     int64    // decoded size of the open binary entry
+	binSum      string   // SHA-256 of the open binary entry's content
+	binBackdrop bool     // true when the open entry is a .b64 attachment
+
+	// Status view.
+	statRes *statusResult // collected store status, nil while loading
+
+	// Duplicate view.
+	dupFrom string // entry being duplicated
+	dupTo   string // proposed copy name
+
+	// Grep view.
+	grepQuery   string        // pattern being typed
+	grepMatches []store.Match // results of the last run
+	grepErr     error
+	grepCur     int  // selected result
+	grepDone    bool // true once results are displayed
+
+	// Audit view.
+	auditRep *audit.Report // collected audit, nil while loading
+	auditErr error
+	auditCur int
 
 	// VCS backend (nil when the store is not a git repo).
 	vcs vcs.Backend
@@ -258,6 +321,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sec = msg.sec
 			m.unlockErr = nil
 			m.initOTP()
+			m.initBinary()
+		}
+		return m, nil
+
+	case binResult:
+		if msg.err != nil {
+			m.status = "binary: " + msg.err.Error()
+		} else {
+			m.status = msg.desc
+			m.rebuildTree()
+		}
+		return m, nil
+
+	case statusResult:
+		m.statRes = &msg
+		return m, nil
+
+	case hotpResult:
+		if msg.err != nil {
+			m.status = "otp: " + msg.err.Error()
+			return m, nil
+		}
+		// The stored entry now carries the advanced counter; re-arm the
+		// OTP state from it so the next reveal starts from the new one.
+		m.sec = msg.sec
+		m.initOTP()
+		m.status = "HOTP code copied, counter advanced"
+		return m, nil
+
+	case grepResult:
+		m.grepDone = true
+		m.grepErr = msg.err
+		m.grepMatches = msg.matches
+		m.grepCur = 0
+		return m, nil
+
+	case auditResult:
+		if msg.err != nil {
+			m.auditErr = msg.err
+		} else {
+			m.auditRep = msg.report
+			m.auditCur = 0
 		}
 		return m, nil
 
@@ -306,6 +411,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleInsert(msg)
 		case viewHistory:
 			return m.handleHistory(msg)
+		case viewEdit:
+			return m.handleEdit(msg)
+		case viewFiles:
+			return m.handleFiles(msg)
+		case viewBinName:
+			return m.handleBinName(msg)
+		case viewFieldPick:
+			return m.handleFieldPick(msg)
+		case viewStatus:
+			return m.handleStatus(msg)
+		case viewDup:
+			return m.handleDup(msg)
+		case viewGrep:
+			return m.handleGrep(msg)
+		case viewAudit:
+			return m.handleAudit(msg)
 		}
 
 	case tea.MouseMsg:
@@ -340,6 +461,22 @@ func (m Model) View() string {
 		return m.viewInsert()
 	case viewHistory:
 		return m.viewHistory()
+	case viewEdit:
+		return m.viewEdit()
+	case viewFiles:
+		return m.viewFiles()
+	case viewBinName:
+		return m.viewBinName()
+	case viewFieldPick:
+		return m.viewFieldPick()
+	case viewStatus:
+		return m.viewStatus()
+	case viewDup:
+		return m.viewDup()
+	case viewGrep:
+		return m.viewGrep()
+	case viewAudit:
+		return m.viewAudit()
 	}
 	return ""
 }
@@ -409,8 +546,23 @@ func (m Model) handleTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case m.km.NewEntry:
 		m.insertName = ""
 		m.insertPassword = ""
+		m.insertManual = false
+		m.insertLen = m.cfg.GeneratedLength
+		m.insertSymbols = true
 		m.insertStep = 0
 		m.view = viewInsert
+
+	case m.km.Attach:
+		// Attach a file to the selected entry: the picker proposes
+		// "<entry>.b64" as the store name, matching the CLI convention.
+		if len(m.flat) > 0 {
+			item := m.flat[m.cursor]
+			if item.node.entry && !binary.IsBinary(item.node.path) {
+				m.binFrom = viewTree
+				m.binContext = item.node.path
+				m.startFilePicker(false)
+			}
+		}
 
 	case "E": // shift+e = expand all
 		expandAll(m.tree)
@@ -420,6 +572,40 @@ func (m Model) handleTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		collapseAll(m.tree)
 		m.flat = flatten(m.tree)
 		m.cursor = 0
+
+	case m.km.Status: // shift+s = store status
+		m.statRes = nil
+		m.view = viewStatus
+		return m, m.statusCmd()
+
+	case m.km.Grep: // shift+f = search decrypted contents
+		m.grepQuery = ""
+		m.grepMatches = nil
+		m.grepErr = nil
+		m.grepCur = 0
+		m.grepDone = false
+		m.view = viewGrep
+
+	case m.km.Audit: // shift+a = store audit
+		m.auditRep = nil
+		m.auditErr = nil
+		m.auditCur = 0
+		m.view = viewAudit
+		return m, m.auditCmd()
+
+	case m.km.Delete: // delete the selected entry or directory
+		if len(m.flat) > 0 {
+			item := m.flat[m.cursor]
+			if item.node.entry {
+				m.confirmAction = "delete"
+			} else {
+				m.confirmAction = "delete-dir"
+			}
+			m.confirmTarget = item.node.path
+			m.confirmFocus = 1 // default to "no"
+			m.confirmFrom = viewTree
+			m.view = viewConfirm
+		}
 	}
 
 	return m, nil
@@ -467,7 +653,7 @@ func (m Model) viewTree() string {
 	}
 
 	// Status bar.
-	bar := m.statusBar("q:quit  /:search  n:new  enter:open  h:collapse  E:expand-all  C:collapse-all  j/k:nav")
+	bar := m.statusBar("q:quit  /:search  n:new  b:attach  d:delete  F:grep  A:audit  S:status  enter:open  h:collapse  E:expand-all  C:collapse-all  j/k:nav")
 	return b.String() + bar
 }
 
@@ -550,6 +736,9 @@ func (m Model) viewSearch() string {
 // --- view: detail ---
 
 func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.binBackdrop {
+		return m.handleDetailBinary(msg)
+	}
 	switch msg.String() {
 	case m.km.Back:
 		m.closeEntry()
@@ -563,15 +752,44 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.copyPasswordCmd()
 		}
 
+	case m.km.CopyField:
+		if m.sec != nil {
+			m.startFieldPick()
+		}
+
+	case m.km.Type:
+		if m.sec != nil {
+			m.status = "typing in a moment — switch to the target window"
+			return m, m.typeValueCmd("password", m.sec.Password())
+		}
+
 	case m.km.CopyOTP:
+		if m.otpCfg != nil && m.otpCfg.Kind == otp.HOTP && m.sec != nil {
+			// HOTP codes do not exist until asked for: revealing one
+			// advances the counter and persists it, exactly as the
+			// otp command does.
+			m.status = "computing HOTP code and advancing the counter..."
+			return m, m.hotpRevealCmd()
+		}
 		if m.otpCode != "" {
 			return m, m.copyOTPCodeCmd()
+		}
+
+	case m.km.Duplicate:
+		if m.sec != nil {
+			m.startDup()
+		}
+
+	case m.km.Edit:
+		if m.sec != nil {
+			m.startEdit()
 		}
 
 	case m.km.Delete:
 		m.confirmAction = "delete"
 		m.confirmTarget = m.current
 		m.confirmFocus = 1 // default to "no"
+		m.confirmFrom = viewDetail
 		m.view = viewConfirm
 
 	case m.km.Rename:
@@ -579,12 +797,69 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.renameTo = m.current
 		m.view = viewRename
 
+	case m.km.Duplicate:
+		if m.sec != nil {
+			m.startDup()
+		}
+
 	case m.km.Generate:
 		m.genTarget = m.current
 		m.genLength = m.cfg.GeneratedLength
+		m.genSymbols = true
 		m.genPreview = ""
 		m.view = viewGenerate
-		return m, m.generateCmd(m.genLength)
+		return m, m.generateCmd(m.genLength, m.genSymbols)
+
+	case m.km.History:
+		m.histTarget = m.current
+		m.histList = nil
+		m.histErr = nil
+		m.histCur = 0
+		m.view = viewHistory
+		return m, m.historyCmd(m.current)
+
+	case m.km.Attach:
+		m.binFrom = viewDetail
+		m.binContext = m.current
+		m.startFilePicker(false)
+
+	case m.km.Quit, "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// handleDetailBinary dispatches keys for a decrypted .b64 entry. Most
+// text-entry actions are meaningless or harmful on base64 blobs (editing
+// them by hand, generating a password over them, copying them to the
+// clipboard), so they are refused rather than silently mangled.
+func (m Model) handleDetailBinary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case m.km.Back:
+		m.closeEntry()
+		return m, nil
+
+	case m.km.Extract:
+		m.binFrom = viewDetail
+		m.binName = m.current
+		m.startFilePicker(true)
+
+	case m.km.Attach:
+		m.binFrom = viewDetail
+		m.binContext = "" // a .b64 context must not name the new entry.
+		m.startFilePicker(false)
+
+	case m.km.Delete:
+		m.confirmAction = "delete"
+		m.confirmTarget = m.current
+		m.confirmFocus = 1 // default to "no"
+		m.confirmFrom = viewDetail
+		m.view = viewConfirm
+
+	case m.km.Rename:
+		m.renameFrom = m.current
+		m.renameTo = m.current
+		m.view = viewRename
 
 	case m.km.History:
 		m.histTarget = m.current
@@ -596,6 +871,9 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case m.km.Quit, "ctrl+c":
 		return m, tea.Quit
+
+	default:
+		m.status = "binary entry: x:extract  b:attach  d:delete  r:rename"
 	}
 	return m, nil
 }
@@ -616,6 +894,17 @@ func (m Model) viewDetail() string {
 		return b.String() + bar
 	}
 
+	// Binary attachments: never render the base64 body, only metadata.
+	if m.binBackdrop {
+		fmt.Fprintf(&b, "  %s\n", m.st.header.Render("binary attachment"))
+		fmt.Fprintf(&b, "  %s %s\n", m.st.dimmed.Render("size:"), humanSize(m.binSize))
+		if m.binSum != "" {
+			fmt.Fprintf(&b, "  %s %s\n", m.st.dimmed.Render("sha256:"), m.binSum)
+		}
+		bar := m.statusBar("x:extract  b:attach  d:delete  r:rename  y:history  esc:back")
+		return b.String() + bar
+	}
+
 	// Password line — masked by default.
 	pw := m.sec.Password()
 	if m.showPass {
@@ -631,11 +920,16 @@ func (m Model) viewDetail() string {
 
 	// OTP.
 	if m.otpCfg != nil {
-		fmt.Fprintf(&b, "\n  %s %s%ds\n",
-			m.st.otpCode.Render("OTP: "+m.otpCode),
-			m.st.dimmed.Render("expires in "),
-			m.otpRemain,
-		)
+		if m.otpCfg.Kind == otp.HOTP {
+			fmt.Fprintf(&b, "\n  %s\n",
+				m.st.otpCode.Render("OTP: HOTP")+m.st.dimmed.Render("  o: reveal code & advance counter"))
+		} else {
+			fmt.Fprintf(&b, "\n  %s %s%ds\n",
+				m.st.otpCode.Render("OTP: "+m.otpCode),
+				m.st.dimmed.Render("expires in "),
+				m.otpRemain,
+			)
+		}
 	}
 
 	// Remaining body lines (free text after fields).
@@ -655,7 +949,7 @@ func (m Model) viewDetail() string {
 		}
 	}
 
-	bar := m.statusBar("p:toggle  c:copy  o:otp  d:delete  r:rename  g:generate  y:history  esc:back")
+	bar := m.statusBar("p:toggle  e:edit  c:copy  C:field  t:type  o:otp  Y:duplicate  d:delete  r:rename  g:generate  y:history  esc:back")
 	return b.String() + bar
 }
 
@@ -672,25 +966,74 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmFocus++
 		}
 	case "enter":
-		if m.confirmFocus == 0 {
-			// Confirmed.
+		if m.confirmFocus != 0 {
+			// Declined. The editor keeps its staged copy so the user
+			// can reconsider; the delete flow keeps its historical
+			// "back to the tree" behaviour.
 			switch m.confirmAction {
-			case "delete":
-				if err := m.store.Remove(m.confirmTarget); err != nil {
-					m.status = fmt.Sprintf("delete failed: %s", err)
-				} else {
-					m.status = "deleted " + m.confirmTarget
-				}
+			case "save-edit", "discard-edit":
+				m.view = viewEdit
+			case "bin-overwrite":
+				m.view = viewBinName
+			case "dup-overwrite":
+				m.view = viewDup
+			default:
+				m.view = viewTree
+			}
+			return m, nil
+		}
+
+		switch m.confirmAction {
+		case "delete":
+			if err := m.store.Remove(m.confirmTarget); err != nil {
+				m.status = "delete failed: " + err.Error()
+			} else {
+				m.status = "deleted " + m.confirmTarget
 			}
 			m.closeEntry()
 			m.rebuildTree()
+			m.view = viewTree
+		case "delete-dir":
+			if err := m.store.RemoveDir(m.confirmTarget); err != nil {
+				m.status = "delete failed: " + err.Error()
+			} else {
+				m.status = "deleted directory " + m.confirmTarget
+			}
+			m.rebuildTree()
+			m.view = viewTree
+		case "save-edit":
+			m.saveEditor()
+		case "discard-edit":
+			m.status = "changes discarded"
+			m.closeEditor(false)
+		case "bin-overwrite":
+			cmd := m.attachCmd(m.binFile, m.binName)
+			m.view = m.binFrom
+			return m, cmd
+		case "dup-overwrite":
+			m.dupApply()
 		}
-		// Cancelled or done.
-		m.view = viewTree
 		return m, nil
 
 	case m.km.Back:
-		m.view = viewDetail
+		switch m.confirmAction {
+		case "save-edit", "discard-edit":
+			m.view = viewEdit
+		case "bin-overwrite":
+			m.view = viewBinName
+		case "dup-overwrite":
+			m.view = viewDup
+		case "delete", "delete-dir":
+			// Escape goes back where the action came from; declining
+			// (above) keeps the historical return-to-tree.
+			if m.confirmFrom == viewTree {
+				m.view = viewTree
+			} else {
+				m.view = viewDetail
+			}
+		default:
+			m.view = viewDetail
+		}
 		return m, nil
 	}
 	return m, nil
@@ -699,8 +1042,7 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) viewConfirm() string {
 	var b strings.Builder
 	fmt.Fprintln(&b)
-	action := m.confirmAction
-	fmt.Fprintf(&b, "  %s %s?\n\n", m.st.confirm.Render(action+":"), m.st.bold.Render(m.confirmTarget))
+	fmt.Fprintf(&b, "  %s %s?\n\n", m.st.confirm.Render(confirmLabel(m.confirmAction)+":"), m.st.bold.Render(m.confirmTarget))
 
 	yes := " [Yes] "
 	no := "  No  "
@@ -712,6 +1054,26 @@ func (m Model) viewConfirm() string {
 	fmt.Fprintf(&b, "  %s%s\n", yes, no)
 	bar := m.statusBar("enter:confirm  esc:cancel")
 	return b.String() + bar
+}
+
+// confirmLabel humanises the internal action name for the confirmation
+// prompt.
+func confirmLabel(action string) string {
+	switch action {
+	case "delete":
+		return "delete"
+	case "delete-dir":
+		return "delete directory and all its entries"
+	case "save-edit":
+		return "save (overwrites password or deletes lines)"
+	case "discard-edit":
+		return "discard unsaved changes"
+	case "bin-overwrite":
+		return "overwrite the existing binary entry"
+	case "dup-overwrite":
+		return "overwrite the existing entry with the copy"
+	}
+	return action
 }
 
 // --- view: rename ---
@@ -795,7 +1157,21 @@ func (m Model) handleGenerate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "r": // regenerate
-		return m, m.generateCmd(m.genLength)
+		return m, m.generateCmd(m.genLength, m.genSymbols)
+
+	case "+", "=": // longer, with a live preview
+		if m.genLength < pwgenMaxLen {
+			m.genLength++
+			return m, m.generateCmd(m.genLength, m.genSymbols)
+		}
+	case "-":
+		if m.genLength > pwgenMinLen {
+			m.genLength--
+			return m, m.generateCmd(m.genLength, m.genSymbols)
+		}
+	case "s": // toggle the symbol alphabet
+		m.genSymbols = !m.genSymbols
+		return m, m.generateCmd(m.genLength, m.genSymbols)
 
 	case m.km.Back:
 		m.view = viewDetail
@@ -803,6 +1179,13 @@ func (m Model) handleGenerate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// pwgen length bounds: pwgen itself has no hard floor, but a 1-character
+// password from a slipped keypress is never what the user wanted.
+const (
+	pwgenMinLen = 4
+	pwgenMaxLen = 128
+)
 
 func (m Model) viewGenerate() string {
 	var b strings.Builder
@@ -813,7 +1196,12 @@ func (m Model) viewGenerate() string {
 	} else {
 		fmt.Fprintln(&b, m.st.dimmed.Render("  generating..."))
 	}
-	fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:apply  r:regenerate  esc:cancel"))
+	sym := "symbols"
+	if !m.genSymbols {
+		sym = "no symbols"
+	}
+	fmt.Fprintf(&b, "  %s %d   %s\n", m.st.dimmed.Render("length:"), m.genLength, m.st.dimmed.Render("("+sym+")"))
+	fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:apply  r:regenerate  +/-:length  s:symbols  esc:cancel"))
 	return b.String()
 }
 
@@ -892,7 +1280,10 @@ func (m Model) handleInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			// Generate password and move to preview.
 			m.insertStep = 1
-			return m, m.insertGenerateCmd(m.cfg.GeneratedLength)
+			if m.insertLen == 0 {
+				m.insertLen = m.cfg.GeneratedLength
+			}
+			return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
 
 		case m.km.Back:
 			m.view = viewTree
@@ -913,26 +1304,63 @@ func (m Model) handleInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case 1: // password preview
+	case 1: // password: generated or hand-typed
 		switch msg.String() {
 		case "enter":
-			// Apply: write to store.
+			if m.insertPassword == "" {
+				m.status = "insert: password is empty"
+				return m, nil
+			}
+			// Create the entry with the password right away — the
+			// same contract `insert` gives — then open the editor so
+			// fields and notes can be added before the user moves on.
 			sec := secret.New(m.insertPassword, "")
 			if err := m.store.Set(m.insertName, sec); err != nil {
 				m.status = "insert: " + err.Error()
-				m.view = viewTree
 				return m, nil
 			}
 			m.status = "created " + m.insertName
 			m.rebuildTree()
-			m.view = viewTree
+			m.current = m.insertName
+			m.sec = sec
+			m.startEdit()
 			return m, nil
 
-		case "r": // regenerate
-			return m, m.insertGenerateCmd(m.cfg.GeneratedLength)
+		case "ctrl+g": // toggle generator/manual
+			// A printable key cannot own this: in manual mode every
+			// printable rune belongs to the password being typed.
+			m.insertManual = !m.insertManual
+			if m.insertManual {
+				// A generated password must not silently masquerade
+				// as something the user chose to type.
+				m.insertPassword = ""
+			} else {
+				return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+			}
 
 		case m.km.Back:
 			m.insertStep = 0 // back to name input
+
+		default:
+			switch s := msg.String(); {
+			case !m.insertManual && s == "r":
+				return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+			case !m.insertManual && (s == "+" || s == "="):
+				if m.insertLen < pwgenMaxLen {
+					m.insertLen++
+					return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+				}
+			case !m.insertManual && s == "-":
+				if m.insertLen > pwgenMinLen {
+					m.insertLen--
+					return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+				}
+			case !m.insertManual && s == "s":
+				m.insertSymbols = !m.insertSymbols
+				return m, m.insertGenerateCmd(m.insertLen, m.insertSymbols)
+			case m.insertManual:
+				applyInputKey(&m.insertPassword, msg)
+			}
 		}
 
 	case 2: // done — should not be reachable, return to tree.
@@ -953,21 +1381,36 @@ func (m Model) viewInsert() string {
 		fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:next  esc:cancel  ctrl+u:clear"))
 
 	case 1:
-		fmt.Fprintf(&b, "  %s %s\n", m.st.header.Render("new entry:"), m.st.bold.Render(m.insertName))
+		mode := "generated"
+		if m.insertManual {
+			mode = "manual"
+		}
+		fmt.Fprintf(&b, "  %s %s  %s\n", m.st.header.Render("new entry:"), m.st.bold.Render(m.insertName), m.st.dimmed.Render("("+mode+")"))
 		if m.insertPassword != "" {
 			fmt.Fprintf(&b, "  %s %s\n", m.st.dimmed.Render("pass:"), m.st.visible.Render(m.insertPassword))
+		} else if m.insertManual {
+			fmt.Fprintf(&b, "  %s %s\n", m.st.dimmed.Render("pass:"), m.st.visible.Render("")+"▏")
 		} else {
 			fmt.Fprintln(&b, m.st.dimmed.Render("  generating..."))
 		}
-		fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:save  r:regenerate  esc:back"))
+		if m.insertManual {
+			fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:create  ctrl+g:use generator  esc:back"))
+		} else {
+			sym := "symbols"
+			if !m.insertSymbols {
+				sym = "no symbols"
+			}
+			fmt.Fprintf(&b, "  %s %d   %s\n", m.st.dimmed.Render("length:"), m.insertLen, m.st.dimmed.Render("("+sym+")"))
+			fmt.Fprintf(&b, "\n  %s\n", m.st.dimmed.Render("enter:create  r:regenerate  +/-:length  s:symbols  ctrl+g:type manually  esc:back"))
+		}
 	}
 
 	return b.String()
 }
 
 // insertGenerateCmd returns a tea.Cmd that generates a password for the new entry.
-func (m Model) insertGenerateCmd(length int) tea.Cmd {
-	charset := m.cfg.CharacterSet
+func (m Model) insertGenerateCmd(length int, symbols bool) tea.Cmd {
+	charset := m.genCharset(symbols)
 	return func() tea.Msg {
 		pw, err := pwgen.Generate(length, charset)
 		if err != nil {
@@ -1034,6 +1477,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				} else {
 					m.histCur = 0
 				}
+			case viewFiles:
+				if m.filesCur > 2 {
+					m.filesCur -= 3
+				} else {
+					m.filesCur = 0
+				}
 			}
 		case tea.MouseButtonWheelDown:
 			switch m.view {
@@ -1055,6 +1504,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				} else {
 					m.histCur = len(m.histList) - 1
 				}
+			case viewFiles:
+				if m.filesCur < len(m.filesVis)-3 {
+					m.filesCur += 3
+				} else {
+					m.filesCur = len(m.filesVis) - 1
+				}
 			}
 		}
 	}
@@ -1072,6 +1527,9 @@ func (m *Model) openEntry(name string) {
 	m.otpCfg = nil
 	m.otpCode = ""
 	m.otpRemain = 0
+	m.binBackdrop = binary.IsBinary(name)
+	m.binSize = 0
+	m.binSum = ""
 }
 
 // closeEntry returns to the tree view and clears the decrypted secret from
@@ -1084,6 +1542,19 @@ func (m *Model) closeEntry() {
 	m.otpCode = ""
 	m.unlockErr = nil
 	m.showPass = false
+	m.binBackdrop = false
+	m.binSize = 0
+	m.binSum = ""
+}
+
+// initBinary computes the display metadata of a decrypted binary entry.
+// Like initOTP it runs on the async unlock result, keeping the multi-meg
+// base64 decode off the key path.
+func (m *Model) initBinary() {
+	if !m.binBackdrop || m.sec == nil {
+		return
+	}
+	m.binSize, m.binSum = binStats(m.sec)
 }
 
 // unlockCmd returns a tea.Cmd that decrypts the entry in the background.
@@ -1096,12 +1567,22 @@ func (m Model) unlockCmd(name string) tea.Cmd {
 }
 
 // generateCmd returns a tea.Cmd that generates a new password.
-func (m Model) generateCmd(length int) tea.Cmd {
-	charset := m.cfg.CharacterSet
+func (m Model) generateCmd(length int, symbols bool) tea.Cmd {
+	charset := m.genCharset(symbols)
 	return func() tea.Msg {
 		pw, err := pwgen.Generate(length, charset)
 		return generateResult{password: pw, err: err}
 	}
+}
+
+// genCharset picks the generation alphabet. The no-symbols alphabet
+// matches the CLI's --no-symbols setting, so a password copied out of the
+// TUI obeys the same policy as one from `generate`.
+func (m Model) genCharset(symbols bool) string {
+	if symbols {
+		return m.cfg.CharacterSet
+	}
+	return m.cfg.CharacterSetNoSymbols
 }
 
 // historyCmd returns a tea.Cmd that loads the git history for an entry.
@@ -1157,45 +1638,20 @@ func (m *Model) updateOTP() {
 
 // copyPasswordCmd returns a tea.Cmd that copies the password to the clipboard.
 func (m Model) copyPasswordCmd() tea.Cmd {
-	pw := m.sec.Password()
-	name := m.current
-	cb := m.clipBackend
-	dur := m.cfg.ClipTime
-	return func() tea.Msg {
-		if cb == nil {
-			return statusMsg("no clipboard backend")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), dur+time.Second)
-		defer cancel()
-		if err := clip.CopyWithTimeout(ctx, cb, pw, dur); err != nil {
-			return statusMsg("clipboard: " + err.Error())
-		}
-		return statusMsg("copied " + name + " to clipboard")
-	}
+	return m.copyValueCmd(m.current, m.sec.Password())
 }
 
 // copyOTPCodeCmd returns a tea.Cmd that copies the current OTP code.
 func (m Model) copyOTPCodeCmd() tea.Cmd {
-	code := m.otpCode
-	cb := m.clipBackend
-	dur := m.cfg.ClipTime
-	return func() tea.Msg {
-		if cb == nil {
-			return statusMsg("no clipboard backend")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), dur+time.Second)
-		defer cancel()
-		if err := clip.CopyWithTimeout(ctx, cb, code, dur); err != nil {
-			return statusMsg("clipboard: " + err.Error())
-		}
-		return statusMsg("copied OTP code to clipboard")
-	}
+	return m.copyValueCmd("OTP code", m.otpCode)
 }
 
-// lock clears all decrypted secrets from memory.
+// lock clears all decrypted secrets from memory, including any staged
+// editor copy — it is plaintext just like the open entry.
 func (m *Model) lock() {
 	m.locked = true
 	m.sec = nil
+	m.editor = nil
 	m.otpCfg = nil
 	m.otpCode = ""
 	m.showPass = false

@@ -32,6 +32,22 @@ func TestAdvanceCounterRewritesURIOnly(t *testing.T) {
 	}
 }
 
+// stubClipBackend stands in for the session's clipboard.
+//
+// NewModel detects the real backend from the environment, and a headless
+// runner — the Nix build sandbox — has no clipboard to detect. The reveal
+// path then skips the copy entirely and the clipCopy seam never fires, so
+// the test has to inject a backend itself to measure the model instead of
+// the machine it runs on.
+type stubClipBackend struct{}
+
+func (stubClipBackend) Name() string                       { return "stub" }
+func (stubClipBackend) Copy(context.Context, string) error { return nil }
+func (stubClipBackend) Paste(context.Context) (string, error) {
+	return "", nil
+}
+func (stubClipBackend) Available() bool { return true }
+
 func TestHOTPRevealAdvancesAndCopies(t *testing.T) {
 	ms := newMockStore(map[string]string{"entry": "pw"})
 	ms.entries["entry"] = secret.New("pw", hotpURI)
@@ -39,6 +55,7 @@ func TestHOTPRevealAdvancesAndCopies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.clipBackend = stubClipBackend{}
 	m.SetSize(80, 24)
 	m.openEntry("entry")
 

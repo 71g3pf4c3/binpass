@@ -306,6 +306,9 @@ ydotool otherwise). When several are installed, or the session variables
 lie about the desktop, `--tool=wtype|xdotool|ydotool` on `binpass type`,
 `binpass menu` and `binpass otp menu` forces one; `BINPASS_TYPER_TOOL` and
 the `typer.tool` config setting do the same for every invocation.
+[docs/typing.md](docs/typing.md) covers tool selection, the `--field` and
+`--delay` flags, the `otp menu` ranking, and why the secret never appears in
+ps(1).
 
 ## Hiding the store
 
@@ -361,7 +364,9 @@ binpass               p:toggle  c:copy  o:otp  d:delete  r:rename  g:generate  y
 
 It runs on the alternate screen, so nothing that was displayed survives in
 scrollback, and the session locks itself after five minutes of inactivity,
-clearing decrypted secrets from memory.
+clearing decrypted secrets from memory. Editing, new entries with
+generation, binary attachments, grep, the audit report and store status are
+all in there too — [docs/tui.md](docs/tui.md) walks the whole key map.
 
 ### Themes
 
@@ -726,6 +731,8 @@ Everything they do is available natively; see ARCHITECTURE.md §5.
 | [docs/plugins.md](docs/plugins.md) | Writing plugins, the environment they receive, manifests and capabilities, and where the security boundary actually is. |
 | [docs/secret-service.md](docs/secret-service.md) | Standing in for gnome-keyring: replacing it, how items are stored, the blind attribute index, and the access policy. |
 | [docs/macos.md](docs/macos.md) | What works on macOS and what does not: the sparse bundle tomb, screen-lock auto-close, Keychain import and export, launchd, and what has never been run on a Mac. |
+| [docs/typing.md](docs/typing.md) | Typing secrets instead of pasting them: tool selection per session, forcing a backend, `menu --type` and `otp menu`, the stdin-not-argv security model, and what the Nix package ships. |
+| [docs/tui.md](docs/tui.md) | The TUI at CLI parity: editing and creating entries, binary attachments, generate/copy/type, OTP views, grep, audit, store status, themes, and the full key map. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The specification the implementation follows, including the parts not built yet. |
 
 ## Development

@@ -110,4 +110,5 @@ config (YAML + env; `BINPASS_*` overrides `PASSWORD_STORE_*`).
 binary answers to whichever name it was invoked under).
 `share/` holds systemd/DBus unit files installed by the Nix package.
 `docs/` has topic guides (sync remotes, tomb, plugins, Secret Service,
-migration, macOS) — check them before changing those subsystems.
+migration, macOS, typing, TUI) — check them before changing those
+subsystems.

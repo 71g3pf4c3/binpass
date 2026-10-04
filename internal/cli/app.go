@@ -42,6 +42,16 @@ type App struct {
 	// storeErr is the error from building the store, if any.
 	storeErr error
 
+	// gpgBackend and ageBackend are the crypto backends the store was
+	// wired with, recorded so that a reencrypt can target exactly the
+	// backend a fresh insert would use. They are set under storeOnce and
+	// are therefore only safe to read after a successful Store call.
+	gpgBackend crypto.Crypto
+	// ageBackend is the age backend including its decrypt diagnostics
+	// wrapper, which is harmless for encryption and keeps error messages
+	// uniform.
+	ageBackend crypto.Crypto
+
 	// guardOnce guards lazy guard construction.
 	guardOnce sync.Once
 	// cachedGuard enforces plugin capabilities on store access.
@@ -106,12 +116,29 @@ func (a *App) newStore() (*store.Store, error) {
 	if a.Cfg.Default == config.BackendGPG {
 		def = gpg
 	}
+	a.gpgBackend = gpg
+	a.ageBackend = diag
 	return store.New(store.Options{
 		Dir:      a.Cfg.Dir,
 		Backends: backends,
 		Default:  def,
 		Umask:    a.Cfg.Umask,
 	})
+}
+
+// cryptoFor returns the backend instance the store writes with, so a bulk
+// reencrypt targets exactly what a fresh insert would use instead of a
+// second, subtly different construction. It must be called after Store,
+// which builds and records the backends; a nil result means Store failed or
+// was never called, which every caller checks first.
+func (a *App) cryptoFor(kind config.Backend) (crypto.Crypto, error) {
+	switch kind {
+	case config.BackendAge:
+		return a.ageBackend, nil
+	case config.BackendGPG:
+		return a.gpgBackend, nil
+	}
+	return nil, fmt.Errorf("unknown backend %q", string(kind))
 }
 
 // identities resolves age identities on demand, so that no key file is read

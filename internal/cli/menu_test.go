@@ -296,3 +296,88 @@ func TestRunOTPMenu_TypesCode(t *testing.T) {
 	assert.Regexp(t, `^\d{6}$`, code, "a six-digit TOTP code is typed")
 	assert.NotEqual(t, "hunter2", code, "the code, not the password line")
 }
+
+func TestOTPKnownRoundTrip(t *testing.T) {
+	// The cache lives in the state directory; pointing it at a scratch dir
+	// keeps the round trip away from the developer's real menu ranking.
+	t.Setenv("BINPASS_STATE_DIR", t.TempDir())
+
+	rememberOTPKnown("a")
+	when, ok := loadOTPKnown()["a"]
+	require.True(t, ok, "a remembered entry must load back")
+	assert.False(t, when.IsZero())
+
+	forgetOTPKnown("a")
+	_, ok = loadOTPKnown()["a"]
+	assert.False(t, ok, "a forgotten entry must not load back")
+}
+
+// TestRunMenu_OTPFieldFloatsKnownEntries covers the otp menu learning loop:
+// producing a code once floats the entry above the plain passwords on the
+// next run, without the menu ever decrypting the store to find out.
+func TestRunMenu_OTPFieldFloatsKnownEntries(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "alpha/plain", "hunter2\n")
+	app.set(t, "zeta/twofa", "hunter2\notpauth://totp/example?secret=JBSWY3DPEHPK3PXP\n")
+
+	// First run: nothing is known yet, so plain name order reaches the
+	// picker and the pick itself teaches the menu.
+	pickingPicker(t, "zeta/twofa")
+	require.NoError(t, app.runMenu(context.Background(), menuOpts{launcher: "rofi", field: "otp", print: true}))
+	assert.Equal(t, []string{"alpha/plain", "zeta/twofa"}, menuStdin(t), "nothing known yet: name order")
+	assert.Regexp(t, `^\d{6}$`, strings.TrimSpace(app.out.String()), "the code, not the password line")
+
+	// Second run: zeta/twofa has produced a code, so it leads.
+	pickingPicker(t, "zeta/twofa")
+	require.NoError(t, app.runMenu(context.Background(), menuOpts{launcher: "rofi", field: "otp", print: true}))
+	assert.Equal(t, []string{"zeta/twofa", "alpha/plain"}, menuStdin(t), "the entry that has produced a code leads")
+
+	// The ranking must survive --reverse: flipping a name sort must not
+	// bury the 2FA entries under the plain passwords again.
+	pickingPicker(t, "zeta/twofa")
+	require.NoError(t, app.runMenu(context.Background(), menuOpts{launcher: "rofi", field: "otp", print: true, reverse: true}))
+	assert.Equal(t, []string{"zeta/twofa", "alpha/plain"}, menuStdin(t), "known OTP entries still lead under --reverse")
+}
+
+// TestRunMenu_OTPFieldForgetsEntriesWithoutURI covers the self-healing: a
+// stale cache entry that can no longer produce a code is dropped on the
+// failed pick, so it stops floating on the next run.
+func TestRunMenu_OTPFieldForgetsEntriesWithoutURI(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "plain", "hunter2\n")
+	rememberOTPKnown("plain") // stale knowledge, e.g. the URI was edited out
+
+	pickingPicker(t, "plain")
+	err := app.runMenu(context.Background(), menuOpts{launcher: "rofi", field: "otp", print: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plain has no otpauth:// URI")
+
+	_, ok := loadOTPKnown()["plain"]
+	assert.False(t, ok, "the failed pick must self-heal the cache")
+}
+
+// TestRunOTP_TeachesTheOtpMenu covers `binpass otp` feeding the same cache:
+// any flow that produces a code makes the next `otp menu` run float the
+// entry to the top.
+func TestRunOTP_TeachesTheOtpMenu(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "site", "hunter2\notpauth://totp/example?secret=JBSWY3DPEHPK3PXP\n")
+
+	require.NoError(t, app.runOTP(context.Background(), "site", false, false, false))
+	_, ok := loadOTPKnown()["site"]
+	assert.True(t, ok, "a code produced through the otp command must be remembered")
+}
+
+// TestRunOTP_WatchTeachesTheOtpMenu covers --watch feeding the cache too:
+// watching an entry's codes roll over proves it can produce them.
+func TestRunOTP_WatchTeachesTheOtpMenu(t *testing.T) {
+	app := newTestApp(t)
+	app.set(t, "site", "hunter2\notpauth://totp/example?secret=JBSWY3DPEHPK3PXP\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	require.NoError(t, app.runOTP(ctx, "site", false, true, false))
+
+	_, ok := loadOTPKnown()["site"]
+	assert.True(t, ok, "a watched entry must be remembered")
+}

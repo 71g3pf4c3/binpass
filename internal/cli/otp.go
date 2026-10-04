@@ -44,7 +44,10 @@ func newOTPCmdMenu(app *App) *cobra.Command {
 		Long: "Lists the store in an interactive picker and sends the chosen entry's\n" +
 			"current one-time password as keystrokes to the focused window.\n" +
 			"Entries are not decrypted until one is chosen; the code is computed\n" +
-			"and typed the moment it is picked.\n\n" +
+			"and typed the moment it is picked. Entries that have produced a code\n" +
+			"before are floated to the top so plain passwords stop burying the\n" +
+			"2FA ones — the ranking is learned from use, never from decrypting\n" +
+			"the store up front, so the very first run starts unranked.\n\n" +
 			"--print writes the code to stdout and --copy puts it on the clipboard\n" +
 			"instead of typing it. The same sorting options as `binpass menu`\n" +
 			"apply, sharing one usage history.",
@@ -91,6 +94,9 @@ func (a *App) runOTP(ctx context.Context, name string, doClip, watch, showURI bo
 	}
 
 	if watch {
+		// Watching proves the entry produces codes just as surely as
+		// emitting one does, so it feeds the otp menu's ranking too.
+		rememberOTPKnown(name)
 		return a.watchOTP(ctx, cfg)
 	}
 	code, err := a.otpCode(s, name, sec)

@@ -53,7 +53,8 @@ func newMenuCmd(app *App) *cobra.Command {
 			"script: the store is never decrypted until an entry is actually chosen.\n\n" +
 			"--sort=frequent and --sort=recent order the list by how the entry has been\n" +
 			"used in this menu before, so the daily ones float to the top; --field=otp\n" +
-			"generates the entry's one-time password instead of its first line.",
+			"generates the entry's one-time password instead of its first line,\n" +
+			"floating entries that have produced a code before to the top.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.args = args
@@ -90,6 +91,9 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 	// missing or corrupt file simply means nobody has used the menu yet.
 	usage := loadMenuUsage()
 	names = sortEntries(names, opts.sort, opts.reverse, usage)
+	if opts.field == "otp" {
+		names = floatOTPKnown(names, loadOTPKnown())
+	}
 
 	picker, err := detectPicker(opts.launcher)
 	if err != nil {
@@ -308,15 +312,23 @@ func loadMenuUsage() menuUsage {
 // saveMenuUsage writes the usage file atomically: a half-written history is
 // worse than a lost one, because it silently reorders someone's menu.
 func saveMenuUsage(usage menuUsage) {
-	path := menuUsagePath()
+	saveStateJSON(menuUsagePath(), usage)
+}
+
+// saveStateJSON installs v at path atomically. State files feed pickers and
+// sorts, so a torn write must never be observable: a temp file in the same
+// directory plus rename leaves the old state or the new one, never a
+// half-written one. Failures are silent by design — losing bookkeeping
+// must not fail a command that already produced its output.
+func saveStateJSON(path string, v any) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
-	data, err := json.Marshal(usage)
+	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".menu-usage-*") // 0600 by default.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".state-*") // 0600 by default.
 	if err != nil {
 		return
 	}
@@ -331,6 +343,53 @@ func saveMenuUsage(usage menuUsage) {
 		return
 	}
 	_ = os.Rename(name, path)
+}
+
+// otpKnown records the entries that have produced a one-time password
+// before, mapped to when. The otp menu floats them to the top of the picker
+// so a store full of plain passwords stops burying the 2FA ones — without
+// decrypting anything: the store is only ever opened for the entry that is
+// actually chosen, so the first run starts unranked and the cache fills as
+// codes are generated. Like the usage history it lives in the state
+// directory, never in the store: it is binpass's own bookkeeping, and the
+// store must stay exactly what pass understands.
+type otpKnown map[string]time.Time
+
+// otpKnownPath is the file the known-OTP cache lives in.
+func otpKnownPath() string {
+	return filepath.Join(config.StateDir(), "otp-known.json")
+}
+
+// loadOTPKnown reads the known-OTP cache, treating anything unreadable as
+// empty: the menu must never fail over its own bookkeeping.
+func loadOTPKnown() otpKnown {
+	known := otpKnown{}
+	data, err := os.ReadFile(otpKnownPath()) //nolint:gosec // a fixed path in the state directory.
+	if err != nil {
+		return known
+	}
+	_ = json.Unmarshal(data, &known)
+	return known
+}
+
+// rememberOTPKnown records that name has produced a one-time password.
+func rememberOTPKnown(name string) {
+	known := loadOTPKnown()
+	known[name] = time.Now()
+	saveStateJSON(otpKnownPath(), known)
+}
+
+// forgetOTPKnown drops name from the known-OTP cache. An entry that no
+// longer holds an otpauth:// URI must stop floating to the top of the otp
+// menu, so the cache self-heals on the first failed pick instead of
+// sticking until the file is deleted by hand.
+func forgetOTPKnown(name string) {
+	known := loadOTPKnown()
+	if _, ok := known[name]; !ok {
+		return
+	}
+	delete(known, name)
+	saveStateJSON(otpKnownPath(), known)
 }
 
 // sortEntries orders names for the picker. name is the store's own order;
@@ -379,6 +438,22 @@ func sortEntries(names []string, mode string, reverse bool, usage menuUsage) []s
 	return out
 }
 
+// floatOTPKnown stable-partitions names so the ones that have produced a
+// one-time password before come first, keeping whatever order the sort mode
+// produced inside each half. It runs after any --reverse on purpose: the
+// otp menu's whole point is reaching a code in one motion, and a flag meant
+// to flip a name sort must not bury the 2FA entries again. Entries removed
+// from the store never reach a picker list, so the cache needs no pruning.
+func floatOTPKnown(names []string, known otpKnown) []string {
+	out := append([]string{}, names...)
+	sort.SliceStable(out, func(i, j int) bool {
+		_, ai := known[out[i]]
+		_, bj := known[out[j]]
+		return ai && !bj
+	})
+	return out
+}
+
 // completeSortModes completes the --sort flag.
 func completeSortModes(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	modes := []string{"name", "frequent", "recent"}
@@ -397,6 +472,10 @@ func completeSortModes(_ *cobra.Command, _ []string, toComplete string) ([]strin
 func (a *App) otpCode(s *store.Store, name string, sec *secret.Secret) (string, error) {
 	uri, ok := sec.OTP()
 	if !ok {
+		// The entry can no longer produce a code, so it must stop
+		// floating to the top of the otp menu: the cache self-heals
+		// here instead of sticking until it is deleted by hand.
+		forgetOTPKnown(name)
 		return "", fmt.Errorf("Error: %s has no otpauth:// URI.", name) //nolint:revive,staticcheck // pass-otp's diagnostic style.
 	}
 	cfg, err := otp.Parse(uri)
@@ -412,5 +491,6 @@ func (a *App) otpCode(s *store.Store, name string, sec *secret.Secret) (string, 
 			return "", err
 		}
 	}
+	rememberOTPKnown(name)
 	return code, nil
 }

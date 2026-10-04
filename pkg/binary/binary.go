@@ -17,7 +17,6 @@ import (
 	"strings"
 
 	"github.com/71g3pf4c3/binpass/pkg/secret"
-	"github.com/71g3pf4c3/binpass/pkg/store"
 )
 
 // b64Suffix marks a binary entry.
@@ -25,6 +24,15 @@ const b64Suffix = ".b64"
 
 // ErrNotBinary reports that an entry is not a binary secret.
 var ErrNotBinary = errors.New("binary: entry is not a binary secret")
+
+// EntryStore is the store surface the binary operations need: decrypting
+// and writing whole entries. *store.Store satisfies it, and so does any
+// other caller (the TUI) or test double — everything drives the same code
+// the `binary` command runs.
+type EntryStore interface {
+	Get(name string) (*secret.Secret, error)
+	Set(name string, sec *secret.Secret) error
+}
 
 // IsBinary reports whether name refers to a binary entry (".b64" suffix).
 func IsBinary(name string) bool {
@@ -34,7 +42,7 @@ func IsBinary(name string) bool {
 // Cat decodes the binary content of the named entry and writes it to w.
 // The entry must have the ".b64" suffix. The base64-decoded output streams
 // to w without buffering the full decoded content in memory.
-func Cat(s *store.Store, name string, w io.Writer) error {
+func Cat(s EntryStore, name string, w io.Writer) error {
 	if !IsBinary(name) {
 		return fmt.Errorf("%w: %q", ErrNotBinary, name)
 	}
@@ -51,7 +59,7 @@ func Cat(s *store.Store, name string, w io.Writer) error {
 // entry, as a lowercase hex string. The entry must have the ".b64" suffix.
 // The hash is computed on the stream, so the decoded content is never fully
 // buffered.
-func Sum(s *store.Store, name string) (string, error) {
+func Sum(s EntryStore, name string) (string, error) {
 	if !IsBinary(name) {
 		return "", fmt.Errorf("%w: %q", ErrNotBinary, name)
 	}
@@ -70,7 +78,7 @@ func Sum(s *store.Store, name string) (string, error) {
 // Store reads binary data from r, base64-encodes it, and stores it under
 // name. The entry name must have the ".b64" suffix. The reader is consumed
 // fully, including EOF.
-func Store(s *store.Store, name string, r io.Reader) error {
+func Store(s EntryStore, name string, r io.Reader) error {
 	if !IsBinary(name) {
 		return fmt.Errorf("%w: %q", ErrNotBinary, name)
 	}
@@ -84,7 +92,7 @@ func Store(s *store.Store, name string, r io.Reader) error {
 
 // StoreAndHash is Store that also returns the SHA-256 hash of the original
 // (pre-encoding) content. Useful for verification after import.
-func StoreAndHash(s *store.Store, name string, r io.Reader) (string, error) {
+func StoreAndHash(s EntryStore, name string, r io.Reader) (string, error) {
 	if !IsBinary(name) {
 		return "", fmt.Errorf("%w: %q", ErrNotBinary, name)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/71g3pf4c3/binpass/internal/config"
 	"github.com/71g3pf4c3/binpass/internal/theme"
+	"github.com/71g3pf4c3/binpass/pkg/binary"
 	"github.com/71g3pf4c3/binpass/pkg/clip"
 	"github.com/71g3pf4c3/binpass/pkg/otp"
 	"github.com/71g3pf4c3/binpass/pkg/pwgen"
@@ -46,6 +47,8 @@ const (
 	viewHistory              // git history for an entry
 	viewLocked               // autolock screen
 	viewEdit                 // staged entry editor
+	viewFiles                // local-filesystem picker (attach/extract)
+	viewBinName              // attachment entry-name input
 )
 
 // tickMsg is sent every second to drive the OTP countdown timer and the
@@ -141,6 +144,21 @@ type Model struct {
 	editMode  int          // editBrowse or one of the input modes
 	editInput string       // contents of the bottom input line
 	editKey   string       // staged key of the field being added
+
+	// File picker and binary attachments.
+	filesDir    string   // directory being browsed
+	filesList   []string // its full listing (dirs carry a trailing "/")
+	filesVis    []string // query-filtered view of filesList
+	filesCur    int      // selected picker row
+	filesQuery  string   // fuzzy filter for the listing
+	pickDir     bool     // true when choosing an extract destination
+	binFrom     View     // view to return to after the picker flow
+	binFile     string   // source file of an in-flight attach
+	binName     string   // entry name of an in-flight attach or extract
+	binContext  string   // entry the attach was initiated from (naming hint)
+	binSize     int64    // decoded size of the open binary entry
+	binSum      string   // SHA-256 of the open binary entry's content
+	binBackdrop bool     // true when the open entry is a .b64 attachment
 
 	// VCS backend (nil when the store is not a git repo).
 	vcs vcs.Backend
@@ -269,6 +287,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sec = msg.sec
 			m.unlockErr = nil
 			m.initOTP()
+			m.initBinary()
+		}
+		return m, nil
+
+	case binResult:
+		if msg.err != nil {
+			m.status = "binary: " + msg.err.Error()
+		} else {
+			m.status = msg.desc
+			m.rebuildTree()
 		}
 		return m, nil
 
@@ -319,6 +347,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleHistory(msg)
 		case viewEdit:
 			return m.handleEdit(msg)
+		case viewFiles:
+			return m.handleFiles(msg)
+		case viewBinName:
+			return m.handleBinName(msg)
 		}
 
 	case tea.MouseMsg:
@@ -355,6 +387,10 @@ func (m Model) View() string {
 		return m.viewHistory()
 	case viewEdit:
 		return m.viewEdit()
+	case viewFiles:
+		return m.viewFiles()
+	case viewBinName:
+		return m.viewBinName()
 	}
 	return ""
 }
@@ -427,6 +463,18 @@ func (m Model) handleTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.insertManual = false
 		m.insertStep = 0
 		m.view = viewInsert
+
+	case m.km.Attach:
+		// Attach a file to the selected entry: the picker proposes
+		// "<entry>.b64" as the store name, matching the CLI convention.
+		if len(m.flat) > 0 {
+			item := m.flat[m.cursor]
+			if item.node.entry && !binary.IsBinary(item.node.path) {
+				m.binFrom = viewTree
+				m.binContext = item.node.path
+				m.startFilePicker(false)
+			}
+		}
 
 	case "E": // shift+e = expand all
 		expandAll(m.tree)
@@ -566,6 +614,9 @@ func (m Model) viewSearch() string {
 // --- view: detail ---
 
 func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.binBackdrop {
+		return m.handleDetailBinary(msg)
+	}
 	switch msg.String() {
 	case m.km.Back:
 		m.closeEntry()
@@ -615,8 +666,61 @@ func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = viewHistory
 		return m, m.historyCmd(m.current)
 
+	case m.km.Attach:
+		m.binFrom = viewDetail
+		m.binContext = m.current
+		m.startFilePicker(false)
+
 	case m.km.Quit, "ctrl+c":
 		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// handleDetailBinary dispatches keys for a decrypted .b64 entry. Most
+// text-entry actions are meaningless or harmful on base64 blobs (editing
+// them by hand, generating a password over them, copying them to the
+// clipboard), so they are refused rather than silently mangled.
+func (m Model) handleDetailBinary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case m.km.Back:
+		m.closeEntry()
+		return m, nil
+
+	case m.km.Extract:
+		m.binFrom = viewDetail
+		m.binName = m.current
+		m.startFilePicker(true)
+
+	case m.km.Attach:
+		m.binFrom = viewDetail
+		m.binContext = "" // a .b64 context must not name the new entry.
+		m.startFilePicker(false)
+
+	case m.km.Delete:
+		m.confirmAction = "delete"
+		m.confirmTarget = m.current
+		m.confirmFocus = 1 // default to "no"
+		m.view = viewConfirm
+
+	case m.km.Rename:
+		m.renameFrom = m.current
+		m.renameTo = m.current
+		m.view = viewRename
+
+	case m.km.History:
+		m.histTarget = m.current
+		m.histList = nil
+		m.histErr = nil
+		m.histCur = 0
+		m.view = viewHistory
+		return m, m.historyCmd(m.current)
+
+	case m.km.Quit, "ctrl+c":
+		return m, tea.Quit
+
+	default:
+		m.status = "binary entry: x:extract  b:attach  d:delete  r:rename"
 	}
 	return m, nil
 }
@@ -634,6 +738,17 @@ func (m Model) viewDetail() string {
 	if m.sec == nil {
 		fmt.Fprintln(&b, m.st.dimmed.Render("  decrypting..."))
 		bar := m.statusBar("esc:back")
+		return b.String() + bar
+	}
+
+	// Binary attachments: never render the base64 body, only metadata.
+	if m.binBackdrop {
+		fmt.Fprintf(&b, "  %s\n", m.st.header.Render("binary attachment"))
+		fmt.Fprintf(&b, "  %s %s\n", m.st.dimmed.Render("size:"), humanSize(m.binSize))
+		if m.binSum != "" {
+			fmt.Fprintf(&b, "  %s %s\n", m.st.dimmed.Render("sha256:"), m.binSum)
+		}
+		bar := m.statusBar("x:extract  b:attach  d:delete  r:rename  y:history  esc:back")
 		return b.String() + bar
 	}
 
@@ -697,9 +812,12 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Declined. The editor keeps its staged copy so the user
 			// can reconsider; the delete flow keeps its historical
 			// "back to the tree" behaviour.
-			if m.confirmAction == "save-edit" || m.confirmAction == "discard-edit" {
+			switch m.confirmAction {
+			case "save-edit", "discard-edit":
 				m.view = viewEdit
-			} else {
+			case "bin-overwrite":
+				m.view = viewBinName
+			default:
 				m.view = viewTree
 			}
 			return m, nil
@@ -720,15 +838,22 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "discard-edit":
 			m.status = "changes discarded"
 			m.closeEditor(false)
+		case "bin-overwrite":
+			cmd := m.attachCmd(m.binFile, m.binName)
+			m.view = m.binFrom
+			return m, cmd
 		}
 		return m, nil
 
 	case m.km.Back:
-		if m.confirmAction == "save-edit" || m.confirmAction == "discard-edit" {
+		switch m.confirmAction {
+		case "save-edit", "discard-edit":
 			m.view = viewEdit
-			return m, nil
+		case "bin-overwrite":
+			m.view = viewBinName
+		default:
+			m.view = viewDetail
 		}
-		m.view = viewDetail
 		return m, nil
 	}
 	return m, nil
@@ -1119,6 +1244,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				} else {
 					m.histCur = 0
 				}
+			case viewFiles:
+				if m.filesCur > 2 {
+					m.filesCur -= 3
+				} else {
+					m.filesCur = 0
+				}
 			}
 		case tea.MouseButtonWheelDown:
 			switch m.view {
@@ -1140,6 +1271,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				} else {
 					m.histCur = len(m.histList) - 1
 				}
+			case viewFiles:
+				if m.filesCur < len(m.filesVis)-3 {
+					m.filesCur += 3
+				} else {
+					m.filesCur = len(m.filesVis) - 1
+				}
 			}
 		}
 	}
@@ -1157,6 +1294,9 @@ func (m *Model) openEntry(name string) {
 	m.otpCfg = nil
 	m.otpCode = ""
 	m.otpRemain = 0
+	m.binBackdrop = binary.IsBinary(name)
+	m.binSize = 0
+	m.binSum = ""
 }
 
 // closeEntry returns to the tree view and clears the decrypted secret from
@@ -1169,6 +1309,19 @@ func (m *Model) closeEntry() {
 	m.otpCode = ""
 	m.unlockErr = nil
 	m.showPass = false
+	m.binBackdrop = false
+	m.binSize = 0
+	m.binSum = ""
+}
+
+// initBinary computes the display metadata of a decrypted binary entry.
+// Like initOTP it runs on the async unlock result, keeping the multi-meg
+// base64 decode off the key path.
+func (m *Model) initBinary() {
+	if !m.binBackdrop || m.sec == nil {
+		return
+	}
+	m.binSize, m.binSum = binStats(m.sec)
 }
 
 // unlockCmd returns a tea.Cmd that decrypts the entry in the background.

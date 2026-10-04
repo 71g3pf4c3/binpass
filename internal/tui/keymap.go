@@ -19,6 +19,7 @@ type keymap struct {
 	Search   string
 	Quit     string
 	NewEntry string
+	Attach   string
 
 	// Detail view.
 	TogglePassword string
@@ -30,6 +31,7 @@ type keymap struct {
 	Generate       string
 	History        string
 	Edit           string
+	Extract        string
 
 	// Search view.
 	ClearSearch string
@@ -45,6 +47,7 @@ func defaultKeymap() keymap {
 		Search:         "/",
 		Quit:           "q",
 		NewEntry:       "n",
+		Attach:         "b",
 		TogglePassword: "p",
 		CopyPassword:   "c",
 		CopyOTP:        "o",
@@ -54,6 +57,7 @@ func defaultKeymap() keymap {
 		Generate:       "g",
 		History:        "y",
 		Edit:           "e",
+		Extract:        "x",
 		ClearSearch:    "esc",
 	}
 }

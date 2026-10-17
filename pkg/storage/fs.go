@@ -67,10 +67,74 @@ func (f *FS) rel(name string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrOutsideStore, name)
 	}
 	clean := filepath.Clean(filepath.FromSlash(name))
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if escapes(clean) {
 		return "", fmt.Errorf("%w: %q", ErrOutsideStore, name)
 	}
 	return clean, nil
+}
+
+// checkContained verifies that path, with every symlink on it resolved, still
+// lies below the store root.
+//
+// rel validates names lexically, which says nothing about what is on disk:
+// os.MkdirAll is satisfied by a symlink that already resolves to a directory,
+// and os.CreateTemp and os.Rename then write through it, outside the store.
+// Store content can arrive from a sync remote, so the chain is resolved before
+// anything is created. Symlinks are not refused as such: pass follows them,
+// and a subtree aliased inside the store, or a store kept elsewhere and
+// symlinked into place, are ordinary setups. Only a link whose target leaves
+// the store is an escape.
+func (f *FS) checkContained(path string) error {
+	rel, err := filepath.Rel(f.Dir, path)
+	if err != nil || escapes(rel) {
+		return fmt.Errorf("%w: %q", ErrOutsideStore, path)
+	}
+	root, err := resolveExisting(f.Dir)
+	if err != nil {
+		return err
+	}
+	resolved, err := resolveExisting(path)
+	if err != nil {
+		return err
+	}
+	rel, err = filepath.Rel(root, resolved)
+	if err != nil || escapes(rel) {
+		return fmt.Errorf("%w: %q resolves to %q", ErrOutsideStore, path, resolved)
+	}
+	return nil
+}
+
+// resolveExisting evaluates the symlinks on the longest existing prefix of
+// path and reattaches the missing tail: what does not exist cannot be a link,
+// and the write creates it itself below the resolved parent. The store root
+// itself may not exist yet, on init.
+func resolveExisting(path string) (string, error) {
+	existing, tail := path, ""
+	for {
+		_, err := os.Lstat(existing)
+		if err == nil {
+			break
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return path, nil
+		}
+		tail = filepath.Join(filepath.Base(existing), tail)
+		existing = parent
+	}
+	resolved, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, tail), nil
+}
+
+// escapes reports whether a cleaned relative path climbs above its base.
+func escapes(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Name converts an absolute entry path back into a store name, stripping the

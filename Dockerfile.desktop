@@ -10,7 +10,13 @@
 #
 # The Wayland halves (wl-copy, wtype) are out of scope here: they need a
 # compositor, and running one is what Dockerfile.e2e already does with sway.
-FROM golang:1.26-trixie
+#
+# The base image is pinned by digest: `golang:1.26-trixie` is a moving tag,
+# so the toolchain and the X11 packages this suite exercises would otherwise
+# change under the test without a commit. The tag stays in the comment so a
+# bump is a readable diff (resolve the new digest from the registry, e.g.
+# `skopeo inspect --raw docker://docker.io/library/golang:1.26-trixie`).
+FROM golang:1.26-trixie@sha256:f06b7122f888680048afb247c4e5f49c0069eb6c4c1ccae0f3f4834527a8d22c
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	xvfb \

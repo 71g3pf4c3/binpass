@@ -83,6 +83,12 @@ func (a *App) runGenerate(ctx context.Context, name string, length int, opts gen
 	// the notes attached to an entry survive a rotation.
 	sec := secret.New(password, "")
 	if opts.inPlace && exists {
+		// Keeping the rest of the entry means decrypting it first, and a
+		// write-only grant must not be able to trigger that: the old
+		// plaintext would land in the plugin-driven process's memory.
+		if err := a.Guard().CheckDecrypt(name); err != nil {
+			return err
+		}
 		existing, err := s.Get(name)
 		if err != nil {
 			return err

@@ -207,16 +207,17 @@ func DoctorCheck() string {
 	defer func() { _ = conn.Close() }()
 
 	// Check for GNOME screensaver.
-	gnome := false
-	if err := conn.Object("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver").Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Store(nil); err == nil {
-		gnome = true
-	}
+	//
+	// The reply is discarded, and it has to be discarded by ignoring it
+	// rather than by storing it into nothing: Store(nil) reflects over a
+	// zero Value and panics, so on a desktop where the screensaver *does*
+	// answer, this check used to take `binpass doctor` down with it.
+	gnome := conn.Object("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver").
+		Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Err == nil
 
 	// Check for freedesktop screensaver.
-	fd := false
-	if err := conn.Object("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver").Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Store(nil); err == nil {
-		fd = true
-	}
+	fd := conn.Object("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver").
+		Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Err == nil
 
 	// Check for logind.
 	sysConn, err := dbus.ConnectSystemBus()

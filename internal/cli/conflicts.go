@@ -79,6 +79,9 @@ func (a *App) runConflictsList() error {
 	if err != nil {
 		return err
 	}
+	// A conflict listing is a store listing, so a restricted plugin sees
+	// conflicts only in the subtree it was granted.
+	entries = a.Guard().FilterReadable(entries)
 	found := false
 	for _, name := range entries {
 		if isConflictFile(name) {
@@ -101,6 +104,16 @@ func (a *App) runConflictsDiff(path string, showSecrets bool) error {
 		return err
 	}
 	original := conflictToOriginal(path)
+
+	// A diff prints both versions, so it discloses both entries' plaintext
+	// even with the password line masked.
+	g := a.Guard()
+	if err := g.CheckDecrypt(path); err != nil {
+		return err
+	}
+	if err := g.CheckDecrypt(original); err != nil {
+		return err
+	}
 
 	localSec, lErr := s.Get(path)
 	remoteSec, rErr := s.Get(original)
@@ -143,6 +156,14 @@ func (a *App) runConflictsResolve(path, strategy string) error {
 		// the entry reachable only as "alice.conflict-thinkpad-2026...",
 		// which is not what "keep the local one" means to anyone.
 		original := conflictToOriginal(path)
+		// Resolving discards one version of an entry for good, which is a
+		// write at both names involved.
+		if err := a.Guard().CheckWrite(path); err != nil {
+			return err
+		}
+		if err := a.Guard().CheckWrite(original); err != nil {
+			return err
+		}
 		fmt.Fprintf(a.Out, "Resolving %s: keeping local as %s.\n", path, original)
 		if s.Exists(original) {
 			if err := s.Remove(original); err != nil {
@@ -152,6 +173,9 @@ func (a *App) runConflictsResolve(path, strategy string) error {
 		return s.Move(path, original)
 	case "remote":
 		// Keep the remote (original) file, remove the conflict.
+		if err := a.Guard().CheckWrite(path); err != nil {
+			return err
+		}
 		fmt.Fprintf(a.Out, "Resolving %s: keeping remote, removing %s.\n", originalFromConflict(path), path)
 		return s.Remove(path)
 	case "both":

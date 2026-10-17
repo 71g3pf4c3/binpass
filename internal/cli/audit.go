@@ -73,6 +73,12 @@ func (a *App) runAudit(ctx context.Context, format string, parallel int, noHIBP 
 	if err != nil {
 		return err
 	}
+	// The audit decrypts every entry it reports on, so a plugin's grant has
+	// to cover all of them: a silently narrowed audit would print "no
+	// findings" for entries it was never allowed to look at.
+	if err := a.guardBulk(s, "", true, false); err != nil {
+		return err
+	}
 
 	if parallel > 1 {
 		a.printf("Warning: parallel decryption with a hardware token will require rapid repeated touches.\n")

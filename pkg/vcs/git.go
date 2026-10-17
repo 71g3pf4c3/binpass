@@ -96,9 +96,17 @@ func (g *GitBackend) Log(entry string, opts LogOption) ([]Commit, error) {
 // Show returns the file content at the given commit. This is ciphertext
 // for encrypted entries; the caller must decrypt it.
 func (g *GitBackend) Show(entry, hash string) ([]byte, error) {
+	// A colon separates the revision from the path in git's object syntax,
+	// so an entry carrying one redirects the read to a revision or a path
+	// the caller did not ask for. No store entry needs one.
+	if strings.Contains(entry, ":") {
+		return nil, fmt.Errorf("vcs: invalid entry %q", entry)
+	}
 	// Try both extensions.
 	for _, ext := range []string{".gpg", ".age"} {
-		args := []string{"-C", g.dir, "show", hash + ":" + entry + ext}
+		// "--" ends option parsing, as in Log, so that no part of the
+		// object name can be taken for a flag.
+		args := []string{"-C", g.dir, "show", hash + ":" + entry + ext, "--"}
 		cmd := exec.Command(g.gitPath(), args...) //nolint:gosec // arguments are constructed internally.
 		out, err := cmd.Output()
 		if err == nil {

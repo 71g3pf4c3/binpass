@@ -33,6 +33,7 @@ that lets it stand in for gnome-keyring.
 | yes | `tui` (full-screen browser), `history` (git revisions of an entry) |
 | yes | `ss` — serve the store as the system keyring (org.freedesktop.secrets), Linux |
 | yes | `keychain` — import from and export to the macOS Keychain |
+| yes | `sops` — browse and edit the keys of a sops-encrypted YAML/JSON file in the TUI and CLI |
 
 ## Plugins
 
@@ -404,6 +405,24 @@ programs.binpass.theme = "gruvbox";
 reads commit metadata only and decrypts nothing, so no password can be
 revealed by it.
 
+## sops files
+
+NixOS machines keep secrets in sops-encrypted YAML that sops-nix decrypts at
+activation. `binpass sops` edits those files key by key instead of dropping
+the whole plaintext into `$EDITOR`:
+
+```sh
+binpass sops edit secrets/hosts.yaml          # the TUI, with keys as entries
+binpass sops set  secrets/hosts.yaml db/password
+binpass sops get  secrets/hosts.yaml db/password
+```
+
+Nested maps are folders, `db/password` is the same path sops-nix uses, and
+each change is one `sops set` — binpass never sees a master key and the
+file's git diff is the changed value plus sops's `lastmodified` and `mac`
+fields. [docs/sops.md](docs/sops.md) covers key addressing, newline
+handling, creating files and a `make secrets-edit` target.
+
 ## The system keyring
 
 Chrome, VS Code, NetworkManager and Evolution keep their secrets in the
@@ -734,12 +753,13 @@ Everything they do is available natively; see ARCHITECTURE.md §5.
 | [docs/macos.md](docs/macos.md) | What works on macOS and what does not: the sparse bundle tomb, screen-lock auto-close, Keychain import and export, launchd, and what has never been run on a Mac. |
 | [docs/typing.md](docs/typing.md) | Typing secrets instead of pasting them: tool selection per session, forcing a backend, `menu --type` and `otp menu`, the stdin-not-argv security model, and what the Nix package ships. |
 | [docs/tui.md](docs/tui.md) | The TUI at CLI parity: editing and creating entries, binary attachments, generate/copy/type, OTP views, grep, audit, store status, themes, and the full key map. |
+| [docs/sops.md](docs/sops.md) | Editing sops-encrypted YAML/JSON for sops-nix: key addressing, the TUI over a single file, newline fidelity, creating files, and what stays sops's job. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The specification the implementation follows, including the parts not built yet. |
 
 ## Development
 
 ```sh
-nix develop          # go, gpg, pass, age, tree, rofi, fzf, linters
+nix develop          # go, gpg, pass, age, sops, tree, rofi, fzf, linters
 make test
 make cover
 ```

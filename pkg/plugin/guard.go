@@ -13,6 +13,13 @@ var ErrDenied = errors.New("plugin: denied by capabilities")
 // It exists because a manifest that is displayed but not enforced is
 // decoration. When binpass runs on a plugin's behalf, every store operation
 // passes through here first.
+//
+// Only read_paths, write_paths and decrypt are enforceable: they describe
+// what a plugin obtains through binpass. The network and exec lists are not,
+// because a level 1 plugin opens sockets and runs programs by itself and
+// never asks. They stay in the manifest as an audit trail of what the author
+// said the plugin would do, and Summary says so rather than implying a
+// control that cannot exist without a proxy binpass does not provide.
 type Guard struct {
 	// Name is the plugin the guard acts for, used in error messages.
 	Name string
@@ -85,30 +92,6 @@ func (g *Guard) CheckDecrypt(name string) error {
 	}
 	if !MatchAny(g.Caps.ReadPaths, name) {
 		return g.deny("decrypt", name, g.Caps.ReadPaths)
-	}
-	return nil
-}
-
-// CheckExec returns an error unless the plugin may run an external binary.
-func (g *Guard) CheckExec(bin string) error {
-	if !g.Active {
-		return nil
-	}
-	if !coversHosts(g.Caps.Exec, []string{bin}) {
-		return fmt.Errorf("%w: plugin %q may not run %q; its manifest allows %v",
-			ErrDenied, g.Name, bin, g.Caps.Exec)
-	}
-	return nil
-}
-
-// CheckNetwork returns an error unless the plugin may reach a host.
-func (g *Guard) CheckNetwork(host string) error {
-	if !g.Active {
-		return nil
-	}
-	if !coversHosts(g.Caps.Network, []string{host}) {
-		return fmt.Errorf("%w: plugin %q may not reach %q; its manifest allows %v",
-			ErrDenied, g.Name, host, g.Caps.Network)
 	}
 	return nil
 }

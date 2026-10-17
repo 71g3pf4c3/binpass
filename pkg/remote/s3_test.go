@@ -1,8 +1,12 @@
 package remote
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -209,6 +213,74 @@ func TestS3Remote_PrefixAndLockVisibility(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, files, 1)
 	assert.Equal(t, "entry.age", files[0].Path, "the prefix is stripped from the path the sync engine sees")
+}
+
+// TestS3Remote_ListRejectsEscapingKey serves a listing with keys only the
+// bucket owner can create and checks they are refused. A key is joined onto
+// the store root, so "../" in one is a write outside the store for any
+// consumer that trusts the transport to have validated what it reports.
+//
+// The listing is served by a fake endpoint rather than MinIO: no S3 client
+// will upload such a key for us, and the point is what this code does with a
+// listing it did not produce.
+func TestS3Remote_ListRejectsEscapingKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "parent traversal", key: "../../.ssh/authorized_keys"},
+		{name: "nested traversal", key: "a/../../escape.gpg"},
+		{name: "absolute", key: "/etc/passwd.gpg"},
+		{name: "backslash traversal", key: `a\..\..\escape.gpg`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Has("location") {
+					w.Header().Set("Content-Type", "application/xml")
+					_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
+						`<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>`)
+					return
+				}
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = io.WriteString(w, listingXML(tc.key))
+			}))
+			t.Cleanup(srv.Close)
+
+			r, err := NewS3Remote(S3Options{
+				Name:      "fake",
+				Endpoint:  strings.TrimPrefix(srv.URL, "http://"),
+				Scheme:    "http",
+				Bucket:    "store",
+				Region:    "us-east-1",
+				AccessKey: "key",
+				SecretKey: "secret",
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = r.Close() })
+
+			files, err := r.List(context.Background())
+			assert.ErrorIs(t, err, ErrUnsafePath, "an escaping key must not be reported as a file")
+			assert.Empty(t, files)
+		})
+	}
+}
+
+// listingXML renders a one-object ListObjectsV2 response holding key.
+func listingXML(key string) string {
+	var escaped bytes.Buffer
+	if err := xml.EscapeText(&escaped, []byte(key)); err != nil {
+		panic(err)
+	}
+	return `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` +
+		`<Name>store</Name><Prefix></Prefix><KeyCount>1</KeyCount>` +
+		`<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated><Contents>` +
+		`<Key>` + escaped.String() + `</Key>` +
+		`<LastModified>2024-01-01T00:00:00.000Z</LastModified>` +
+		`<ETag>&quot;d41d8cd98f00b204e9800998ecf8427e&quot;</ETag>` +
+		`<Size>1</Size><StorageClass>STANDARD</StorageClass>` +
+		`</Contents></ListBucketResult>`
 }
 
 func TestS3Remote_AdvisoryLock(t *testing.T) {

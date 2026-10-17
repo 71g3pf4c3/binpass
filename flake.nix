@@ -159,6 +159,8 @@
           gnupg
           pass
           age
+          # `binpass sops` drives the sops binary; its suites skip without it.
+          sops
           git
           qrencode
           # pass renders listings through tree(1); the golden tests compare

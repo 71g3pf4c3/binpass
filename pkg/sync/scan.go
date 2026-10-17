@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"lukechampine.com/blake3"
+
+	"github.com/71g3pf4c3/binpass/pkg/remote"
 )
 
 // Scan walks the store directory and produces a Snapshot of the current file
@@ -34,10 +36,26 @@ import (
 // Files present in the base but not on disk are deleted. They do not appear
 // in the returned snapshot. The caller should compare against the base to
 // detect deletions.
+// # Symlinks
+//
+// A symlink anywhere below the store root aborts the scan. Store content can
+// arrive from a sync remote, and a link is dereferenced by the hashing below
+// (reading a file the remote named instead of an entry) and by every later
+// write through that path (landing outside the store). The root itself is
+// exempt, since symlinking the store into place is an ordinary pass setup.
 func Scan(storeDir string, base Snapshot, device DeviceID, exts []string) (Snapshot, error) {
 	allowed := make(map[string]bool, len(exts))
 	for _, e := range exts {
 		allowed[e] = true
+	}
+
+	// A store kept elsewhere and symlinked into place is an ordinary pass
+	// setup, but filepath.WalkDir does not descend through a symlinked root:
+	// the walk would report no entries at all, which the merge engine reads
+	// as every entry having been deleted. Only the root is resolved; the
+	// links the walk rejects below are the ones inside the store.
+	if resolved, err := filepath.EvalSymlinks(storeDir); err == nil {
+		storeDir = resolved
 	}
 
 	out := make(Snapshot)
@@ -52,6 +70,11 @@ func Scan(storeDir string, base Snapshot, device DeviceID, exts []string) (Snaps
 				return fs.SkipDir
 			}
 			return nil
+		}
+		if path != storeDir {
+			if err := remote.CheckNotSymlink(path, d.Type()); err != nil {
+				return err
+			}
 		}
 		if d.IsDir() {
 			return nil

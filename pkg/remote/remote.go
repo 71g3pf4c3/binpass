@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"path/filepath"
 	"strings"
@@ -219,6 +220,28 @@ func CheckPath(p string) error {
 		if clean == ".." || strings.HasPrefix(clean, "../") {
 			return fmt.Errorf("%w: %q escapes the store", ErrUnsafePath, p)
 		}
+	}
+	return nil
+}
+
+// ErrSymlink reports store content that is a symbolic link.
+var ErrSymlink = errors.New("remote: symbolic link in store content")
+
+// CheckNotSymlink reports whether an entry found while walking store content
+// is safe to treat as store content. Walks pass the Lstat mode, which is what
+// fs.DirEntry.Type and os.Lstat already give them.
+//
+// A store tree is under the control of whoever can write to the remote, and a
+// symlink committed there is delivered verbatim by git checkout. Everything
+// that follows dereferences it: chmod rewrites the permissions of the link
+// target, and a read hashes and re-uploads whatever the link points at. The
+// link may equally be a directory, which turns every later write under it
+// into a write outside the store. Sync refuses such a tree outright instead
+// of guessing which links are benign, because a store that is being
+// manipulated is not a store to keep synchronising.
+func CheckNotSymlink(p string, mode fs.FileMode) error {
+	if mode&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %q", ErrSymlink, p)
 	}
 	return nil
 }

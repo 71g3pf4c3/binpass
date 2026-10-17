@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/71g3pf4c3/binpass/internal/config"
-	"golang.org/x/term"
 )
 
 // rcloneBackends maps the binpass remote types that need OAuth to the
@@ -54,8 +53,8 @@ func (a *App) ensureRcloneAuth(rc config.RemoteConfig) error {
 	}
 
 	interactive := func() bool {
-		f, ok := a.In.(interface{ Fd() uintptr })
-		return ok && term.IsTerminal(int(f.Fd()))
+		_, ok := a.inputFd()
+		return ok
 	}
 	setup := rcloneSetup{
 		listRemotes: func() ([]string, error) { return rcloneListRemotes() },

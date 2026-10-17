@@ -74,6 +74,12 @@ func (a *App) runRecrypt(sub string, kind config.Backend, dryRun bool) error {
 	if err != nil {
 		return err
 	}
+	// A reencrypt decrypts and rewrites every entry under sub, dry run
+	// included — the dry run still lists them — so the grant has to cover
+	// the lot rather than a filtered part of it.
+	if err := a.guardBulk(s, sub, true, true); err != nil {
+		return err
+	}
 	changes := 0
 	for _, e := range infos {
 		if e.Ext != target.Ext() {

@@ -61,9 +61,11 @@ unit-tests:
   <<: *go-setup
   <<: *go-cache
   script:
-    - apt-get update && apt-get install -y --no-install-recommends pass gnupg tree age git rclone restic
+    - apt-get update && apt-get install -y --no-install-recommends pass gnupg tree age git rclone restic ca-certificates curl
+    - sh scripts/install-sops.sh
     - command -v pass || { echo "pass is missing: golden suite would skip"; exit 1; }
     - command -v tree || { echo "tree is missing: pass cannot render listings"; exit 1; }
+    - command -v sops || { echo "sops is missing: the sops suites would skip"; exit 1; }
     - go test -race ./...
 
 coverage:
@@ -71,7 +73,8 @@ coverage:
   <<: *go-setup
   <<: *go-cache
   script:
-    - apt-get update && apt-get install -y --no-install-recommends pass gnupg tree age git rclone restic
+    - apt-get update && apt-get install -y --no-install-recommends pass gnupg tree age git rclone restic ca-certificates curl
+    - sh scripts/install-sops.sh
     - go test -coverpkg=./pkg/...,./internal/... -coverprofile=coverage.out ./...
     - grep -v -E '/mocks/|_mock\.go|/gen/' coverage.out > coverage.filtered || true
     - total=$(go tool cover -func=coverage.filtered | awk '/^total:/ {gsub(/%/,"",$3); print $3}')

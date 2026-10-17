@@ -155,6 +155,7 @@ func newRootCmd(app *App, version, commit, buildDate string) *cobra.Command {
 		newOTPCmd(app),
 		newHistoryCmd(app),
 		newTombCmd(app),
+		newSopsCmd(app),
 		newDoctorCmd(app),
 		newBinaryCmd(app),
 		newImportCmd(app),

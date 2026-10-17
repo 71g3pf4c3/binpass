@@ -10,7 +10,7 @@ non-trivial change.
 
 ```sh
 nix develop                      # dev shell: go, gopls, golangci-lint, goreleaser, syft,
-                                  # plus real pass, gnupg, age, git, tree, qrencode,
+                                  # plus real pass, gnupg, age, sops, git, tree, qrencode,
                                   # rclone, restic, cryptsetup and menu pickers (fzf, rofi, …)
 make test                         # go test ./... (CGO_ENABLED=0), piped through
                                   # internal/testreport: renders the same quiet
@@ -62,7 +62,7 @@ they skip.
   `BINPASS_*` variables so tests measure the code, not the machine — outside
   the dev shell they can leak in.
 - **Do not break `CGO_ENABLED=0`.** External tools (`gpg`, `git`, `cryptsetup`,
-  `age-plugin-*`, rclone, restic) are invoked via `exec`, never linked.
+  `age-plugin-*`, `sops`, rclone, restic) are invoked via `exec`, never linked.
 - **Nothing app-owned inside the store.** Sync state, caches, indexes live in
   `$XDG_STATE_HOME/binpass/` / `$XDG_DATA_HOME/binpass/`. Inside
   `$PASSWORD_STORE_DIR` only what pass understands, plus `.binpass/plugins/`.
@@ -101,7 +101,7 @@ they skip.
 ## Layout
 
 `pkg/*` are the business-logic packages (crypto, store, sync, tomb, audit,
-importer, secretservice, …) — each with its own tests and `doc.go`.
+importer, secretservice, sopsfile, …) — each with its own tests and `doc.go`.
 `internal/cli` is the cobra command surface (one file per command).
 `internal/tui` is the bubbletea TUI. `internal/config` is viper-based
 config (YAML + env; `BINPASS_*` overrides `PASSWORD_STORE_*`).
@@ -110,5 +110,6 @@ config (YAML + env; `BINPASS_*` overrides `PASSWORD_STORE_*`).
 binary answers to whichever name it was invoked under).
 `share/` holds systemd/DBus unit files installed by the Nix package.
 `docs/` has topic guides (sync remotes, tomb, plugins, Secret Service,
-migration, macOS, typing, TUI) — check them before changing those
-subsystems.
+migration, macOS, typing, TUI, sops) — check them before changing those
+subsystems. `openspec/` holds OpenSpec change proposals; archive a change
+after it merges.

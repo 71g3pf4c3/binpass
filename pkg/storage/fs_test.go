@@ -217,3 +217,130 @@ func TestRename(t *testing.T) {
 	_, err = os.Stat(filepath.Join(f.Dir, "old"))
 	assert.True(t, os.IsNotExist(err), "the source directory is pruned when it empties")
 }
+
+// TestWritesRefuseSymlinkedParents plants a symlink inside the store pointing
+// outside it, which is what a hostile sync remote can commit, and checks that
+// no write follows it: MkdirAll, CreateTemp and Rename all dereference at the
+// kernel level, so a lexically valid entry name would otherwise land outside
+// the store.
+func TestWritesRefuseSymlinkedParents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	tests := []struct {
+		name string
+		// escaped is the name that must not appear outside the store.
+		escaped string
+		op      func(f *storage.FS) error
+	}{
+		{
+			name:    "write through a symlinked directory",
+			escaped: "entry.gpg",
+			op: func(f *storage.FS) error {
+				return f.Write(filepath.Join(f.Dir, "link", "entry.gpg"), []byte("x"))
+			},
+		},
+		{
+			name:    "write below a symlinked directory",
+			escaped: "deep",
+			op: func(f *storage.FS) error {
+				return f.Write(filepath.Join(f.Dir, "link", "deep", "entry.gpg"), []byte("x"))
+			},
+		},
+		{
+			name:    "mkdir through a symlinked directory",
+			escaped: "folder",
+			op: func(f *storage.FS) error {
+				return f.MkdirAll(filepath.Join(f.Dir, "link", "folder"))
+			},
+		},
+		{
+			name:    "rename into a symlinked directory",
+			escaped: "moved.gpg",
+			op: func(f *storage.FS) error {
+				from := filepath.Join(f.Dir, "real.gpg")
+				if err := f.Write(from, []byte("x")); err != nil {
+					return err
+				}
+				return f.Rename(from, filepath.Join(f.Dir, "link", "moved.gpg"))
+			},
+		},
+		{
+			name:    "rename out of a symlinked directory",
+			escaped: "stolen.gpg",
+			op: func(f *storage.FS) error {
+				return f.Rename(filepath.Join(f.Dir, "link", "loot.gpg"),
+					filepath.Join(f.Dir, "stolen.gpg"))
+			},
+		},
+		{
+			name:    "mkdir of a symlinked directory itself",
+			escaped: "anything",
+			op: func(f *storage.FS) error {
+				return f.MkdirAll(filepath.Join(f.Dir, "link"))
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			outside := t.TempDir()
+			touch(t, filepath.Join(outside, "loot.gpg"), "a local file")
+			f := newFS(t)
+			require.NoError(t, os.Symlink(outside, filepath.Join(f.Dir, "link")))
+
+			err := tc.op(f)
+			assert.ErrorIs(t, err, storage.ErrOutsideStore)
+
+			_, statErr := os.Lstat(filepath.Join(outside, tc.escaped))
+			assert.True(t, os.IsNotExist(statErr),
+				"%q must not be created outside the store", tc.escaped)
+			got, readErr := os.ReadFile(filepath.Join(outside, "loot.gpg"))
+			require.NoError(t, readErr)
+			assert.Equal(t, "a local file", string(got), "the link target is untouched")
+		})
+	}
+}
+
+// TestWritesFollowASymlinkInsideTheStore is the other half of the containment
+// rule: pass follows symlinks, and aliasing one subtree of the store as
+// another is an ordinary layout, so a link that stays inside the store is
+// written through rather than refused.
+func TestWritesFollowASymlinkInsideTheStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	f := newFS(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(f.Dir, "company", "work"), 0o700))
+	require.NoError(t, os.Symlink(filepath.Join("company", "work"), filepath.Join(f.Dir, "work")))
+
+	path := filepath.Join(f.Dir, "work", "mail.gpg")
+	require.NoError(t, f.Write(path, []byte("ciphertext")))
+	require.NoError(t, f.MkdirAll(filepath.Join(f.Dir, "work", "deeper")))
+	require.NoError(t, f.Rename(path, filepath.Join(f.Dir, "work", "deeper", "mail.gpg")))
+
+	got, err := f.Read(filepath.Join(f.Dir, "company", "work", "deeper", "mail.gpg"))
+	require.NoError(t, err)
+	assert.Equal(t, "ciphertext", string(got))
+}
+
+func TestWritesAllowASymlinkedStoreRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	// Keeping the store elsewhere and symlinking it into place is an
+	// ordinary pass setup, so the root is exempt from the symlink check.
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "real-store")
+	require.NoError(t, os.MkdirAll(target, 0o700))
+	link := filepath.Join(tmp, "store")
+	require.NoError(t, os.Symlink(target, link))
+
+	f := storage.New(link)
+	path := filepath.Join(f.Dir, "sub", "entry.gpg")
+	require.NoError(t, f.Write(path, []byte("ciphertext")))
+	require.NoError(t, f.Rename(path, filepath.Join(f.Dir, "other", "entry.gpg")))
+
+	got, err := f.Read(filepath.Join(target, "other", "entry.gpg"))
+	require.NoError(t, err)
+	assert.Equal(t, "ciphertext", string(got))
+}

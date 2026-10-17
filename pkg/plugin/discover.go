@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -133,6 +134,15 @@ func load(dir string) (*Plugin, error) {
 		return &Plugin{Manifest: m, Dir: dir, Managed: true}, nil
 	}
 	bin := filepath.Join(dir, m.Binary())
+	// Join cleans the result, so a manifest naming its executable outside
+	// the plugin directory would resolve to a file anywhere on disk. The
+	// manifest already refuses that lexically; this is the check that holds
+	// for a directory reached by any other route, including a symlinked one.
+	rel, err := filepath.Rel(dir, filepath.Clean(bin))
+	if err != nil || escapesDir(rel) {
+		return nil, fmt.Errorf("%w: exec %q escapes the plugin directory",
+			ErrInvalidManifest, m.Binary())
+	}
 	if _, err := os.Stat(bin); err != nil {
 		return nil, err
 	}

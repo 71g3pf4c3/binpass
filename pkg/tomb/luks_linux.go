@@ -135,8 +135,13 @@ func mkfsArgs(mapper string) []string {
 }
 
 // mountArgs builds the mount invocation for an unlocked container.
+//
+// A password store holds text, so nothing inside the container ever needs to
+// be executed, and the mount options say so: a container that arrived from
+// another machine over sync cannot bring a setuid binary or a device node
+// into use. Cheap, since nothing legitimate in there wants any of the three.
 func mountArgs(mapper, dir string) []string {
-	return []string{"/dev/mapper/" + mapper, dir}
+	return []string{"-o", "nosuid,nodev,noexec", "/dev/mapper/" + mapper, dir}
 }
 
 // Init creates a LUKS container and an age-encrypted key file.

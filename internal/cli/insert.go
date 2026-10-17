@@ -94,13 +94,24 @@ func (a *App) readPasswordTwice(name string) (string, error) {
 	return first, nil
 }
 
+// inputFd returns the file descriptor behind In and whether it is a
+// terminal; pipes and test buffers report false.
+func (a *App) inputFd() (int, bool) {
+	f, ok := a.In.(interface{ Fd() uintptr })
+	if !ok {
+		return 0, false
+	}
+	fd := int(f.Fd())
+	return fd, term.IsTerminal(fd)
+}
+
 // readSecret reads one line without echoing it. Secrets are never taken from
 // argv, so a terminal or a pipe are the only accepted sources.
 func (a *App) readSecret(prompt string) (string, error) {
-	if f, ok := a.In.(interface{ Fd() uintptr }); ok && term.IsTerminal(int(f.Fd())) {
+	if fd, ok := a.inputFd(); ok {
 		fmt.Fprint(a.Err, prompt)
 		defer fmt.Fprintln(a.Err)
-		b, err := term.ReadPassword(int(f.Fd()))
+		b, err := term.ReadPassword(fd)
 		if err != nil {
 			return "", err
 		}

@@ -262,6 +262,35 @@ func TestStatusViewRoutingAndRendering(t *testing.T) {
 	}
 }
 
+// A standalone store (one sops file) has no directory for git, sync state
+// or attachments: the bindings stay put and explain themselves.
+func TestStandaloneRefusesDirectoryBoundActions(t *testing.T) {
+	ms := newMockStore(map[string]string{"entry": "pw"})
+	ms.dir = t.TempDir()
+	m, err := NewModel(Options{Store: ms, Cfg: testConfig(), Standalone: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.vcs != nil {
+		t.Fatal("standalone must not detect a VCS")
+	}
+	for _, r := range []rune{'S', 'b'} {
+		got, cmd := m.Update(key(r))
+		n := got.(Model)
+		if n.view != viewTree || cmd != nil || !strings.Contains(n.status, "single sops file") {
+			t.Errorf("tree %q: view=%d cmd=%v status=%q", r, n.view, cmd != nil, n.status)
+		}
+	}
+	m.openEntry("entry")
+	for _, r := range []rune{'y', 'b', 'x'} {
+		got, cmd := m.Update(key(r))
+		n := got.(Model)
+		if n.view != viewDetail || cmd != nil || !strings.Contains(n.status, "single sops file") {
+			t.Errorf("detail %q: view=%d cmd=%v status=%q", r, n.view, cmd != nil, n.status)
+		}
+	}
+}
+
 func TestStatusCmdRealGitRepo(t *testing.T) {
 	// A real git repository exercises the actual git plumbing; the sync
 	// state goes to an isolated BINPASS_STATE_DIR.

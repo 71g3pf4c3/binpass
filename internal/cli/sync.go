@@ -104,6 +104,11 @@ func (a *App) runSync(ctx context.Context, remoteName string, dryRun bool) error
 	if err != nil {
 		return fmt.Errorf("sync: list remote: %w", err)
 	}
+	// What a store trusts — the recipients the next write encrypts to — can
+	// change behind the user's back on any sync that pulls, and the git
+	// transport pulls while listing, before a single action exists to
+	// inspect. Check the result on the way out, whichever way this returns.
+	defer a.reportStoreTrust(s.Dir())
 	// Files on both sides with no base entry — a copied store on a second
 	// device, a restored state.db — are resolved by content when the
 	// transport cannot name it upfront (git hashes while listing; rclone
@@ -445,6 +450,7 @@ func (a *App) buildRemote(name string, deviceID sync.DeviceID) (remote.Remote, e
 			opts.PasswordCommand = rc.PasswordCommand
 		}
 		if rc.Password != "" {
+			warnPlaintextRemotePassword(a.Err, name)
 			opts.Password = rc.Password
 		}
 		return remote.NewResticRemote(opts)

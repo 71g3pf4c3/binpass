@@ -74,7 +74,7 @@ func (g *GPG) ParseRecipients(dir string) ([]Recipient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return readRecipientsFile(path)
+	return ReadRecipientsFile(path)
 }
 
 // baseArgs mirrors pass's own GPG_OPTS, including the conditional
@@ -115,7 +115,7 @@ func (g *GPG) Encrypt(w io.Writer, plaintext []byte, rcp []Recipient) error {
 
 // Decrypt reads an OpenPGP ciphertext from r and returns its plaintext.
 func (g *GPG) Decrypt(r io.Reader) ([]byte, error) {
-	ciphertext, err := io.ReadAll(r)
+	ciphertext, err := readLimited(r, MaxEntryBytes, "ciphertext")
 	if err != nil {
 		return nil, err
 	}
@@ -134,16 +134,35 @@ func (g *GPG) Decrypt(r io.Reader) ([]byte, error) {
 
 // run executes gpg with stdin and returns stdout, surfacing gpg's own stderr
 // in the error so that "no secret key" or a cancelled pinentry stay legible.
+//
+// Output is read through a bound instead of into a plain buffer: gpg expands
+// a compressed packet as far as the packet asks, so a ciphertext the size of
+// an entry can produce gigabytes. The process is killed as soon as it passes
+// the bound, because it would otherwise block forever on a pipe nobody
+// drains.
 func (g *GPG) run(bin string, args []string, stdin []byte) ([]byte, error) {
 	cmd := exec.CommandContext(context.Background(), bin, args...) //nolint:gosec // args are built from store recipients, never from a shell string.
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = gpgEnv()
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
 
-	if err := cmd.Run(); err != nil {
+	out, readErr := readLimited(pipe, MaxEntryBytes, "gpg output")
+	if readErr != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, readErr
+	}
+
+	if err := cmd.Wait(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && msg != "" {
@@ -151,5 +170,5 @@ func (g *GPG) run(bin string, args []string, stdin []byte) ([]byte, error) {
 		}
 		return nil, err
 	}
-	return stdout.Bytes(), nil
+	return out, nil
 }

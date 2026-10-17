@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"math/big"
@@ -204,20 +205,31 @@ func padPKCS7(b []byte, blockSize int) []byte {
 }
 
 // unpadPKCS7 removes padding, rejecting anything malformed.
+//
+// Every byte of the last block is examined and the verdicts are folded
+// together, so neither the number of comparisons nor the point of failure
+// depends on the padding bytes. Returning at the first mismatch is the
+// padding-oracle shape: here the peer already holds the key it would be
+// learning about, so nothing is leaked today, but the cost of not relying on
+// that is a handful of arithmetic.
 func unpadPKCS7(b []byte, blockSize int) ([]byte, error) {
 	if len(b) == 0 || len(b)%blockSize != 0 {
 		return nil, errors.New("secretservice: bad padding length")
 	}
 	n := int(b[len(b)-1])
-	if n == 0 || n > blockSize || n > len(b) {
-		return nil, errors.New("secretservice: bad padding")
+
+	// A pad count outside 1..blockSize is already wrong; it is folded in
+	// rather than returned early so that the loop below always runs.
+	good := subtle.ConstantTimeLessOrEq(1, n) & subtle.ConstantTimeLessOrEq(n, blockSize)
+	for i := 1; i <= blockSize; i++ {
+		// The last n bytes must all equal n; the ones before them are
+		// plaintext and are examined but not required to match.
+		isPad := subtle.ConstantTimeLessOrEq(i, n)
+		same := subtle.ConstantTimeEq(int32(b[len(b)-i]), int32(n)) //nolint:gosec // both are byte-ranged.
+		good &= same | (1 ^ isPad)
 	}
-	// Every padding byte must carry the same value, or the padding is not
-	// PKCS#7 and the plaintext is not what the sender wrote.
-	for _, c := range b[len(b)-n:] {
-		if int(c) != n {
-			return nil, errors.New("secretservice: bad padding")
-		}
+	if good != 1 {
+		return nil, errors.New("secretservice: bad padding")
 	}
 	return b[:len(b)-n], nil
 }

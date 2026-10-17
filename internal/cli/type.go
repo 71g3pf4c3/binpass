@@ -82,6 +82,11 @@ func (a *App) runType(ctx context.Context, name, field string, delay time.Durati
 	if err != nil {
 		return err
 	}
+	// Typing a field puts plaintext into another window, which is the same
+	// disclosure show makes and needs the same grant.
+	if err := a.Guard().CheckDecrypt(name); err != nil {
+		return err
+	}
 	sec, err := s.Get(name)
 	if err != nil {
 		return err

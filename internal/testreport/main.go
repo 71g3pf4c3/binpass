@@ -62,11 +62,12 @@ var unproven = map[string]string{
 	"internal/cli/golden": "byte-for-byte output compatibility with pass(1)",
 	"pkg/crypto":          "GPG interop with pass(1)",
 	"pkg/importer":        "importing stores exported by real pass",
-	"internal/cli":        "the pass-import and sync commands end to end",
+	"internal/cli":        "the pass-import, sync and sops commands end to end",
 	"pkg/remote":          "sync transports (git, restic, rclone remotes)",
 	"pkg/vcs":             "git-backed store versioning",
 	"pkg/tomb":            "tomb/LUKS integration with real cryptsetup",
 	"internal/tui":        "git-dependent TUI flows",
+	"pkg/sopsfile":        "editing sops-encrypted files through the real sops binary",
 }
 
 // reporter is the streaming renderer. Output belonging to a passing or

@@ -27,8 +27,6 @@ func TestUnrestrictedAllowsEverything(t *testing.T) {
 	assert.True(t, g.CanRead("anything"))
 	assert.True(t, g.CanWrite("anything"))
 	assert.True(t, g.CanDecrypt("anything"))
-	assert.NoError(t, g.CheckExec("rm"))
-	assert.NoError(t, g.CheckNetwork("evil.example"))
 }
 
 func TestGuardScopesAccess(t *testing.T) {
@@ -39,12 +37,6 @@ func TestGuardScopesAccess(t *testing.T) {
 
 	assert.True(t, g.CanWrite("work/scratch/tmp"))
 	assert.False(t, g.CanWrite("work/aws"), "read access is not write access")
-
-	assert.NoError(t, g.CheckExec("curl"))
-	assert.Error(t, g.CheckExec("rm"))
-
-	assert.NoError(t, g.CheckNetwork("api.example.com"))
-	assert.Error(t, g.CheckNetwork("evil.example"))
 }
 
 // TestDecryptIsSeparateFromRead is the distinction that lets a plugin take an
@@ -73,8 +65,6 @@ func TestEmptyCapabilitiesDenyEverything(t *testing.T) {
 	assert.False(t, g.CanRead("a"))
 	assert.False(t, g.CanWrite("a"))
 	assert.False(t, g.CanDecrypt("a"))
-	assert.Error(t, g.CheckExec("echo"))
-	assert.Error(t, g.CheckNetwork("example.com"))
 }
 
 // TestFilterReadableHidesTheRest checks that listing is filtered rather than

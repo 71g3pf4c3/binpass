@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -93,5 +95,54 @@ func TestHIBPOffline(t *testing.T) {
 	}
 	if leaked {
 		t.Error("noopHIBP should never report passwords as leaked")
+	}
+}
+
+// TestHIBPCacheRejectsNonPrefixNames pins the only caller string that reaches
+// the filesystem to the shape the protocol defines. The prefix names a file
+// under CacheDir, so anything else chooses which file the audit reads or
+// overwrites.
+func TestHIBPCacheRejectsNonPrefixNames(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		// valid prefixes round-trip through the cache; the rest must not
+		// produce a cache hit, and must not write anywhere.
+		valid bool
+	}{
+		{name: "upper-case hex", prefix: "5BAA6", valid: true},
+		{name: "lower-case hex", prefix: "5baa6", valid: true},
+		{name: "parent traversal", prefix: "../escape"},
+		{name: "absolute", prefix: "/tmp/escape"},
+		{name: "nested path", prefix: "AB/CD"},
+		{name: "too short", prefix: "5BA"},
+		{name: "not hex", prefix: "GHIJK"},
+		{name: "empty", prefix: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			c := &HIBPClient{CacheDir: filepath.Join(root, "cache")}
+			c.writeCache(tc.prefix, map[string]int{strings.Repeat("A", 35): 1})
+
+			_, ok, err := c.readCache(tc.prefix)
+			if err != nil {
+				t.Fatalf("readCache(%q): %v", tc.prefix, err)
+			}
+			if ok != tc.valid {
+				t.Errorf("readCache(%q) hit = %v, want %v", tc.prefix, ok, tc.valid)
+			}
+
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if e.Name() != "cache" {
+					t.Errorf("writeCache(%q) created %q beside the cache directory",
+						tc.prefix, e.Name())
+				}
+			}
+		})
 	}
 }

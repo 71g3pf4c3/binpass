@@ -79,7 +79,7 @@ func newEditCmd(app *App) *cobra.Command {
 
 // runEdit decrypts an entry into a private temporary file, runs $EDITOR, and
 // stores the result. The plaintext never leaves a 0600 file that is removed
-// on every exit path.
+// on every exit path, including an interrupted editor.
 func (a *App) runEdit(ctx context.Context, name string) error {
 	s, err := a.requireStore()
 	if err != nil {
@@ -103,6 +103,11 @@ func (a *App) runEdit(ctx context.Context, name string) error {
 		return err
 	}
 	path := f.Name()
+	// The deferred shred below covers a normal return and a panic unwind;
+	// a signal would kill the process before any defer ran, so it gets its
+	// own handler for as long as the plaintext exists.
+	disarm := shredOnSignal(path)
+	defer disarm()
 	defer func() {
 		_ = f.Close()
 		_ = shred(path)

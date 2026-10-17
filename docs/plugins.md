@@ -73,7 +73,8 @@ In order:
    deliberately, and the only ones that can carry a manifest.
 2. `$PASSWORD_STORE_DIR/.binpass/plugins/<name>/` — plugins that travel with
    the store when it syncs. Convenient, and a trust decision: anything that
-   can write to your store can add one.
+   can write to your store can add one, which is why a plugin carrying a
+   manifest runs only after `binpass plugin trust` ([§5](#5-managed-plugins-and-capabilities)).
 3. Anywhere on `PATH`.
 
 Earlier sources win when a name repeats.
@@ -164,6 +165,40 @@ capabilities:
 
 Put the executable beside it in the same directory.
 
+### Approval
+
+A plugin carrying a manifest does not run until you have approved it:
+
+```sh
+binpass plugin trust inventory
+# inventory 0.1.0
+#   path:   /home/you/.local/share/binpass/plugins/inventory/binpass-inventory
+#   digest: 4f1c…
+#   reads:   github.com/*, work/**
+#   writes:  nothing
+#   network: none
+# Approved inventory.
+```
+
+Until then it is refused, with the digest and the capabilities printed so
+there is something to read before consenting:
+
+```
+binpass: plugin "inventory" is not approved.
+binpass: refusing to run an unapproved plugin; review it and run
+"binpass plugin trust inventory"
+```
+
+Approval is recorded in `$XDG_DATA_HOME/binpass/plugins.lock` — outside the
+store, so a plugin that travelled in with a sync cannot vouch for itself —
+and it is bound to the executable's SHA-256 and to the capabilities the
+manifest requested. An update that rewrites the binary, or a manifest edited
+to ask for more, has to be approved again. Approving a plugin once must not
+approve every future version of it, including one its author never wrote.
+
+Executables found on `PATH` carry no manifest and are not gated: there is
+nothing recorded to approve, and you put them there yourself.
+
 ### What can be requested
 
 | Field | Grants |
@@ -171,8 +206,16 @@ Put the executable beside it in the same directory.
 | `read_paths` | Listing and reading the named entries. |
 | `write_paths` | Creating and modifying the named entries. |
 | `decrypt` | Access to plaintext. Separate from reading. |
-| `network` | Host allowlist. Absent means no network. |
-| `exec` | External binaries the plugin may invoke. |
+| `network` | **Declared only.** A host list recorded for review; nothing enforces it. |
+| `exec` | **Declared only.** The external binaries the author says the plugin runs. |
+
+The first three are enforced: they describe what a plugin can obtain *through
+binpass*, and every call back in is checked against them. `network` and
+`exec` cannot be enforced at all — a level 1 plugin is an ordinary process
+that opens its own sockets and runs its own programs without asking binpass
+anything. They exist as an audit trail of what the author declared, and the
+approval text labels them as such. Do not approve a plugin on the strength of
+a narrow `network` list; it binds nothing.
 
 **Everything denies by default.** An absent list is an empty list, never a
 wildcard — otherwise a manifest that requests nothing would receive
@@ -353,7 +396,12 @@ binpass does not sandbox plugins and does not pretend to. What it does:
   cannot be handed a forged grant or be pointed at another store by whatever
   invoked binpass.
 * Capabilities are enforced on every call a managed plugin makes back into
-  binpass.
+  binpass. `read_paths`, `write_paths` and `decrypt` only — `network` and
+  `exec` are declarations the plugin is never held to, and the approval text
+  says so.
+* A manifest-carrying plugin does not run until it is approved by name,
+  digest and capability list, so one planted in a synced store cannot run
+  itself on your next typo.
 
 What that last point is worth, precisely: a plugin declaring `read_paths:
 ["github.com/*"]` cannot use binpass to read `bank/savings`. It can still open
@@ -378,9 +426,5 @@ Being straight about the gap between the architecture and the code:
 | Level 2 (declarative YAML recipes) | Manifests parse `level: 2`, but no recipe interpreter exists. |
 | Level 3 (WASM under wazero) | Not built. This is where isolation would be real: a guest with no file or network access. |
 | `binpass plugin install` / `remove` | Not built. Install by creating the directory yourself, as in [§6](#6-a-worked-example). |
-| Approval prompt and `plugins.lock` | The lock format and the "has this changed since you approved it" check are implemented and tested in `pkg/plugin`, but nothing calls them yet. A manifest is currently trusted on sight. |
-
-That last row matters if you are relying on capabilities: today the manifest
-in the directory is what gets enforced, and editing it to ask for more will
-not prompt anyone. Until the approval flow is wired up, treat a managed
-plugin's manifest as documentation of intent rather than as consent you gave.
+| `plugins.lock` approval | **Working.** `binpass plugin trust` records consent; a manifest-carrying plugin is refused until then, and again whenever its binary or its capability list changes. There is no interactive prompt: approval is an explicit command. |
+| Enforcing `network` / `exec` | **Not built, and not planned at level 1.** Holding a plugin to them needs a proxy it is obliged to use, which an ordinary process can simply bypass. They are shown as declarations, never as controls. Level 3 (WASM) is where this becomes real. |

@@ -46,7 +46,11 @@ func (k *KeePassImporter) Import(r io.Reader) iter.Seq2[*Entry, error] {
 		db := gokeepasslib.NewDatabase()
 		db.Credentials = gokeepasslib.NewPasswordCredentials(k.Password)
 
-		decoder := gokeepasslib.NewDecoder(r)
+		// The database is attacker-supplied input until it has been
+		// decrypted: bound what the decoder may pull in. Only the file is
+		// bounded, not what the KDBX4 inner compression expands to, which
+		// gokeepasslib handles out of reach of this call.
+		decoder := gokeepasslib.NewDecoder(limitReader(r))
 		if err := decoder.Decode(db); err != nil {
 			yield(nil, fmt.Errorf("keepass: decode: %w", err))
 			return

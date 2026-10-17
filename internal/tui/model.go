@@ -196,6 +196,8 @@ type Model struct {
 
 	// VCS backend (nil when the store is not a git repo).
 	vcs vcs.Backend
+	// standalone disables the directory-bound actions; see Options.
+	standalone bool
 
 	// Autolock.
 	lastActivity time.Time
@@ -216,6 +218,12 @@ type Model struct {
 type Options struct {
 	Store Store
 	Cfg   config.Config
+	// Standalone marks a Store that is a single document rather than a
+	// password-store directory: VCS detection is skipped and the actions
+	// that read or write files beside the entries (history, status,
+	// attach, extract) report themselves unavailable instead of running
+	// git or the attachment codec against the wrong place.
+	Standalone bool
 }
 
 // NewModel returns a Model ready to run. The store is read lazily (tree is
@@ -244,7 +252,7 @@ func NewModel(opts Options) (Model, error) {
 	// Clip backend may be nil (e.g. headless CI). Operations that need it
 	// will report the error at the point of use.
 
-	return Model{
+	m := Model{
 		store:        opts.Store,
 		cfg:          opts.Cfg,
 		km:           km,
@@ -256,8 +264,12 @@ func NewModel(opts Options) (Model, error) {
 		allEntries:   entries,
 		lastActivity: time.Now(),
 		clipBackend:  cb,
-		vcs:          vcs.DetectBackend(opts.Store.Dir()),
-	}, nil
+		standalone:   opts.Standalone,
+	}
+	if !opts.Standalone {
+		m.vcs = vcs.DetectBackend(opts.Store.Dir())
+	}
+	return m, nil
 }
 
 // Run starts the TUI event loop. It returns the process exit code.
@@ -481,9 +493,27 @@ func (m Model) View() string {
 	return ""
 }
 
+// refuseDirBound reports whether msg asks for an action that needs the
+// store to be a directory while the model is standalone, leaving the
+// reason in the status bar. The caller swallows the key.
+func (m *Model) refuseDirBound(msg tea.KeyMsg) bool {
+	if !m.standalone {
+		return false
+	}
+	switch msg.String() {
+	case m.km.History, m.km.Status, m.km.Attach, m.km.Extract:
+		m.status = "not available for a single sops file"
+		return true
+	}
+	return false
+}
+
 // --- view: tree ---
 
 func (m Model) handleTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.refuseDirBound(msg) {
+		return m, nil
+	}
 	switch msg.String() {
 	case m.km.Quit, "ctrl+c":
 		return m, tea.Quit
@@ -736,6 +766,9 @@ func (m Model) viewSearch() string {
 // --- view: detail ---
 
 func (m Model) handleDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.refuseDirBound(msg) {
+		return m, nil
+	}
 	if m.binBackdrop {
 		return m.handleDetailBinary(msg)
 	}

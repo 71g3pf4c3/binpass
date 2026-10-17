@@ -400,15 +400,11 @@ sync:
       password_command: "cat /run/secrets/restic-password"
 ```
 
-**Inline password** (for testing only — avoid in production):
-```yaml
-sync:
-  remotes:
-    test:
-      type: restic
-      url: /tmp/test-repo
-      password: test-password
-```
+**Inline password.** `remote add` refuses `password=` on the command line: a
+password in argv is readable by every process on the host and lands in shell
+history. Pass `password_command=...` instead. A `password:` key written by
+hand into `config.yaml` still works, but `binpass remote list` warns on stderr
+for every remote that carries one, until it is replaced by `password_command`.
 
 ### 2.7. Snapshot management
 
@@ -861,9 +857,30 @@ token. A `Put(path, content, expectRev)` call fails if another commit has
 touched the file since the SHA was read. This prevents silent overwrites when
 two clients push concurrently.
 
-For cloud transports (S3, Drive, Yandex, WebDAV), conditional writes are
-best-effort. S3 supports `If-Match` on the ETag (not yet wired). For others,
-binpass uses verify-after-write: read the file back after upload and compare.
+The native `s3` transport is a real conditional write: every `Put` goes out
+with `If-Match: <ETag>` and fails with 412 when another device changed the
+object in between (§3), and the advisory lock is created with
+`If-None-Match: *`. The rclone-based transports (Drive, Yandex, WebDAV) have
+no such primitive, so binpass uses verify-after-write there: read the file
+back after upload and compare.
+
+### What a sync may change under you
+
+A remote that can write to the store can also rewrite `.gpg-id` or
+`.age-recipients`, or drop a plugin into `.binpass/plugins/`. Neither looks
+like an entry, so neither shows up in the sync action list. After every sync
+binpass therefore compares both against a baseline kept in
+`$XDG_STATE_HOME/binpass/trust.json` (outside the store) and warns on stderr
+when:
+
+- a recipient was added or removed in any recipients file — for age, a new
+  plugin recipient (`age1<name>...`) is named together with the
+  `age-plugin-<name>` binary it will make age execute;
+- a store plugin appeared, changed (manifest or executable), or vanished.
+
+The first sync records the baseline silently. It is a warning, never a prompt,
+so unattended `binpass sync` keeps working — read the warning before the next
+`insert`/`edit`, which would encrypt to the new recipient set.
 
 ---
 

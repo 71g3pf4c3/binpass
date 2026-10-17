@@ -84,6 +84,39 @@ func (a *App) Guard() *plugin.Guard {
 	return a.cachedGuard
 }
 
+// guardBulk refuses a whole-subtree operation unless the plugin's grant
+// covers every entry it would touch.
+//
+// A listing can be filtered down to what was granted, but a bulk decrypt or
+// rewrite cannot: an audit that quietly skipped half the store would report
+// "no findings" for entries it never looked at, and a partial reencrypt
+// would leave the rest readable by recipients the user meant to drop.
+// Naming the missing grant is the only honest answer.
+func (a *App) guardBulk(s *store.Store, sub string, decrypt, write bool) error {
+	g := a.Guard()
+	if !g.Active {
+		// The walk is pure overhead for a binpass the user ran themselves.
+		return nil
+	}
+	names, err := s.List(sub)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if decrypt {
+			if err := g.CheckDecrypt(n); err != nil {
+				return err
+			}
+		}
+		if write {
+			if err := g.CheckWrite(n); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // NewApp returns an App bound to the process streams.
 func NewApp(cfg config.Config) *App {
 	return &App{Cfg: cfg, Out: os.Stdout, Err: os.Stderr, In: os.Stdin}

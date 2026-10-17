@@ -184,6 +184,14 @@ func (s *S3Remote) List(ctx context.Context) ([]File, error) {
 		if key == LockFileName {
 			continue // the advisory lock is not a store entry.
 		}
+		// A bucket is under the control of whoever can write to it, and
+		// the key is joined onto the store root on the way in. The other
+		// three transports reject an escaping path here; a listing that
+		// skipped the check would hand one straight to a direct consumer
+		// of this transport.
+		if err := CheckPath(key); err != nil {
+			return nil, err
+		}
 		files = append(files, File{
 			Path:    key,
 			Size:    object.Size,

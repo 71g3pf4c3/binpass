@@ -1,7 +1,6 @@
 package crypto
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"strings"
@@ -52,7 +51,7 @@ func (a *Age) ParseRecipients(dir string) ([]Recipient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return readRecipientsFile(path)
+	return ReadRecipientsFile(path)
 }
 
 // Encrypt writes an age ciphertext for plaintext to w.
@@ -91,11 +90,13 @@ func (a *Age) Decrypt(r io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("crypto: age decrypt: %w", err)
 	}
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, dr); err != nil {
+	// The plaintext is bounded, not the ciphertext: age itself streams, so
+	// only what this buffers can exhaust memory.
+	out, err := readLimited(dr, MaxEntryBytes, "plaintext")
+	if err != nil {
 		return nil, fmt.Errorf("crypto: age decrypt: %w", err)
 	}
-	return buf.Bytes(), nil
+	return out, nil
 }
 
 // ParseAgeRecipients converts recipient strings into age recipients. Both

@@ -12,7 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	git \
 	tree \
 	fzf \
+	ca-certificates \
+	curl \
 	&& rm -rf /var/lib/apt/lists/*
+
+# sops is not in Debian; the sops suites skip without it.
+COPY scripts/install-sops.sh /tmp/install-sops.sh
+RUN sh /tmp/install-sops.sh && rm /tmp/install-sops.sh
 
 WORKDIR /src
 

@@ -347,3 +347,68 @@ func TestRemoteFromConfig(t *testing.T) {
 	_, err = FromConfig("ftp", map[string]string{})
 	assert.Error(t, err)
 }
+
+// TestGitRemote_PushUsesConfiguredRemote pushes to the remote the user named.
+// A store with a second remote (docs/sync-remotes.md §1.6) otherwise had every
+// sync go to origin while reporting success, so the configured destination
+// silently never received anything.
+func TestGitRemote_PushUsesConfiguredRemote(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping git integration test in short mode")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found on PATH")
+	}
+
+	tests := []struct {
+		name string
+		// remoteName is what binpass is configured with; the other bare
+		// repository must stay untouched.
+		remoteName string
+		other      string
+	}{
+		{name: "origin", remoteName: "origin", other: "backup"},
+		{name: "second remote", remoteName: "backup", other: "origin"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			tmp := t.TempDir()
+			storeDir := filepath.Join(tmp, "store")
+			bares := map[string]string{
+				tc.remoteName: filepath.Join(tmp, tc.remoteName+".git"),
+				tc.other:      filepath.Join(tmp, tc.other+".git"),
+			}
+			for _, dir := range bares {
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				runGit(t, dir, "init", "--bare")
+			}
+
+			require.NoError(t, os.MkdirAll(storeDir, 0o755))
+			runGit(t, storeDir, "init")
+			configureGit(t, storeDir, "Test", "wmDESaL@SaSPkBm.ru")
+			require.NoError(t, os.WriteFile(filepath.Join(storeDir, ".gitattributes"),
+				[]byte("*.gpg binary\n"), 0o644))
+			runGit(t, storeDir, "add", ".gitattributes")
+			runGit(t, storeDir, "commit", "-m", "init")
+			for name, dir := range bares {
+				runGit(t, storeDir, "remote", "add", name, dir)
+			}
+
+			g, err := NewGitRemote(GitOptions{Name: tc.remoteName, Dir: storeDir})
+			require.NoError(t, err)
+			defer func() { _ = g.Close() }()
+
+			_, err = g.Put(ctx, "sites/example.gpg", bytes.NewReader([]byte("content")), "")
+			require.NoError(t, err)
+			require.NoError(t, g.Push(ctx))
+
+			pushed, err := gitLog(bares[tc.remoteName])
+			require.NoError(t, err)
+			assert.Contains(t, pushed, "Add given password for sites/example to store.")
+
+			_, err = gitLog(bares[tc.other])
+			assert.Error(t, err, "a remote the user did not configure must stay untouched")
+		})
+	}
+}

@@ -21,7 +21,7 @@ import (
 // If encoding is empty, it attempts UTF-8 first and falls back to
 // sniffing the encoding from the BOM or from byte patterns.
 func csvReadAll(r io.Reader, encoding string) ([][]string, error) {
-	raw, err := io.ReadAll(r)
+	raw, err := io.ReadAll(limitReader(r))
 	if err != nil {
 		return nil, err
 	}

@@ -84,6 +84,11 @@ func (a *App) runOTP(ctx context.Context, name string, doClip, watch, showURI bo
 	if err != nil {
 		return err
 	}
+	// A one-time password is derived from the entry's secret, so producing
+	// one is a decrypt however short-lived the code is.
+	if err := a.Guard().CheckDecrypt(name); err != nil {
+		return err
+	}
 	sec, err := s.Get(name)
 	if err != nil {
 		return err
@@ -126,6 +131,11 @@ func (a *App) emitOTP(ctx context.Context, code, name string, doClip bool) error
 
 // advanceHOTP rewrites the entry with the counter incremented.
 func (a *App) advanceHOTP(s *store.Store, name string, sec *secret.Secret, uri string, cfg *otp.Config) error {
+	// Counter advancement rewrites the stored entry, mechanical as it looks,
+	// so it needs the same grant any other write does.
+	if err := a.Guard().CheckWrite(name); err != nil {
+		return err
+	}
 	updated, err := replaceCounter(sec, uri, cfg.Next().Counter)
 	if err != nil {
 		return err

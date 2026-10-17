@@ -3,11 +3,14 @@ package sync
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/71g3pf4c3/binpass/pkg/remote"
 )
 
 func TestScan_Basic(t *testing.T) {
@@ -114,6 +117,58 @@ func TestScan_DeletedFileDetection(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, snap2, "github.com/alice.gpg")
 	assert.Contains(t, snap2, "bank/tinkoff.gpg")
+}
+
+// TestScan_RejectsSymlinks refuses a store that contains a symlink. Store
+// content can arrive from a sync remote, and the scanner would otherwise hash
+// whatever local file the link names and report it as that entry's state.
+func TestScan_RejectsSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	tests := []struct {
+		name string
+		// link is the name the symlink takes inside the store.
+		link string
+		// toDir points the link at a directory instead of a file.
+		toDir bool
+	}{
+		{name: "entry", link: "alice.gpg"},
+		{name: "container", link: "store.luks"},
+		{name: "directory", link: "mail", toDir: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			outside := t.TempDir()
+			loot := filepath.Join(outside, "loot")
+			require.NoError(t, os.WriteFile(loot, []byte("a local file"), 0o600))
+
+			root := setupTestStore(t)
+			target := loot
+			if tc.toDir {
+				target = outside
+			}
+			require.NoError(t, os.Symlink(target, filepath.Join(root, tc.link)))
+
+			_, err := Scan(root, make(Snapshot), "phone", []string{".gpg"})
+			assert.ErrorIs(t, err, remote.ErrSymlink)
+		})
+	}
+}
+
+// TestScan_AllowsSymlinkedStoreRoot keeps the common pass setup working: the
+// store lives elsewhere and is symlinked into place.
+func TestScan_AllowsSymlinkedStoreRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	root := setupTestStore(t)
+	link := filepath.Join(t.TempDir(), "password-store")
+	require.NoError(t, os.Symlink(root, link))
+
+	snap, err := Scan(link, make(Snapshot), "phone", []string{".gpg"})
+	require.NoError(t, err)
+	assert.Contains(t, snap, "github.com/alice.gpg")
 }
 
 func TestDiff(t *testing.T) {

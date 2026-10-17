@@ -98,6 +98,21 @@ func (a *App) runTransfer(from, to string, force, remove bool) error {
 	if err != nil {
 		return err
 	}
+	// Both ends are checked before the store is probed: the destination is
+	// written in either case, and mv deletes the source, so a plugin scoped
+	// to one subtree cannot use a rename to reach out of it.
+	g := a.Guard()
+	if err := g.CheckRead(from); err != nil {
+		return err
+	}
+	if err := g.CheckWrite(to); err != nil {
+		return err
+	}
+	if remove {
+		if err := g.CheckWrite(from); err != nil {
+			return err
+		}
+	}
 	if !s.Exists(from) && !s.IsDir(from) {
 		return fmt.Errorf("Error: %s is not in the password store.", from) //nolint:revive,staticcheck // pass's exact wording.
 	}

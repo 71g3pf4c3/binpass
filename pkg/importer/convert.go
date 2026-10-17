@@ -78,9 +78,17 @@ func (e *Entry) AttachmentStorePath(i int) (string, error) {
 		return "", fmt.Errorf("importer: attachment index %d out of range", i)
 	}
 	att := e.Attachments[i]
-	name := att.Name
+	// The attachment name is import data, as untrusted as the passwords
+	// beside it: a name of "../../other-entry/x" planted a .b64 entry
+	// anywhere else in the store. Sanitise it the way a title is, then hold
+	// the result to the same validation as any other entry path.
+	name := NormalizePath("", att.Name)
 	if name == "" {
 		name = fmt.Sprintf("attachment-%d", i+1)
 	}
-	return base + "/" + name + ".b64", nil
+	p := base + "/" + name + ".b64"
+	if !ValidatePath(p) {
+		return "", fmt.Errorf("importer: invalid attachment path %q (from attachment name %q)", p, att.Name)
+	}
+	return p, nil
 }

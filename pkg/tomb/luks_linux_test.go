@@ -145,6 +145,29 @@ func TestLUKSInitMovesExistingEntriesIntoTheContainer(t *testing.T) {
 
 	assert.Contains(t, f.names(), "mount")
 	assert.Contains(t, f.names(), "umount")
+
+	// The seed mount is the same filesystem as the one Open uses, so it is
+	// restricted the same way.
+	seed := f.find("mount", "")
+	require.NotNil(t, seed)
+	assert.Equal(t, []string{"-o", "nosuid,nodev,noexec"}, seed.args[:2])
+}
+
+// TestMountArgsRestrictTheContainer states what the mount may not be used
+// for. A password store holds text: nothing in the container ever needs to
+// be executed, and its contents may have arrived from another machine over
+// sync, so a setuid binary or a device node in there must not come into use.
+func TestMountArgsRestrictTheContainer(t *testing.T) {
+	for _, want := range []string{"nosuid", "nodev", "noexec"} {
+		t.Run(want, func(t *testing.T) {
+			args := mountArgs("binpass-test", "/mnt/x")
+			require.Len(t, args, 4)
+			assert.Equal(t, "-o", args[0])
+			assert.Contains(t, strings.Split(args[1], ","), want)
+			assert.Equal(t, []string{"/dev/mapper/binpass-test", "/mnt/x"}, args[2:],
+				"the device and the mount point must stay the last two arguments")
+		})
+	}
 }
 
 func TestLUKSOpenUnlocksAndMounts(t *testing.T) {
@@ -162,7 +185,7 @@ func TestLUKSOpenUnlocksAndMounts(t *testing.T) {
 
 	mount := f.find("mount", "")
 	require.NotNil(t, mount)
-	assert.Equal(t, []string{"/dev/mapper/" + mapperName(dir), dir}, mount.args)
+	assert.Equal(t, []string{"-o", "nosuid,nodev,noexec", "/dev/mapper/" + mapperName(dir), dir}, mount.args)
 
 	// The state must record enough to close a tomb whose process died.
 	st, err := LoadState(dir)

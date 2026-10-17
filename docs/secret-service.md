@@ -241,6 +241,13 @@ Rules are tried in order and the first match wins. `app` matches the caller's
 executable, `*` matches anything; `attrs` matches item attributes, with `*`
 as a value meaning "carries this attribute at all".
 
+A matching rule governs reads and writes alike: `Item.GetSecret`,
+`Service.GetSecrets`, `Item.SetSecret` and `Collection.CreateItem` all
+consult it. Writes are checked before the client's secret is decrypted,
+because a refusal that covered only reads would still let a denied program
+replace a stored password with one of its own — which its owner would then
+retype somewhere it does not belong.
+
 The caller is identified by asking the bus for the sender's PID and reading
 `/proc/PID/exe`. **Be clear about what that proves**: it names the file a
 process started from. A process that re-executed itself, or one whose PID
@@ -306,6 +313,12 @@ not both run.
   it needs the identity. With a hardware token, that means the token.
 * **The index reveals equality.** Two items with the same attribute value
   produce the same hash.
+* **An item's label and attributes, to anyone who already has its object
+  path.** Those two are D-Bus properties on every exported item, and
+  properties are read without the policy being consulted. `SearchItems` is
+  filtered through it, so a denied program cannot find the path that way, but
+  one that learns a path by other means reads the label and attributes —
+  never the secret.
 
 ---
 
@@ -350,9 +363,10 @@ binpass init --age age1...
 
 ### A program stores secrets but cannot read them back
 
-Check the policy: a `deny` or an unanswered `prompt` refuses the read while
-allowing the write, since only reads pass through the policy. `audit: true`
-plus the service log shows what was refused and to whom.
+Check the policy: a `deny` or an unanswered `prompt` refuses the item for
+reading and for writing, so the same rule that stops a program reading a
+secret stops it storing one. `audit: true` plus the service log shows what
+was refused and to whom.
 
 ### Flatpak and Snap applications
 

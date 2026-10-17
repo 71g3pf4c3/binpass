@@ -96,6 +96,9 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 	if err != nil {
 		return err
 	}
+	// A restricted plugin must not be offered entries it was never granted:
+	// the picker is where a name becomes a decrypt one keystroke later.
+	names = a.Guard().FilterReadable(names)
 	if len(names) == 0 {
 		return errors.New("binpass: the password store is empty")
 	}
@@ -138,11 +141,16 @@ func (a *App) runMenu(ctx context.Context, opts menuOpts) error {
 	usage.mark(choice)
 	saveMenuUsage(usage)
 
+	// The picker returns whatever text was typed into it, not only the
+	// names it was handed, so the choice is checked rather than trusted.
+	if err := a.Guard().CheckDecrypt(choice); err != nil {
+		return err
+	}
+
 	sec, err := s.Get(choice)
 	if err != nil {
 		return err
 	}
-
 	value, err := a.fieldValue(s, choice, sec, opts.field)
 	if err != nil {
 		return err

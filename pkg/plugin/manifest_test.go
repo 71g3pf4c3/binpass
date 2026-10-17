@@ -68,6 +68,23 @@ func TestParseManifestRejects(t *testing.T) {
 			wantErr: "could decrypt nothing",
 		},
 		{
+			// With a hostile manifest trusted on sight, this would appoint
+			// any executable already on the victim's disk as "the plugin".
+			name:    "exec climbing out of the plugin directory",
+			yaml:    "name: x\napi: 1\nexec: ../../../../usr/bin/sh\n",
+			wantErr: "must stay inside the plugin directory",
+		},
+		{
+			name:    "exec with a traversal in the middle",
+			yaml:    "name: x\napi: 1\nexec: helpers/../../sh\n",
+			wantErr: "must stay inside the plugin directory",
+		},
+		{
+			name:    "absolute exec",
+			yaml:    "name: x\napi: 1\nexec: /usr/bin/sh\n",
+			wantErr: "must stay inside the plugin directory",
+		},
+		{
 			name:    "network entry given as a URL",
 			yaml:    "name: x\napi: 1\ncapabilities:\n  network: [\"https://a.example/path\"]\n",
 			wantErr: "must be a host",
@@ -98,6 +115,14 @@ func TestManifestBinaryOverride(t *testing.T) {
 	assert.Equal(t, "helper.py", m.Binary())
 }
 
+// TestManifestExecMayNestInsideTheDirectory keeps the containment check from
+// banning the legitimate shape it has to allow.
+func TestManifestExecMayNestInsideTheDirectory(t *testing.T) {
+	m, err := plugin.ParseManifest([]byte("name: x\napi: 1\nexec: bin/helper.py\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "bin/helper.py", m.Binary())
+}
+
 // TestSummaryLeadsWithTheConsequence checks that approval text describes what
 // access means, not which YAML keys were set. Someone deciding whether to
 // trust a plugin needs to be told it will see their passwords.
@@ -123,4 +148,44 @@ func TestSummaryOfAHarmlessPlugin(t *testing.T) {
 
 	assert.False(t, m.Sensitive())
 	assert.Contains(t, m.Summary(), "reads:   nothing")
+}
+
+// TestSummaryAdmitsWhatIsNotEnforced is the honesty the approval text owes
+// the reviewer. read_paths, write_paths and decrypt are checked on every
+// call back into binpass; network and exec cannot be, because a level 1
+// plugin dials and execs by itself. Presenting all five alike invites
+// someone to approve a network list believing it binds the plugin.
+func TestSummaryAdmitsWhatIsNotEnforced(t *testing.T) {
+	tests := map[string]struct {
+		yaml     string
+		wantNote bool
+	}{
+		"a declared host": {
+			yaml:     "name: x\napi: 1\ncapabilities:\n  network: [\"api.example.com\"]\n",
+			wantNote: true,
+		},
+		"a declared binary": {
+			yaml:     "name: x\napi: 1\ncapabilities:\n  exec: [\"curl\"]\n",
+			wantNote: true,
+		},
+		"only enforceable capabilities": {
+			yaml:     "name: x\napi: 1\ncapabilities:\n  read_paths: [\"**\"]\n  decrypt: true\n",
+			wantNote: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			m, err := plugin.ParseManifest([]byte(tt.yaml))
+			require.NoError(t, err)
+
+			s := m.Summary()
+			if tt.wantNote {
+				assert.Contains(t, s, "declared, not enforced")
+			} else {
+				assert.NotContains(t, s, "not enforced",
+					"the caveat must not shade the capabilities that are enforced")
+			}
+		})
+	}
 }

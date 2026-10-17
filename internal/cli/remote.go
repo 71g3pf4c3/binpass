@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,6 +47,12 @@ For git, the URL is required.
 After the URL, fields only some types have come as key=value pairs:
 
   binpass remote add s3 backup s3.example.com bucket=my-bucket region=eu-west-1
+
+A restic remote takes its repository password as a command rather than a
+value, so that the secret is never typed into argv or stored in config.yaml:
+
+  binpass remote add restic backup /mnt/backup/binpass \
+      password_command="binpass show restic/backup"
 
 gdrive and yandex authorise through rclone's own OAuth: adding one opens
 a browser when the rclone remote is not configured yet, and prints the
@@ -133,8 +140,19 @@ func (a *App) runRemoteAdd(remoteType, name string, extra ...string) error {
 			rc.Folder = value
 		case "region":
 			rc.Region = value
+		case "password_command":
+			rc.PasswordCommand = value
+		case "password":
+			// Taking the password here would publish it twice over: argv is
+			// world-readable through /proc while the command runs, and the
+			// value would then sit in config.yaml in the clear for as long
+			// as the remote exists.
+			return fmt.Errorf("remote add: unknown field %q: a password given on the command line is "+
+				"visible in ps and in your shell history, and would then sit in plain text in %s; "+
+				"use password_command= instead (for example password_command=\"binpass show restic/%s\")",
+				key, config.FilePath(), name)
 		default:
-			return fmt.Errorf("remote add: unknown field %q (valid: bucket, folder, region)", key)
+			return fmt.Errorf("remote add: unknown field %q (valid: bucket, folder, region, password_command)", key)
 		}
 	}
 
@@ -206,7 +224,33 @@ func (a *App) runRemoteList() error {
 		rc := a.Cfg.Remotes[name]
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, rc.Type, rc.URL, rc.Folder)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	// Listing the remotes is where a password put in by hand becomes
+	// visible, so it is where the warning belongs.
+	for _, name := range names {
+		if a.Cfg.Remotes[name].Password != "" {
+			warnPlaintextRemotePassword(a.Err, name)
+		}
+	}
+	return nil
+}
+
+// warnPlaintextRemotePassword complains about a remote password stored in
+// the clear.
+//
+// The config file is 0600, but it is still a secret at rest with no
+// protection beyond file permissions: it survives in backups, in a copied
+// $XDG_CONFIG_HOME, and in the config people paste into bug reports.
+// password_command keeps the secret wherever it already lives.
+func warnPlaintextRemotePassword(w io.Writer, name string) {
+	fmt.Fprintf(w, "WARNING: remote %q stores its password in plain text in %s.\n", name, config.FilePath())
+	fmt.Fprintf(w, "         Anyone who reads that file, a backup of it, or a bug report quoting it "+
+		"learns the repository password.\n")
+	fmt.Fprintf(w, "         Replace it with password_command, which binpass runs to fetch the "+
+		"password when it is needed.\n")
 }
 
 // upsertRemoteYAML reads the config file, inserts or updates the named remote,

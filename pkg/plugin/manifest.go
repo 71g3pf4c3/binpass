@@ -22,6 +22,7 @@ package plugin
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -83,9 +84,11 @@ type Capabilities struct {
 	// Decrypt allows access to plaintext. Without it a plugin may learn
 	// that an entry exists but never what it contains.
 	Decrypt bool `yaml:"decrypt,omitempty" json:"decrypt,omitempty"`
-	// Network is the host allowlist. An empty list forbids the network.
+	// Network is the host allowlist. It is declared, never enforced: see
+	// Summary and Guard for why binpass cannot hold a plugin to it.
 	Network []string `yaml:"network,omitempty" json:"network,omitempty"`
-	// Exec is the external binaries the plugin may invoke.
+	// Exec is the external binaries the plugin says it will invoke, and is
+	// likewise a declaration rather than a restriction.
 	Exec []string `yaml:"exec,omitempty" json:"exec,omitempty"`
 }
 
@@ -146,7 +149,23 @@ func (m *Manifest) Validate() error {
 				ErrInvalidManifest, h)
 		}
 	}
+	// Exec names a file inside the plugin's own directory. Left unchecked,
+	// `exec: ../../../../usr/bin/sh` would appoint any executable already on
+	// the victim's disk as "the plugin" and have it run with the whole
+	// BINPASS_* environment, no binary of its own required.
+	if m.Exec != "" && escapesDir(m.Exec) {
+		return fmt.Errorf("%w: exec %q must stay inside the plugin directory",
+			ErrInvalidManifest, m.Exec)
+	}
 	return nil
+}
+
+// escapesDir reports whether a relative path leaves the directory it is
+// joined to, which is the one thing a manifest must not be able to name.
+func escapesDir(rel string) bool {
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	return filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" ||
+		clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
 
 // validName reports whether a plugin name is safe to use as a subcommand and
@@ -190,7 +209,10 @@ func (m *Manifest) Sensitive() bool {
 //
 // It states what access means in terms of consequence rather than repeating
 // the YAML keys: someone deciding whether to trust a plugin needs to know
-// that it will see their passwords, not that decrypt is true.
+// that it will see their passwords, not that decrypt is true. Where a
+// declared capability is not actually enforced, it says so — a reviewer who
+// believes the network list binds the plugin has been misled, and that is
+// worse than not showing it at all.
 func (m *Manifest) Summary() string {
 	var b strings.Builder
 	c := m.Capabilities
@@ -215,6 +237,10 @@ func (m *Manifest) Summary() string {
 	}
 	if len(c.Exec) > 0 {
 		fmt.Fprintf(&b, "  runs:    %s\n", strings.Join(c.Exec, ", "))
+	}
+	if len(c.Network) > 0 || len(c.Exec) > 0 {
+		b.WriteString("  note:    network and runs are declared, not enforced:\n" +
+			"           the plugin dials and execs directly, without asking binpass\n")
 	}
 	return b.String()
 }

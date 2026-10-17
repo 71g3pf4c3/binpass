@@ -96,6 +96,15 @@ func (g *GitRemote) ensurePrivate(_ context.Context) error {
 		if d.Name() == ".git" && d.IsDir() {
 			return filepath.SkipDir
 		}
+		// The store root is exempt: keeping the store elsewhere and
+		// symlinking it into place is an ordinary pass setup. Anything below
+		// it is content the remote chose, and the chmod below would follow a
+		// link out of the store.
+		if path != g.dir {
+			if err := CheckNotSymlink(path, d.Type()); err != nil {
+				return err
+			}
+		}
 		want := os.FileMode(storeFilePerm)
 		if d.IsDir() {
 			want = storeDirPerm
@@ -109,8 +118,8 @@ func (g *GitRemote) ensurePrivate(_ context.Context) error {
 		if info.Mode().Perm() == want {
 			return nil
 		}
-		// The worktree is a private directory owned by this process; there is
-		// no window for another user to swap a path for a symlink.
+		// The walk rejected every symlink below the root above, so this
+		// cannot dereference a link planted by the remote.
 		return os.Chmod(path, want) //nolint:gosec // walk over our own private worktree.
 	})
 }
@@ -258,6 +267,10 @@ func (g *GitRemote) remoteHeadBranch(ctx context.Context, remoteName string) (st
 
 // Push flushes all local commits to the configured remote. This should be
 // called after all Put/Delete/Rename operations are complete.
+//
+// The remote is the one the user configured, not "origin": a store with a
+// second remote (`--remote=backup`) otherwise had every sync pushed to
+// origin and reported as successful, so the backup never received anything.
 func (g *GitRemote) Push(ctx context.Context) error {
 	if !g.hasRemote(ctx) {
 		return nil // nothing to push to.
@@ -266,11 +279,11 @@ func (g *GitRemote) Push(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("remote/git: cannot determine the current branch: %w", err)
 	}
-	if _, err := g.git(ctx, "push", "origin", branch); err != nil {
+	if _, err := g.git(ctx, "push", g.remoteName(), branch); err != nil {
 		// If there's no upstream yet, set it.
 		if strings.Contains(err.Error(), "no upstream") ||
 			strings.Contains(err.Error(), "has no upstream") {
-			if _, err := g.git(ctx, "push", "-u", "origin", branch); err != nil {
+			if _, err := g.git(ctx, "push", "-u", g.remoteName(), branch); err != nil {
 				return fmt.Errorf("remote/git: push -u: %w", err)
 			}
 			return nil
@@ -731,11 +744,21 @@ func (g *GitRemote) preserveDivergedFiles(ctx context.Context, ref string) error
 			continue
 		}
 		src := filepath.Join(g.dir, path)
-		data, err := os.ReadFile(src) //nolint:gosec // a path inside the store.
+		// Preserving a conflicted entry means reading it, and the diverged
+		// side is the remote's: a symlink here would copy a local file the
+		// remote named into the store, from where the next sync uploads it.
+		info, err := os.Lstat(src)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
+			return fmt.Errorf("remote/git: stat %q: %w", path, err)
+		}
+		if err := CheckNotSymlink(path, info.Mode()); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(src) //nolint:gosec // a path inside the store.
+		if err != nil {
 			return fmt.Errorf("remote/git: read %q: %w", path, err)
 		}
 		ext := filepath.Ext(path)

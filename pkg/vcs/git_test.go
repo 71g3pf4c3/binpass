@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -197,5 +198,62 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE=1970-01-01T00:00:00+0000", "GIT_COMMITTER_DATE=1970-01-01T00:00:00+0000")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %s: %v", args, string(out), err)
+	}
+}
+
+// TestGitBackendShowRejectsRevisionSpec checks that an entry name cannot
+// carry git object syntax. "<rev>:<path>" is built from the entry, so a colon
+// in it resolves a different revision or path than the caller asked for.
+func TestGitBackendShowRejectsRevisionSpec(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found on PATH")
+	}
+
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "KbsHlCC@rosyPud.org")
+	runGit(t, dir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "entry.gpg"), []byte("v1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "entry.gpg")
+	runGit(t, dir, "commit", "-m", "Add given password for entry")
+
+	backend := NewGitBackend(dir)
+	commits, err := backend.Log("entry", LogOption{})
+	if err != nil || len(commits) != 1 {
+		t.Fatalf("Log: %v, %d commits", err, len(commits))
+	}
+	hash := commits[0].Hash
+
+	tests := []struct {
+		name    string
+		entry   string
+		wantErr string
+	}{
+		{name: "plain entry", entry: "entry", wantErr: ""},
+		{name: "revision override", entry: "HEAD:entry", wantErr: "invalid entry"},
+		{name: "empty revision", entry: ":entry", wantErr: "invalid entry"},
+		{name: "trailing colon", entry: "entry:", wantErr: "invalid entry"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content, err := backend.Show(tc.entry, hash)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Show(%q) failed: %v", tc.entry, err)
+				}
+				if string(content) != "v1" {
+					t.Errorf("Show(%q) = %q, want %q", tc.entry, content, "v1")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Show(%q) returned %q, want an error", tc.entry, content)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Show(%q) error = %v, want it to mention %q", tc.entry, err, tc.wantErr)
+			}
+		})
 	}
 }

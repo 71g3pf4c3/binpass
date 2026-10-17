@@ -117,6 +117,10 @@ func (a *App) runBinaryCat(name string) error {
 	if err != nil {
 		return err
 	}
+	// The decoded bytes are the secret itself, base64 or not.
+	if err := a.Guard().CheckDecrypt(name); err != nil {
+		return err
+	}
 	return binary.Cat(s, name, a.Out)
 }
 
@@ -124,6 +128,11 @@ func (a *App) runBinaryCat(name string) error {
 func (a *App) runBinarySum(name string) error {
 	s, err := a.requireStore()
 	if err != nil {
+		return err
+	}
+	// Summing decrypts the entry, and a checksum confirms a guess at its
+	// contents, so it is no less a disclosure than cat.
+	if err := a.Guard().CheckDecrypt(name); err != nil {
 		return err
 	}
 	sum, err := binary.Sum(s, name)
@@ -138,6 +147,9 @@ func (a *App) runBinarySum(name string) error {
 func (a *App) runBinaryCopy(name, path string, force bool) error {
 	s, err := a.requireStore()
 	if err != nil {
+		return err
+	}
+	if err := a.Guard().CheckWrite(name); err != nil {
 		return err
 	}
 	proceed, err := a.overwriteEntry(s, name, force)
@@ -156,6 +168,9 @@ func (a *App) runBinaryCopy(name, path string, force bool) error {
 func (a *App) runBinaryMove(name, path string, force bool) error {
 	s, err := a.requireStore()
 	if err != nil {
+		return err
+	}
+	if err := a.Guard().CheckWrite(name); err != nil {
 		return err
 	}
 	proceed, err := a.overwriteEntry(s, name, force)

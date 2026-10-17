@@ -1,5 +1,11 @@
 # Continuous integration for the binpass client: lint, unit + race tests,
 # a coverage gate, and a cross-platform build matrix.
+#
+# Every `uses:` is pinned to a full commit SHA with the human-readable tag in
+# a trailing comment: a tag is mutable, so an upstream retag (or a
+# compromised action repository) would otherwise run attacker-chosen code
+# with this workflow's token. Bump by resolving the tag to a new SHA, never
+# by loosening the pin.
 name: ci
 
 on:
@@ -15,15 +21,26 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           cache: true
       - name: go vet
         run: go vet ./...
+      # Pinning by SHA is only a control while nothing reintroduces a mutable
+      # `@v4`-style reference, which is easy to copy in from upstream docs.
+      - name: Actions are pinned to commit SHAs
+        run: |
+          unpinned=$(grep -rnE '^[[:space:]]*(- )?uses:' .github/workflows \
+            | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' || true)
+          if [ -n "$unpinned" ]; then
+            echo "::error::action reference not pinned to a commit SHA"
+            echo "$unpinned"
+            exit 1
+          fi
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7.0.1
         with:
           # Pinned, not "latest": v6 of the action cannot install golangci-lint
           # v2 at all (it rejected the v2.x version string, and its "latest"
@@ -36,8 +53,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           cache: true
@@ -49,12 +66,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pass gnupg tree age rclone restic
+          sudo sh scripts/install-sops.sh
       - name: Verify the reference tools are present
         run: |
           command -v pass || { echo "pass is missing: the golden suite would skip"; exit 1; }
           command -v tree || { echo "tree is missing: pass cannot render listings"; exit 1; }
           command -v rclone || { echo "rclone is missing: the transport tests would skip"; exit 1; }
           command -v restic || { echo "restic is missing: the snapshot tests would skip"; exit 1; }
+          command -v sops || { echo "sops is missing: the sops suites would skip"; exit 1; }
           docker info >/dev/null || { echo "docker is missing: the MinIO container tests would skip"; exit 1; }
       - name: Unit tests with race detector
         run: go test -race ./...
@@ -77,8 +96,8 @@ jobs:
         goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           cache: true
@@ -96,8 +115,8 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           cache: true
@@ -105,7 +124,7 @@ jobs:
         run: ./scripts/fuzz.sh 20
       - name: Keep the inputs that failed
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fuzz-failures
           path: "**/testdata/fuzz/**"
@@ -114,8 +133,8 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           cache: true
@@ -130,7 +149,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Test in a container
         run: |
           docker build -f Dockerfile.test -t binpass-test .
@@ -142,7 +161,7 @@ jobs:
   secret-service:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Secret Service integration tests
         run: |
           docker build -f Dockerfile.ss -t binpass-ss .
@@ -155,7 +174,7 @@ jobs:
   luks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: LUKS integration tests
         run: |
           sudo modprobe dm_crypt
@@ -169,7 +188,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Sync transport and snapshot integration tests
         run: |
           docker build -f Dockerfile.sync -t binpass-sync .
@@ -181,7 +200,13 @@ jobs:
   desktop:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The digest pin is the control: a bare `FROM golang:1.26-trixie` would
+      # float the toolchain and the X11 packages under this suite again.
+      - name: Base image is pinned by digest
+        run: |
+          grep -qE '^FROM .+@sha256:[0-9a-f]{64}$' Dockerfile.desktop \
+            || { echo "::error::Dockerfile.desktop base image is not digest-pinned"; exit 1; }
       - name: Desktop integration tests
         run: |
           docker build -f Dockerfile.desktop -t binpass-desktop .
@@ -190,8 +215,8 @@ jobs:
   nix:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v27
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b # v27
       - name: Flake check
         run: nix flake check --no-build
       - name: Test in the dev shell

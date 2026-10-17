@@ -52,6 +52,14 @@ func (a *App) runInit(sub string, recipients []string, kind config.Backend) erro
 		rcp = append(rcp, crypto.Recipient(r))
 	}
 	existed := s.Initialised()
+	// init rewrites every existing entry under sub for the new recipient
+	// set, so a plugin may only run it where its grant already covers
+	// everything that would be re-keyed.
+	if existed {
+		if err := a.guardBulk(s, sub, true, true); err != nil {
+			return err
+		}
+	}
 	if err := s.Init(sub, rcp); err != nil {
 		return err
 	}

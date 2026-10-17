@@ -143,11 +143,32 @@ type noopHIBP struct{}
 
 func (noopHIBP) Check(_ context.Context, _ string) (bool, error) { return false, nil }
 
+// isRangePrefix reports whether s is the 5-hex-character range prefix the
+// HIBP protocol defines.
+//
+// The prefix becomes a file name under CacheDir, so it is the one caller
+// string that reaches the filesystem. Today it is always hash[:5]; asserting
+// the shape here keeps a future caller from choosing which file the audit
+// reads or overwrites.
+func isRangePrefix(s string) bool {
+	if len(s) != 5 {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // readCache loads a range from the disk cache. A missing or stale file is a
 // miss; an unreadable or malformed one is a miss too, never an error the
 // audit fails on — the cache is an optimisation.
 func (c *HIBPClient) readCache(prefix string) (map[string]int, bool, error) {
-	if c.CacheDir == "" {
+	if c.CacheDir == "" || !isRangePrefix(prefix) {
 		return nil, false, nil
 	}
 	path := filepath.Join(c.CacheDir, prefix)
@@ -171,7 +192,7 @@ func (c *HIBPClient) readCache(prefix string) (map[string]int, bool, error) {
 // writeCache stores a range on disk, best-effort: a read-only or missing
 // cache directory degrades to no cache, not to a failed audit.
 func (c *HIBPClient) writeCache(prefix string, suffixes map[string]int) {
-	if c.CacheDir == "" {
+	if c.CacheDir == "" || !isRangePrefix(prefix) {
 		return
 	}
 	if err := os.MkdirAll(c.CacheDir, 0o700); err != nil {

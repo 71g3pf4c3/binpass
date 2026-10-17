@@ -42,9 +42,9 @@ func isWithin(root, path string) bool {
 	return rel == "." || !strings.HasPrefix(rel, "..")
 }
 
-// readRecipientsFile parses a recipients file: one recipient per line, blank
+// ReadRecipientsFile parses a recipients file: one recipient per line, blank
 // lines and '#' comments ignored.
-func readRecipientsFile(path string) ([]Recipient, error) {
+func ReadRecipientsFile(path string) ([]Recipient, error) {
 	f, err := os.Open(path) //nolint:gosec // path is resolved within the store.
 	if err != nil {
 		return nil, err

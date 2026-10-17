@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -17,6 +18,15 @@ import (
 // pluginSource returns where this invocation looks for plugins.
 func (a *App) pluginSource() plugin.Source {
 	return plugin.DefaultSource(config.DataDir(), a.Cfg.Dir)
+}
+
+// pluginLockPath is where the approvals the user gave are recorded.
+//
+// It sits in the data directory beside the managed plugins and deliberately
+// outside the store: a lock file that travelled with the store could be
+// rewritten by whatever planted the plugin it is supposed to vouch for.
+func (a *App) pluginLockPath() string {
+	return filepath.Join(config.DataDir(), plugin.LockName)
 }
 
 // newPluginCmd builds `binpass plugin`.
@@ -32,7 +42,122 @@ func newPluginCmd(app *App) *cobra.Command {
 		},
 	}
 	cmd.AddCommand(newPluginListCmd(app))
+	cmd.AddCommand(newPluginTrustCmd(app))
 	return cmd
+}
+
+// newPluginTrustCmd builds `binpass plugin trust`.
+func newPluginTrustCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "trust <name>",
+		Short: "Approve a plugin at its current contents and capabilities",
+		Long: "Records consent for a plugin in plugins.lock. A plugin carrying a\n" +
+			"manifest does not run until it has been approved here, and approval is\n" +
+			"bound to the executable's digest and to the capabilities the manifest\n" +
+			"asked for: an update that rewrites the binary, or a manifest edited to\n" +
+			"request more, has to be approved again.\n\n" +
+			"Read the plugin before approving it. That is the actual boundary.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return app.runPluginTrust(args[0])
+		},
+	}
+}
+
+// runPluginTrust records consent for a plugin at its current digest.
+func (a *App) runPluginTrust(name string) error {
+	p, err := a.pluginSource().Find(name)
+	if err != nil {
+		return fmt.Errorf("binpass plugin trust: %s: %w", name, err)
+	}
+	if !p.Managed {
+		return fmt.Errorf("binpass plugin trust: %s carries no manifest, so there is nothing to approve", name)
+	}
+	if p.Path == "" {
+		return fmt.Errorf("binpass plugin trust: %s has nothing to execute", name)
+	}
+	digest, err := plugin.DigestFile(p.Path)
+	if err != nil {
+		return err
+	}
+	lock, err := plugin.LoadLock(a.pluginLockPath())
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(a.Out, "%s %s\n", p.Manifest.Name, p.Manifest.Version)
+	if p.Manifest.Description != "" {
+		fmt.Fprintf(a.Out, "  %s\n", p.Manifest.Description)
+	}
+	fmt.Fprintf(a.Out, "  path:   %s\n", p.Path)
+	fmt.Fprintf(a.Out, "  digest: %s\n", digest)
+	fmt.Fprint(a.Out, p.Manifest.Summary())
+	// Where the plugin came from decides how much the approval is worth:
+	// anything able to write to the store can replace a plugin that lives
+	// inside it, and the next approval prompt is the only warning.
+	if withinStore(a.Cfg.Dir, p.Dir) {
+		fmt.Fprintln(a.Err, "Warning: this plugin lives inside the password store, so it arrives with every sync.")
+	}
+
+	lock.Grant(p.Manifest, digest)
+	if err := lock.Save(a.pluginLockPath()); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Out, "Approved %s.\n", p.Manifest.Name)
+	return nil
+}
+
+// withinStore reports whether dir lies inside the password store.
+func withinStore(storeDir, dir string) bool {
+	if storeDir == "" || dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(storeDir, dir)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// checkPluginTrust refuses a manifest-carrying plugin the user has not
+// approved at its current digest and capabilities.
+//
+// A plugin directory inside the store travels with every sync, so anyone able
+// to write to the shared store could otherwise have their binary run with the
+// victim's full authority the first time a command word matched its name —
+// including an everyday typo, since dispatch happens before cobra can say
+// "unknown command". Consent is checked here rather than at install time
+// because there is no install step: a directory simply appears.
+func (a *App) checkPluginTrust(p *plugin.Plugin) error {
+	// Only a manifest records what could be approved. An unmanaged
+	// executable on PATH is something the user put there themselves and
+	// could equally have run directly.
+	if !p.Managed || p.Path == "" {
+		return nil
+	}
+	digest, err := plugin.DigestFile(p.Path)
+	if err != nil {
+		return err
+	}
+	lock, err := plugin.LoadLock(a.pluginLockPath())
+	if err != nil {
+		return err
+	}
+	state := lock.Check(p.Manifest, digest)
+	if state == plugin.GrantValid {
+		return nil
+	}
+
+	name := p.Manifest.Name
+	fmt.Fprintf(a.Err, "binpass: plugin %q is %s.\n", name, state)
+	fmt.Fprintf(a.Err, "  path:   %s\n", p.Path)
+	fmt.Fprintf(a.Err, "  digest: %s\n", digest)
+	fmt.Fprint(a.Err, p.Manifest.Summary())
+	if withinStore(a.Cfg.Dir, p.Dir) {
+		fmt.Fprintln(a.Err, "  source:  inside the password store, so it arrived with a sync")
+	}
+	return fmt.Errorf("binpass: refusing to run an unapproved plugin; review it and run %q",
+		"binpass plugin trust "+name)
 }
 
 // newPluginListCmd builds `binpass plugin list`.
@@ -150,6 +275,9 @@ func (a *App) dispatchPlugin(ctx context.Context, root *cobra.Command, args []st
 	res, ok := a.pluginSource().Resolve(args)
 	if !ok {
 		return false, nil
+	}
+	if err := a.checkPluginTrust(res.Plugin); err != nil {
+		return true, err
 	}
 	self, err := os.Executable()
 	if err != nil {

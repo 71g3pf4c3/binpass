@@ -223,6 +223,13 @@ to remember, and the key never touches the disk in the clear: it is handed to
 `--size` is fixed at creation and the file is sparse, so `--size=10G` costs
 only what you actually store. The minimum is 16M.
 
+The container is mounted `nosuid,nodev,noexec`. A password store holds text,
+so nothing inside it ever needs to be executed, and the contents may have
+arrived from another machine over sync — a setuid binary or a device node in
+there must not come into use. Nothing legitimate in a store wants any of the
+three, so this costs nothing; see [§4.3](#43-sparsebundle) for why macOS
+cannot do the same.
+
 #### Running it without sudo every time
 
 `cryptsetup`, `mount` and `umount` need root. Rather than running all of
@@ -258,6 +265,12 @@ binpass tomb init --type=sparsebundle --size=1G
 The image's passphrase is random, never seen by the user, and stored
 age-encrypted beside it — the same arrangement LUKS uses, so a hardware token
 that unlocks the store unlocks the image.
+
+Unlike the LUKS backend ([§4.2](#42-luks)), the volume is **not** mounted
+`nosuid,nodev,noexec`: `hdiutil attach` has no mount-option flag, and
+`-nobrowse -noidme` is as far as macOS lets binpass go. What is inside
+remains the user's own 0600 entries, so the gap is the absence of a belt
+beside the braces rather than an exposure of its own.
 
 See [macos.md](macos.md) for the rest, including what has not been run on a
 real Mac.
